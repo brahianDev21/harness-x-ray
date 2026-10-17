@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const KNOWN_OPTIONS = new Set(["files", "outside", "git", "gitConfig", "symlinks"]);
+const KNOWN_OPTIONS = new Set(["files", "outside", "git", "gitConfig", "symlinks", "fromDir"]);
 const LINK_TYPES = new Set(["file", "dir", "junction"]);
 
 // Identity and safety flags for the git commands this helper runs itself. They make the
@@ -47,11 +47,20 @@ export function symlinkSupport() {
  * @param {Array<{ path: string, target: string, type?: "file" | "dir" | "junction" }>} [description.symlinks]
  *   A relative target is resolved from the folder that contains the link, as with any symlink.
  *   A "junction" on Windows needs no privileges. Elsewhere it is made as a folder symlink.
+ * @param {string} [description.fromDir] Existing folder whose content is copied into the root first.
+ *   The other options are applied on top of the copy. A relative path is resolved from the cwd.
  * @returns {{ root: string, base: string, outsideDir: string, cleanup: () => void }}
  *   cleanup() is idempotent. The helper also removes the folder itself if creation fails.
  */
 export function makeFixture(description = {}) {
-  const { files = {}, outside = {}, git = false, gitConfig = {}, symlinks = [] } = validateDescription(description);
+  const {
+    files = {},
+    outside = {},
+    git = false,
+    gitConfig = {},
+    symlinks = [],
+    fromDir,
+  } = validateDescription(description);
 
   if (symlinks.some((link) => !isWindowsJunction(link))) {
     const support = symlinkSupport();
@@ -75,6 +84,7 @@ export function makeFixture(description = {}) {
   try {
     fs.mkdirSync(root);
     fs.mkdirSync(outsideDir);
+    if (fromDir !== undefined) fs.cpSync(path.resolve(fromDir), root, { recursive: true });
     writeFiles(root, files, git);
     writeFiles(outsideDir, outside, false);
     createSymlinks(root, symlinks, git);
@@ -120,7 +130,8 @@ function validateDescription(description) {
   for (const key of Object.keys(description)) {
     if (!KNOWN_OPTIONS.has(key)) throw new TypeError(`Unknown fixture option: "${key}"`);
   }
-  const { git = false, gitConfig = {}, symlinks = [] } = description;
+  const { git = false, gitConfig = {}, symlinks = [], fromDir } = description;
+  if (fromDir !== undefined && typeof fromDir !== "string") throw new TypeError('"fromDir" must be a path');
   if (typeof git !== "boolean") throw new TypeError('"git" must be a boolean');
   if (Object.keys(gitConfig).length > 0 && !git) throw new TypeError('"gitConfig" requires git: true');
   for (const [key, value] of Object.entries(gitConfig)) {

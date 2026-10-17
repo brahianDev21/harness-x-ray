@@ -9,7 +9,8 @@ Status: early development. Only the repository skeleton and the test runner exis
 ## Commands
 
 - `npm test`: runs the test suite with `node:test`. Run it before reporting work as done.
-- `npm run scan` and `npm run check`: not implemented yet.
+- `npm run scan -- <target> [--out <dir>]`: scans a target and writes `measurements.json`. No measures exist yet, so it writes only the skeleton.
+- `npm run check`: not implemented yet.
 
 ## Principles
 

@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "measurements.json",
+  "description": "Output of scripts/scan.mjs. Documentation only: nothing validates against it. This file lists the fields that every scan writes. Measures add their own sections (for example security or context), and each one extends this file. Outside meta, no value holds an absolute path of the machine that ran the scan; paths are relative to the target and use forward slashes.",
+  "type": "object",
+  "required": ["schemaVersion", "meta", "target", "inventory", "warnings"],
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "Layout version of this file."
+    },
+    "meta": {
+      "type": "object",
+      "description": "Values that depend on the machine or on the time. Determinism checks ignore this key.",
+      "required": ["tool", "scannedAt"],
+      "properties": {
+        "tool": {
+          "type": "string",
+          "pattern": "^harness-x-ray@",
+          "description": "Tool name and version from package.json, written as name@version."
+        },
+        "scannedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "UTC time of the scan, in ISO 8601."
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "description": "The scanned folder.",
+      "required": ["name", "git", "fileListSource", "fileCount"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Basename of the target folder."
+        },
+        "git": {
+          "type": "object",
+          "required": ["isRepo", "head"],
+          "properties": {
+            "isRepo": {
+              "type": "boolean",
+              "description": "True when git lists the files of the target folder."
+            },
+            "head": {
+              "type": ["string", "null"],
+              "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+              "description": "Full object name of HEAD, or null when there is no commit."
+            }
+          }
+        },
+        "fileListSource": {
+          "enum": ["git", "walk"],
+          "description": "git when git listed the files; walk when the folder was read from disk."
+        },
+        "fileCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of files in the list."
+        }
+      }
+    },
+    "inventory": {
+      "type": "array",
+      "description": "Harness files. Added by measures; sorted by path.",
+      "items": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "POSIX path relative to the target."
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "description": "Things that were skipped or could not be read. Sorted by path, reason, source and detail; duplicates removed.",
+      "items": {
+        "type": "object",
+        "required": ["source", "path", "reason"],
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "\"fs\" for file reads, \"git\" for the file list, or the id of the measure that reported it."
+          },
+          "path": {
+            "type": "string",
+            "description": "POSIX path relative to the target, or \".\" for the target itself."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Fixed code, such as outside-root, too-large or binary."
+          },
+          "detail": {
+            "type": "string",
+            "description": "Optional fixed code with more context. Never a message from the system."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}
