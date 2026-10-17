@@ -89,12 +89,68 @@
       "note": "Documents PreToolUse hooks that block a tool call with exit code 2 or a deny decision, and says a failing hook lets the action proceed unless onFailure is block."
     },
     {
+      "id": "cc-docs-hooks-events",
+      "title": "Hooks reference: hook events",
+      "url": "https://code.claude.com/docs/en/hooks#hook-events",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Lists the hook events, where PostToolUse runs after a tool call succeeds and cannot stop it, and PreToolUse can block the call."
+    },
+    {
       "id": "cc-docs-mcp",
       "title": "Connect Claude Code to tools via MCP",
       "url": "https://code.claude.com/docs/en/mcp",
       "type": "official-docs",
       "accessed": "2026-10-17",
       "note": "Covers project-scoped servers in .mcp.json, which need approval in interactive sessions, and warns to verify trust in each server and about prompt injection."
+    },
+    {
+      "id": "cc-docs-memory-agents-import",
+      "title": "How Claude remembers your project: sharing AGENTS.md through an import",
+      "url": "https://code.claude.com/docs/en/memory#share-one-file-with-other-coding-tools",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Says a CLAUDE.md can import AGENTS.md with an @AGENTS.md line so both tools read one file, and that the import never makes Claude read AGENTS.md twice."
+    },
+    {
+      "id": "cc-docs-memory-agents-setting",
+      "title": "How Claude remembers your project: choosing which instruction files load",
+      "url": "https://code.claude.com/docs/en/memory#choose-which-instruction-files-load",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Says the setting that changes which instruction files load is read from user, command-line or managed settings and ignored in project and local settings files; the default is to read CLAUDE.md files, or AGENTS.md when no CLAUDE.md exists above the working directory."
+    },
+    {
+      "id": "cc-docs-memory-imports",
+      "title": "How Claude remembers your project: importing files",
+      "url": "https://code.claude.com/docs/en/memory#import-additional-files",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Says @path imports are expanded and loaded at launch with the file that imports them, so they organize a long file without reducing its context cost."
+    },
+    {
+      "id": "cc-docs-memory-layers",
+      "title": "How Claude remembers your project: what loads at session start",
+      "url": "https://code.claude.com/docs/en/memory",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Says a user CLAUDE.md in ~/.claude applies to every project, user-level rules load too, rules without paths load at launch while path-scoped rules load only with matching files, and the first 200 lines or 25 KB of auto memory load at the start of every conversation."
+    },
+    {
+      "id": "cc-docs-memory-loading",
+      "title": "How Claude remembers your project: how CLAUDE.md files load",
+      "url": "https://code.claude.com/docs/en/memory#how-claude-md-files-load",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Says CLAUDE.md and CLAUDE.local.md files from the working directory and every directory above it load at launch, and that files in subdirectories load once Claude reads, writes or edits a file there."
+    },
+    {
+      "id": "cc-docs-memory-maintenance",
+      "title": "How Claude remembers your project: keeping instructions consistent",
+      "url": "https://code.claude.com/docs/en/memory#write-effective-instructions",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Says contradictory instructions may be followed arbitrarily, asks for periodic review of outdated or conflicting files, and describes a prompt audit that flags references to files or commands that do not exist."
     },
     {
       "id": "cc-docs-memory",
