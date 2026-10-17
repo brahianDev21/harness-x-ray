@@ -51,3 +51,25 @@ test("redact: values that are not strings come back unchanged", () => {
   assert.equal(redact(null), null);
   assert.deepEqual(redact(["/tmp/repo"]), ["/tmp/repo"]);
 });
+
+// Token-shaped values, built at run time so that this file holds no secret-shaped text (push protection would block it).
+const GITHUB = ["gh", "p_"].join("") + ["A1b2C3d4E5", "f6G7h8I9j0", "K1l2M3n4O5", "p6Q7r8"].join("");
+const ANTHROPIC = ["sk", "ant", "api03"].join("-") + "-Zx41Qw82Er63Ty74Ui85Op96As07Df18Gh29Jk30Lm41Nb52Vc63";
+
+test("redact: a token inside a longer string is masked, and the text around it is kept", () => {
+  const redact = createRedactor({ root: "/home/dev/repo", home: "/home/dev", platform: "linux" });
+
+  assert.equal(
+    redact(`curl -H "Authorization: Bearer ${GITHUB}" /home/dev/repo/x`),
+    'curl -H "Authorization: Bearer ghp_\u2026Q7r8" <target>/x',
+  );
+  assert.equal(redact(`Bash(echo ${ANTHROPIC})`), "Bash(echo sk-ant-\u2026Vc63)");
+  assert.equal(redact(`--token=${GITHUB}&next=1`), "--token=ghp_\u2026Q7r8&next=1");
+});
+
+test("redact: a key name and text without a token are kept as they are", () => {
+  const redact = createRedactor({ root: "/home/dev/repo", home: "/home/dev", platform: "linux" });
+
+  assert.equal(redact("API_KEY"), "API_KEY", "only token-shaped text is masked, not the name of a key");
+  assert.equal(redact("node tools/risk-based-checks.mjs"), "node tools/risk-based-checks.mjs");
+});

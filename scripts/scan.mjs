@@ -12,10 +12,11 @@ import { claudeConfigMeasure } from "./lib/claude-config.mjs";
 import { destructiveCommandsMeasure } from "./lib/destructive-commands.mjs";
 import { writeStableJson } from "./lib/json-out.mjs";
 import { scan } from "./lib/scanner.mjs";
+import { secretsMeasure } from "./lib/secrets.mjs";
 import { UsageError, checkOutputDir, defaultOutputDir, resolveTarget } from "./lib/target.mjs";
 
 // The measures, in the order they run. Each measure adds its import and one line here.
-const MEASURES = [claudeConfigMeasure, destructiveCommandsMeasure];
+const MEASURES = [claudeConfigMeasure, destructiveCommandsMeasure, secretsMeasure];
 
 const HARNESS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const USAGE = "usage: node scripts/scan.mjs <target> [--out <dir>]";

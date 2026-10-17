@@ -51,7 +51,10 @@ export const claudeConfigMeasure = Object.freeze({ id: MEASURE_ID, collect: coll
  * object is shared: callers must not change it.
  * @param {object} ctx The scan context. Its memory is shared by the measures of one scan.
  * @returns {{ settings: object[], hooks: object[], permissions: object, skills: object[], commands: object[],
- *   subagents: object[], mcpServers: object[], inventory: object[], warnings: object[] }}
+ *   subagents: object[], mcpServers: object[], parsedFiles: { settings: Array<{ path: string, data: object }>,
+ *   mcp: { path: string, data: object } | null }, inventory: object[], warnings: object[] }}
+ *   parsedFiles holds the parsed JSON objects of the settings and of .mcp.json, for measures that read values which the
+ *   output does not copy (secrets). It is never written to the output.
  */
 export function loadClaudeConfig(ctx) {
   if (!ctx.memory.has(MEMORY_KEY)) ctx.memory.set(MEMORY_KEY, parseClaudeConfig(ctx));
@@ -109,7 +112,7 @@ function parseClaudeConfig(ctx) {
   const options = { redact, warn, inventory };
 
   const settings = readSettings(ctx, options);
-  const mcpServers = readMcpServers(ctx, options);
+  const mcp = readMcpServers(ctx, options);
   // A skill is a SKILL.md inside its own folder (docs: skills). A SKILL.md directly in the skills folder is not one.
   const skillFiles = findFiles(ctx, SKILLS_DIR, (name) => name === "SKILL.md").filter((rel) => rel !== `${SKILLS_DIR}/SKILL.md`);
   const skills = readMarkdownFiles(ctx, "skill", skillFiles, options);
@@ -123,7 +126,8 @@ function parseClaudeConfig(ctx) {
     skills,
     commands,
     subagents,
-    mcpServers,
+    mcpServers: mcp.servers,
+    parsedFiles: { settings: settings.objects, mcp: mcp.document },
     inventory,
     warnings,
   };
@@ -138,6 +142,7 @@ function parseClaudeConfig(ctx) {
 function readSettings(ctx, { redact, warn, inventory }) {
   const items = [];
   const hooks = [];
+  const objects = [];
   const lists = { allow: [], ask: [], deny: [], additionalDirectories: [] };
   let defaultMode = null;
   let disableBypassPermissionsMode = null;
@@ -151,6 +156,7 @@ function readSettings(ctx, { redact, warn, inventory }) {
       items.push({ path: rel, parsed: false, envKeys: [], enableAllProjectMcpServers: null, sandbox: emptySandbox() });
       continue;
     }
+    objects.push({ path: rel, data });
     const summary = summarizeSettings(data, rel, { redact, warn });
     items.push(summary.item);
     for (const key of Object.keys(lists)) lists[key].push(...summary[key]);
@@ -172,7 +178,7 @@ function readSettings(ctx, { redact, warn, inventory }) {
     disableBypassPermissionsMode,
     notes: notes.sort(compareText),
   };
-  return { items: items.sort(byPath), hooks, permissions };
+  return { items: items.sort(byPath), hooks, permissions, objects };
 }
 
 // What one parsed settings file says. Unexpected shapes are warnings, and the values that are fine are
@@ -388,16 +394,19 @@ function parseObject(text, rel, warn) {
 // MCP servers (.mcp.json)
 
 // Lists the servers of .mcp.json by name, type and the key names of env and headers. The values, the
-// command, the arguments and the URL are never copied.
+// command, the arguments and the URL are never copied. Returns the servers and the parsed file (null when it
+// is missing or not a JSON object), which the secrets measure reads through loadClaudeConfig.
 function readMcpServers(ctx, { redact, warn, inventory }) {
   const read = ctx.readText(MCP_FILE);
-  if (!read.ok) return [];
+  if (!read.ok) return { servers: [], document: null };
   inventory.push(configInventory(MCP_FILE, "mcp", read));
   const data = parseObject(read.text, MCP_FILE, warn);
-  if (data === null || data.mcpServers === undefined) return [];
+  if (data === null) return { servers: [], document: null };
+  const document = { path: MCP_FILE, data };
+  if (data.mcpServers === undefined) return { servers: [], document };
   if (!isPlainObject(data.mcpServers)) {
     warn(MCP_FILE, "unexpected-shape", "mcpServers");
-    return [];
+    return { servers: [], document };
   }
   const servers = [];
   for (const name of Object.keys(data.mcpServers).sort(compareText)) {
@@ -415,7 +424,7 @@ function readMcpServers(ctx, { redact, warn, inventory }) {
       headerKeys: server.headers === undefined ? [] : keyNames(server.headers, MCP_FILE, "mcpServers.headers", { redact, warn }),
     });
   }
-  return servers;
+  return { servers, document };
 }
 
 // Docs (mcp): an entry without "type" is read as stdio, but an entry with "url" and no "type" is a

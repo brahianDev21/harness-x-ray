@@ -174,8 +174,8 @@
     },
     "security": {
       "type": "object",
-      "description": "Security-relevant configuration. permissions is read as written; destructiveCoverage simulates the rules against the commands of the data file. Nothing is run and nothing is enforced.",
-      "required": ["permissions", "destructiveCoverage"],
+      "description": "Security-relevant configuration. permissions is read as written; destructiveCoverage simulates the rules against the commands of the data file; secrets names secret files and masks literal secrets. Nothing is run and nothing is enforced.",
+      "required": ["permissions", "destructiveCoverage", "secrets"],
       "properties": {
         "permissions": {
           "type": "object",
@@ -302,6 +302,84 @@
               }
             }
           }
+        },
+        "secrets": {
+          "type": "object",
+          "description": "Secret files and literal secrets. Secret files are named only: their content is never read. Every secret value is masked (a prefix, an ellipsis and the last four characters), and no raw value appears in any output.",
+          "required": ["fileListSource", "files", "literals", "readProtection"],
+          "properties": {
+            "fileListSource": {
+              "enum": ["git", "walk"],
+              "description": "git: the listed files are versioned. walk: the listed files are present on disk, versioned or not."
+            },
+            "files": {
+              "type": "array",
+              "description": "Files of the list whose base name is secret-shaped, sorted by path. Named only.",
+              "items": {
+                "type": "object",
+                "required": ["path", "kind", "readDecision"],
+                "properties": {
+                  "path": { "type": "string" },
+                  "kind": {
+                    "enum": ["dotenv", "pem", "key", "pkcs12", "pfx", "ssh-rsa", "ssh-ed25519", "credentials-json"],
+                    "description": "Id of the file-name rule in data/secret-patterns.json."
+                  },
+                  "readDecision": { "$ref": "#/$defs/verdict" }
+                }
+              }
+            },
+            "literals": {
+              "type": "array",
+              "description": "Secrets found in harness files only, sorted by file, line, kind and location.",
+              "items": {
+                "type": "object",
+                "required": ["file", "line", "kind", "masked", "location"],
+                "properties": {
+                  "file": { "type": "string" },
+                  "line": {
+                    "type": ["integer", "null"],
+                    "minimum": 1,
+                    "description": "1-based. For JSON files, the first line where the value occurs; null when it does not occur."
+                  },
+                  "kind": { "type": "string", "description": "Id of the content rule in data/secret-patterns.json, or generic-assignment." },
+                  "masked": { "type": "string", "description": "The value as mask() shows it, for example sk-ant-…3f9a." },
+                  "location": {
+                    "type": "string",
+                    "description": "text (memory, rules, skills, commands, subagents), env.KEY (settings or a server), mcpServers.NAME.headers.KEY, mcpServers.NAME.env.KEY, or mcpServers.NAME.args[n]."
+                  }
+                }
+              }
+            },
+            "readProtection": {
+              "type": "object",
+              "required": ["envAtRoot", "preToolUseReadHooks"],
+              "properties": {
+                "envAtRoot": {
+                  "$ref": "#/$defs/verdict",
+                  "description": "What the permission rules decide for a Read of .env at the root of the project."
+                },
+                "preToolUseReadHooks": {
+                  "type": "array",
+                  "description": "Each PreToolUse hook whose matcher covers Read, in the order of claudeConfig.hooks.",
+                  "items": {
+                    "type": "object",
+                    "required": ["source", "matcher", "if", "script", "failsOpen", "runsForEnv"],
+                    "properties": {
+                      "source": { "type": "string" },
+                      "matcher": { "type": ["string", "null"] },
+                      "if": { "type": ["string", "null"] },
+                      "script": { "type": ["object", "null"] },
+                      "failsOpen": { "type": "boolean" },
+                      "runsForEnv": {
+                        "enum": ["runs", "none", "undeterminable"],
+                        "description": "Whether the hook runs for a Read of .env at the root."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -405,6 +483,17 @@
     }
   },
   "$defs": {
+    "verdict": {
+      "type": "object",
+      "description": "What the permission rules decide for one Read (docs: permissions). rule and source are null when no rule decides.",
+      "required": ["decision", "rule", "source", "reason"],
+      "properties": {
+        "decision": { "enum": ["deny", "ask", "allow", "default", "undeterminable"] },
+        "rule": { "type": ["string", "null"] },
+        "source": { "type": ["string", "null"] },
+        "reason": { "type": "string", "description": "Fixed code from permissions.mjs." }
+      }
+    },
     "markdownItem": {
       "type": "object",
       "description": "A skill, command or subagent. loadMode always: its description is in the budget; not-loaded: disable-model-invocation, or a subagent without a name; null: the frontmatter could not be read.",

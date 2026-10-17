@@ -11,8 +11,11 @@
 
 import fs from "node:fs";
 import { loadClaudeConfig } from "./claude-config.mjs";
+import { UNDETERMINABLE, coveredTools, hookRunState } from "./hook-matcher.mjs";
 import { isPlainObject } from "./json-out.mjs";
-import { decide, evaluate } from "./permissions.mjs";
+import { evaluate } from "./permissions.mjs";
+
+export { hookFilterState } from "./hook-matcher.mjs";
 
 export const MEASURE_ID = "destructive-commands";
 
@@ -23,9 +26,6 @@ const SHELLS = new Set(["bash", "powershell", "cmd"]);
 const KEBAB_CASE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const REQUIRED_FIELDS = ["id", "shell", "tool", "command", "category", "insideProject", "criticalPath", "builtInProtection"];
 const OPTIONAL_FIELDS = ["parts"];
-const UNDETERMINABLE = "undeterminable";
-// A hook matcher made only of these characters is an exact tool name or a list of exact names (docs: hooks).
-const EXACT_MATCHER = /^[A-Za-z0-9_ ,|-]+$/;
 // The effect of a project defaultMode that the project file applies (see claude-config).
 const APPLIED_EFFECT = "applies";
 // Main-conversation modes that a subagent runs in, whatever its own permissionMode says (docs: sub-agents).
@@ -107,40 +107,12 @@ function isNonBlank(value) {
 }
 
 /**
- * The shell tools (Bash, PowerShell) that a PreToolUse matcher covers (docs: hooks). "*", an empty matcher and an omitted
- * matcher cover both. A matcher made only of letters, digits, "_", "-", spaces, "," and "|" is a list of exact tool names.
- * Any other matcher is an unanchored JavaScript regular expression, and an invalid one is undeterminable.
+ * The shell tools (Bash, PowerShell) that a PreToolUse matcher covers (docs: hooks). See coveredTools in hook-matcher.mjs.
  * @param {string | null} matcher
  * @returns {string[] | "undeterminable"}
  */
 export function toolsCoveredBy(matcher) {
-  if (matcher === null || matcher === "" || matcher === "*") return [...SHELL_TOOLS];
-  if (EXACT_MATCHER.test(matcher)) {
-    const names = new Set(matcher.split(/[|,]/).map((name) => name.trim()));
-    return SHELL_TOOLS.filter((tool) => names.has(tool));
-  }
-  let pattern;
-  try {
-    pattern = new RegExp(matcher);
-  } catch {
-    return UNDETERMINABLE;
-  }
-  return SHELL_TOOLS.filter((tool) => pattern.test(tool));
-}
-
-/**
- * Whether a hook's filter (its if field, one permission rule) lets the hook run for a call. The rule is evaluated as a
- * single deny rule: a match runs the hook, no match does not, and a rule that cannot be settled is undeterminable.
- * A null filter lets every call through.
- * @param {string | null} rule
- * @param {{ tool: string, command: string, parts?: string[] }} call
- * @returns {"runs" | "none" | "undeterminable"}
- */
-export function hookFilterState(rule, call) {
-  if (rule === null) return "runs";
-  const decided = decide({ allow: [], ask: [], deny: [rule] }, call);
-  if (decided.decision === "deny") return "runs";
-  return decided.decision === "undeterminable" ? UNDETERMINABLE : "none";
+  return coveredTools(matcher, SHELL_TOOLS);
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -216,15 +188,6 @@ function hookStateOf(hooks, call) {
   const states = hooks.map(({ hook, tools }) => hookRunState(hook, tools, call));
   if (states.includes("runs")) return "runs";
   return states.includes(UNDETERMINABLE) ? UNDETERMINABLE : "none";
-}
-
-// One hook for one call: its matcher must cover the tool, and then its filter must let the call through.
-function hookRunState(hook, tools, call) {
-  const covered = tools === UNDETERMINABLE ? UNDETERMINABLE : tools.includes(call.tool);
-  if (covered === false) return "none";
-  const filter = hookFilterState(hook.if, call);
-  if (filter === "none") return "none";
-  return covered === true && filter === "runs" ? "runs" : UNDETERMINABLE;
 }
 
 // The subagents that have a shell tool and a permissionMode, with the outcome of each command inside them. Claude Code
