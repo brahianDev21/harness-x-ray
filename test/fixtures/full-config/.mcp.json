@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "docs-search": {
+      "type": "http",
+      "url": "https://docs.example.invalid/mcp",
+      "headers": {
+        "Authorization": "Bearer fake-header-value-000"
+      }
+    },
+    "local-db": {
+      "command": "node",
+      "args": ["./tools/db-server.mjs"],
+      "env": {
+        "DB_PASSWORD": "fake-password-value-111"
+      }
+    }
+  }
+}

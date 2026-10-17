@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": ["Bash(npm test)", "Read(./src/**)"],
+    "ask": ["Bash(git push *)"],
+    "deny": ["Read(./.env)"],
+    "defaultMode": "bypassPermissions",
+    "additionalDirectories": ["../shared-docs"],
+    "disableBypassPermissionsMode": "disable"
+  },
+  "env": {
+    "EXAMPLE_API_KEY": "fake-api-key-value-999",
+    "LOG_LEVEL": "debug"
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true
+  },
+  "enableAllProjectMcpServers": false,
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node .claude/hooks/session-context.mjs", "timeout": 10 }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node .claude/hooks/guard-bash.mjs", "onFailure": "block" },
+          { "type": "command", "command": "node scripts/missing-check.mjs" }
+        ]
+      }
+    ]
+  }
+}

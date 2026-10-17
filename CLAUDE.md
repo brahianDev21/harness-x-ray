@@ -4,12 +4,12 @@
 
 Harness X-Ray: a Node.js (ESM) tool that statically audits the harness of another repository (its CLAUDE.md, permissions, hooks, skills and tools) and reports findings with their sources. It is built with Claude Code and has no npm dependencies.
 
-Status: early development. Only the repository skeleton and the test runner exist so far.
+Status: early development. The scan core and the Claude Code configuration measure exist; the other measures are not written yet.
 
 ## Commands
 
 - `npm test`: runs the test suite with `node:test`. Run it before reporting work as done.
-- `npm run scan -- <target> [--out <dir>]`: scans a target and writes `measurements.json`. No measures exist yet, so it writes only the skeleton.
+- `npm run scan -- <target> [--out <dir>]`: scans a target and writes `measurements.json`. So far the only measure is the Claude Code configuration (settings, hooks, skills, commands, subagents, MCP).
 - `npm run check`: not implemented yet.
 
 ## Principles

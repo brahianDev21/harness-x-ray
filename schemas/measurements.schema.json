@@ -3,7 +3,7 @@
   "title": "measurements.json",
   "description": "Output of scripts/scan.mjs. Documentation only: nothing validates against it. This file lists the fields that every scan writes. Measures add their own sections (for example security or context), and each one extends this file. Outside meta, no value holds an absolute path of the machine that ran the scan; paths are relative to the target and use forward slashes.",
   "type": "object",
-  "required": ["schemaVersion", "meta", "target", "inventory", "warnings"],
+  "required": ["claudeConfig", "context", "inventory", "meta", "schemaVersion", "security", "target", "warnings"],
   "properties": {
     "schemaVersion": {
       "const": 1,
@@ -100,6 +100,231 @@
           }
         },
         "additionalProperties": false
+      }
+    },
+    "context": {
+      "type": "object",
+      "description": "Context that Claude Code loads at the start of a session. Measures add items to the shared lists; the core sets the total and the method.",
+      "required": ["alwaysLoaded"],
+      "properties": {
+        "alwaysLoaded": {
+          "type": "object",
+          "required": ["estTokensTotal", "estMethod", "byComponent", "unknownStatic"],
+          "properties": {
+            "estTokensTotal": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Sum of the estTokens of byComponent. An estimate, labelled with estMethod."
+            },
+            "estMethod": {
+              "const": "chars/4",
+              "description": "Estimation method. The only one; reports always show it next to the estimate."
+            },
+            "byComponent": {
+              "type": "array",
+              "description": "One item per component of the always-loaded budget, sorted by component. Measures add their components here; each component appears once.",
+              "items": {
+                "type": "object",
+                "required": ["component", "estTokens", "items"],
+                "properties": {
+                  "component": {
+                    "type": "string",
+                    "description": "Fixed name: skills, commands, subagents, or memory (added by a later measure)."
+                  },
+                  "estTokens": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "items": {
+                    "type": "array",
+                    "description": "Files that make up the component, sorted by path.",
+                    "items": {
+                      "type": "object",
+                      "required": ["path", "estTokens"],
+                      "properties": {
+                        "path": { "type": "string" },
+                        "estTokens": { "type": "integer", "minimum": 0 }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "unknownStatic": {
+              "type": "array",
+              "description": "Items that enter the context but whose size cannot be known without running them, sorted. Not counted in estTokensTotal.",
+              "items": {
+                "type": "object",
+                "required": ["kind", "source"],
+                "properties": {
+                  "kind": {
+                    "enum": ["mcp-server", "hook-output"],
+                    "description": "mcp-server: a server of .mcp.json; hook-output: a hook whose stdout enters the context."
+                  },
+                  "source": { "type": "string", "description": "The file that declares the item." },
+                  "name": { "type": "string", "description": "MCP server name (mcp-server)." },
+                  "event": { "type": "string", "description": "Hook event (hook-output)." },
+                  "matcher": { "type": ["string", "null"], "description": "Hook matcher (hook-output), or null." }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "description": "Security-relevant configuration. Reading only: nothing here is simulated or enforced.",
+      "required": ["permissions"],
+      "properties": {
+        "permissions": {
+          "type": "object",
+          "description": "Permission rules of the project settings files (shared and local). Lists are merged across both files and sorted. Values are redacted (no absolute path of this machine).",
+          "required": ["allow", "ask", "deny", "additionalDirectories", "defaultMode", "disableBypassPermissionsMode", "notes"],
+          "properties": {
+            "allow": { "type": "array", "items": { "type": "object", "required": ["rule", "source"] } },
+            "ask": { "type": "array", "items": { "type": "object", "required": ["rule", "source"] } },
+            "deny": { "type": "array", "items": { "type": "object", "required": ["rule", "source"] } },
+            "additionalDirectories": {
+              "type": "array",
+              "items": { "type": "object", "required": ["path", "source"] }
+            },
+            "defaultMode": {
+              "type": ["object", "null"],
+              "description": "The defaultMode of the file with the higher precedence (local over shared), or null.",
+              "required": ["value", "source", "effect"],
+              "properties": {
+                "effect": {
+                  "enum": ["ignored-from-project", "applies", "unknown-value"],
+                  "description": "auto and bypassPermissions are ignored when a project file sets them; default, acceptEdits, plan and dontAsk apply."
+                }
+              }
+            },
+            "disableBypassPermissionsMode": {
+              "type": ["object", "null"],
+              "description": "The value from the file with the higher precedence, or null. Docs: it works from any settings file.",
+              "required": ["value", "source"]
+            },
+            "notes": {
+              "type": "array",
+              "description": "Fixed codes, sorted: allow-requires-folder-trust, additional-directories-require-folder-trust.",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "claudeConfig": {
+      "type": "object",
+      "description": "The Claude Code configuration of the target, read but never run. Every array is sorted. Strings from the target are redacted; env and header values are never copied.",
+      "required": ["settings", "hooks", "skills", "commands", "subagents", "mcpServers"],
+      "properties": {
+        "settings": {
+          "type": "array",
+          "description": "One item per settings file present.",
+          "items": {
+            "type": "object",
+            "required": ["path", "parsed", "envKeys", "enableAllProjectMcpServers", "sandbox"],
+            "properties": {
+              "path": { "type": "string" },
+              "parsed": { "type": "boolean", "description": "False when the file is not a JSON object." },
+              "envKeys": { "type": "array", "items": { "type": "string" }, "description": "Names of env keys only." },
+              "enableAllProjectMcpServers": { "type": ["boolean", "null"] },
+              "sandbox": {
+                "type": "object",
+                "required": ["present", "enabled", "keys"],
+                "properties": {
+                  "present": { "type": "boolean" },
+                  "enabled": { "type": ["boolean", "null"] },
+                  "keys": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "hooks": {
+          "type": "array",
+          "description": "One item per hook handler. The command is read, never run.",
+          "items": {
+            "type": "object",
+            "required": ["source", "event", "matcher", "type", "command", "timeout", "onFailure", "script", "injectsContext", "failsOpen"],
+            "properties": {
+              "source": { "type": "string" },
+              "event": { "type": "string" },
+              "matcher": { "type": ["string", "null"] },
+              "type": { "type": "string" },
+              "command": { "type": ["string", "null"], "description": "Command hooks only." },
+              "timeout": { "type": ["number", "null"] },
+              "onFailure": { "type": ["string", "null"] },
+              "script": {
+                "type": ["object", "null"],
+                "description": "The script the command runs. Checked for existence only when it lies inside the project.",
+                "required": ["path", "external", "exists"],
+                "properties": {
+                  "path": { "type": "string" },
+                  "external": { "type": "boolean" },
+                  "exists": { "type": ["boolean", "null"], "description": "Null when external (not checked)." }
+                }
+              },
+              "injectsContext": { "type": "boolean", "description": "True for SessionStart, UserPromptSubmit, UserPromptExpansion and PostModelSwitch." },
+              "failsOpen": { "type": "boolean", "description": "True unless onFailure is block." }
+            }
+          }
+        },
+        "skills": {
+          "type": "array",
+          "description": "One item per .claude/skills/**/SKILL.md file.",
+          "items": { "$ref": "#/$defs/markdownItem" }
+        },
+        "commands": {
+          "type": "array",
+          "description": "One item per .claude/commands/**/*.md file.",
+          "items": { "$ref": "#/$defs/markdownItem" }
+        },
+        "subagents": {
+          "type": "array",
+          "description": "One item per .claude/agents/**/*.md file, with tools and permissionMode as written.",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/markdownItem" }],
+            "properties": {
+              "tools": { "type": ["string", "array", "null"] },
+              "permissionMode": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "mcpServers": {
+          "type": "array",
+          "description": "One item per server of .mcp.json. Keys of env and headers are listed by name only.",
+          "items": {
+            "type": "object",
+            "required": ["source", "name", "type", "loadMode", "envKeys", "headerKeys"],
+            "properties": {
+              "source": { "type": "string" },
+              "name": { "type": "string" },
+              "type": { "type": ["string", "null"] },
+              "loadMode": { "const": "unknown-static" },
+              "envKeys": { "type": "array", "items": { "type": "string" } },
+              "headerKeys": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "markdownItem": {
+      "type": "object",
+      "description": "A skill, command or subagent. loadMode always: its description is in the budget; not-loaded: disable-model-invocation, or a subagent without a name; null: the frontmatter could not be read.",
+      "required": ["path", "name", "descriptionChars", "overLimit", "disableModelInvocation", "estTokens", "loadMode", "frontmatterError"],
+      "properties": {
+        "path": { "type": "string" },
+        "name": { "type": ["string", "null"] },
+        "descriptionChars": { "type": ["integer", "null"], "minimum": 0, "description": "Length of description and when_to_use together." },
+        "overLimit": { "type": ["boolean", "null"], "description": "True when descriptionChars is above 1,536." },
+        "disableModelInvocation": { "type": ["boolean", "null"] },
+        "estTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "loadMode": { "enum": ["always", "not-loaded", null] },
+        "frontmatterError": { "enum": ["broken", "unsupported-value", null] }
       }
     }
   }

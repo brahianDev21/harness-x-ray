@@ -1,0 +1,8 @@
+---
+name: long-description
+description: This skill covers one long listing case, and it puts many facts into a single description so that the scanner has to flag it. This skill covers one long listing case, and it puts many facts into a single description so that the scanner has to flag it. This skill covers one long listing case, and it puts many facts into a single description so that the scanner has to flag it. This skill covers one long listing case, and it puts many facts into a single description so that the scanner has to flag it. This skill covers one long listing case, and it puts many facts into a single description so that the scanner has to flag it. This skill covers one long listing case, and it puts many facts into a single description so that the scanner has to flag it. This skill covers one long listing case, and it puts many facts into a single description so that the scanner has to flag it. This skill covers one long listing case, and it puts many facts into a single description so that the scanner has to flag it. This skill covers one long listing case, and it puts many facts into a single description so that the scanner has to flag it. This skill covers one long listing case, and it puts many facts into a single description so that the scanner has to flag it. This skill covers one long listing case, and it puts many facts into a single description so that the scanner has to flag it. This skill covers one long listing case, and it puts many facts into a single description so that the scanner has to flag it. This skill covers one long listing case, and it puts many facts into a single description so that the scanner has to flag it.
+---
+
+# Long description
+
+The description above is longer than the listing allows.

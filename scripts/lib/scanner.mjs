@@ -3,22 +3,33 @@
 // result goes.
 //
 // A measure is { id, collect(ctx) }. collect returns a plain object with the sections it owns. Plain
-// objects merge recursively, so two measures can share a branch of the tree. The lists "inventory"
-// and "warnings" are shared: every measure may add items to them. Any other value that two measures
-// set at the same path is a programming error, and the scan fails.
+// objects merge recursively, so two measures can share a branch of the tree. The lists in SHARED_LISTS
+// are shared: every measure may add items to them. Any other value that two measures set at the same
+// path is a programming error, and the scan fails.
+//
+// The core always writes context.alwaysLoaded: the components of the always-loaded budget and the
+// items whose size is unknown. It sorts them, and it sets the total and the method. A measure never
+// sets the total.
 
 import fs from "node:fs";
 import path from "node:path";
 import { DEFAULT_MAX_BYTES, createTargetFs } from "./safe-fs.mjs";
 import { listFiles } from "./safe-git.mjs";
 import { isPlainObject, toStableJson } from "./json-out.mjs";
+import { ESTIMATE_METHOD } from "./tokens.mjs";
 
 /** Layout version of measurements.json. Change it only when an existing field changes meaning. */
 export const SCHEMA_VERSION = 1;
 
 // Warning sources that the core uses for the file system and for git. No measure may use them.
 const RESERVED_SOURCES = new Set(["fs", "git"]);
-const SHARED_LISTS = new Set(["inventory", "warnings"]);
+// The lists that measures may add to, as JSON pointers.
+const SHARED_LISTS = new Set([
+  "/inventory",
+  "/warnings",
+  "/context/alwaysLoaded/byComponent",
+  "/context/alwaysLoaded/unknownStatic",
+]);
 
 /**
  * Scans one target.
@@ -55,6 +66,9 @@ export async function scan({ root, measures = [], now = new Date() }) {
     },
     inventory: [],
     warnings: [],
+    context: {
+      alwaysLoaded: { estTokensTotal: 0, estMethod: ESTIMATE_METHOD, byComponent: [], unknownStatic: [] },
+    },
   };
 
   const owners = new Map();
@@ -64,6 +78,7 @@ export async function scan({ root, measures = [], now = new Date() }) {
   }
 
   result.inventory.sort(compareInventory);
+  finalizeAlwaysLoaded(result.context.alwaysLoaded);
   result.warnings = finalizeWarnings([
     ...result.warnings,
     ...listing.warnings.map((item) => toWarning(item, "git")),
@@ -110,8 +125,8 @@ function mergeSection(target, section, owner, pointer, owners) {
     const value = section[key];
     if (value === undefined) continue;
     const childPointer = `${pointer}/${key}`;
-    if (pointer === "" && SHARED_LISTS.has(key)) {
-      appendShared(target[key], key, value, owner);
+    if (SHARED_LISTS.has(childPointer)) {
+      appendShared(target[key], childPointer, value, owner);
     } else if (!Object.hasOwn(target, key)) {
       owners.set(childPointer, owner);
       if (isPlainObject(value)) {
@@ -131,12 +146,38 @@ function mergeSection(target, section, owner, pointer, owners) {
   }
 }
 
-function appendShared(list, key, value, owner) {
-  if (!Array.isArray(value)) throw new TypeError(`Measure "${owner}" must set "${key}" to an array`);
+function appendShared(list, pointer, value, owner) {
+  if (!Array.isArray(value)) throw new TypeError(`Measure "${owner}" must set ${pointer} to an array`);
   for (const item of value) {
-    if (!isPlainObject(item)) throw new TypeError(`Measure "${owner}" added a "${key}" item that is not an object`);
-    list.push(key === "warnings" ? toWarning(item, owner) : item);
+    if (!isPlainObject(item)) throw new TypeError(`Measure "${owner}" added an item to ${pointer} that is not an object`);
+    if (pointer === "/warnings") list.push(toWarning(item, owner));
+    else if (pointer === "/context/alwaysLoaded/byComponent") list.push(checkComponent(item, list, owner));
+    else list.push(item);
   }
+}
+
+// A component of the always-loaded budget. Two contributions with the same component are an error,
+// so that each component is counted once.
+function checkComponent(item, list, owner) {
+  const { component, estTokens, items } = item;
+  if (typeof component !== "string" || component === "") {
+    throw new TypeError(`Measure "${owner}" added a budget component without a name`);
+  }
+  if (!Number.isSafeInteger(estTokens) || estTokens < 0) {
+    throw new TypeError(`Measure "${owner}" gave component "${component}" an estTokens that is not a non-negative integer`);
+  }
+  if (!Array.isArray(items)) throw new TypeError(`Measure "${owner}" gave component "${component}" items that are not a list`);
+  if (list.some((existing) => existing.component === component)) {
+    throw new Error(`Measure "${owner}" adds component "${component}", which another contribution already adds`);
+  }
+  return item;
+}
+
+// Sorts the budget lists and sets the total as the sum of the components.
+function finalizeAlwaysLoaded(alwaysLoaded) {
+  alwaysLoaded.byComponent.sort((a, b) => compareText(a.component, b.component));
+  alwaysLoaded.unknownStatic.sort((a, b) => compareText(toStableJson(a), toStableJson(b)));
+  alwaysLoaded.estTokensTotal = alwaysLoaded.byComponent.reduce((sum, item) => sum + item.estTokens, 0);
 }
 
 function defineOwn(object, key, value) {

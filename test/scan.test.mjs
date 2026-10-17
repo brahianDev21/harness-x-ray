@@ -18,7 +18,9 @@ const SCAN_SCRIPT = path.join(HARNESS_ROOT, "scripts", "scan.mjs");
 const EMPTY_FIXTURE = path.join(TEST_DIR, "fixtures", "empty");
 const SCHEMA_FILE = path.join(HARNESS_ROOT, "schemas", "measurements.schema.json");
 const PACKAGE_FILE = path.join(HARNESS_ROOT, "package.json");
-const SKELETON_KEYS = ["inventory", "meta", "schemaVersion", "target", "warnings"];
+// Top-level keys of every scan with the registered measures. The core writes the first five, and the
+// claude-config measure always writes claudeConfig and security.
+const TOP_LEVEL_KEYS = ["claudeConfig", "context", "inventory", "meta", "schemaVersion", "security", "target", "warnings"];
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const FIXED_NOW = new Date("2026-10-17T12:00:00.000Z");
 
@@ -82,7 +84,7 @@ test("scan: a copy of the empty fixture exits 0 with valid JSON and a short summ
   assert.deepEqual(fs.readdirSync(out), ["measurements.json"], "only measurements.json is written");
 
   const data = JSON.parse(fs.readFileSync(path.join(out, "measurements.json"), "utf8"));
-  assert.deepEqual(Object.keys(data).sort(), SKELETON_KEYS);
+  assert.deepEqual(Object.keys(data).sort(), TOP_LEVEL_KEYS);
   assert.equal(data.schemaVersion, 1);
   const { version } = JSON.parse(fs.readFileSync(PACKAGE_FILE, "utf8"));
   assert.equal(data.meta.tool, `harness-x-ray@${version}`);
@@ -90,6 +92,16 @@ test("scan: a copy of the empty fixture exits 0 with valid JSON and a short summ
   assert.equal(data.target.name, "repo");
   assert.equal(data.target.fileCount, 1, "the .gitkeep file is the only file");
   assert.deepEqual(data.inventory, []);
+  assert.deepEqual(data.context.alwaysLoaded, {
+    estTokensTotal: 0,
+    estMethod: "chars/4",
+    byComponent: [
+      { component: "commands", estTokens: 0, items: [] },
+      { component: "skills", estTokens: 0, items: [] },
+      { component: "subagents", estTokens: 0, items: [] },
+    ],
+    unknownStatic: [],
+  });
 });
 
 test("scan: two runs on the same copy give the same JSON, except meta", async (t) => {
@@ -263,6 +275,66 @@ test("scan: measures merge their sections deeply and share the inventory and war
   assert.equal(toStableJson(reversed), toStableJson(result), "the order of the measures does not change the output");
 });
 
+test("scan: the budget lists are shared, sorted, and the total is the sum of the components", async (t) => {
+  const fixture = gitFixture(t);
+  const measures = [
+    {
+      id: "one",
+      collect: () => ({
+        context: {
+          alwaysLoaded: {
+            byComponent: [{ component: "skills", estTokens: 7, items: [{ path: "b.md", estTokens: 7 }] }],
+            unknownStatic: [{ kind: "mcp-server", source: ".mcp.json", name: "z" }],
+          },
+        },
+      }),
+    },
+    {
+      id: "two",
+      collect: () => ({
+        context: {
+          alwaysLoaded: {
+            byComponent: [{ component: "commands", estTokens: 3, items: [] }],
+            unknownStatic: [{ kind: "mcp-server", source: ".mcp.json", name: "a" }],
+          },
+        },
+      }),
+    },
+  ];
+
+  const result = await scan({ root: fixture.root, measures, now: FIXED_NOW });
+
+  assert.equal(result.context.alwaysLoaded.estTokensTotal, 10);
+  assert.deepEqual(
+    result.context.alwaysLoaded.byComponent.map((item) => item.component),
+    ["commands", "skills"],
+  );
+  assert.deepEqual(
+    result.context.alwaysLoaded.unknownStatic.map((item) => item.name),
+    ["a", "z"],
+  );
+});
+
+test("scan: two budget contributions for one component, or a measure that sets the total, fail", async (t) => {
+  const fixture = gitFixture(t);
+  const component = (name) => ({ component: name, estTokens: 1, items: [] });
+  const twice = [
+    { id: "one", collect: () => ({ context: { alwaysLoaded: { byComponent: [component("skills")] } } }) },
+    { id: "two", collect: () => ({ context: { alwaysLoaded: { byComponent: [component("skills")] } } }) },
+  ];
+  const sameMeasure = [
+    {
+      id: "solo",
+      collect: () => ({ context: { alwaysLoaded: { byComponent: [component("skills"), component("skills")] } } }),
+    },
+  ];
+  const setsTotal = [{ id: "total", collect: () => ({ context: { alwaysLoaded: { estTokensTotal: 99 } } }) }];
+
+  await assert.rejects(scan({ root: fixture.root, measures: twice, now: FIXED_NOW }), /adds component "skills"/);
+  await assert.rejects(scan({ root: fixture.root, measures: sameMeasure, now: FIXED_NOW }), /adds component "skills"/);
+  await assert.rejects(scan({ root: fixture.root, measures: setsTotal, now: FIXED_NOW }), /collides with the core at \/context\/alwaysLoaded\/estTokensTotal/);
+});
+
 test("scan: two measures that set the same value at one path make the scan fail", async (t) => {
   const fixture = gitFixture(t);
   const measures = [
@@ -391,9 +463,9 @@ test("containment ignores letter case on Windows", { skip: process.platform === 
   assert.equal(isInside("C:\\Repo", "D:\\Repo"), false);
 });
 
-test("the measurements schema documents the skeleton keys", () => {
+test("the measurements schema documents every top-level key", () => {
   const schema = JSON.parse(fs.readFileSync(SCHEMA_FILE, "utf8"));
   assert.equal(schema.$schema, "https://json-schema.org/draft/2020-12/schema");
-  assert.deepEqual([...schema.required].sort(), SKELETON_KEYS);
-  assert.deepEqual(Object.keys(schema.properties).sort(), SKELETON_KEYS);
+  assert.deepEqual([...schema.required].sort(), TOP_LEVEL_KEYS);
+  assert.deepEqual(Object.keys(schema.properties).sort(), TOP_LEVEL_KEYS);
 });
