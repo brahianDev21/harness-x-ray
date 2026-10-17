@@ -3,7 +3,7 @@
   "title": "measurements.json",
   "description": "Output of scripts/scan.mjs. Documentation only: nothing validates against it. This file lists the fields that every scan writes. Measures add their own sections (for example security or context), and each one extends this file. Outside meta, no value holds an absolute path of the machine that ran the scan; paths are relative to the target and use forward slashes.",
   "type": "object",
-  "required": ["claudeConfig", "context", "instructions", "inventory", "meta", "schemaVersion", "security", "target", "warnings"],
+  "required": ["claudeConfig", "context", "instructions", "inventory", "meta", "schemaVersion", "security", "structure", "target", "verification", "warnings"],
   "properties": {
     "schemaVersion": {
       "const": 1,
@@ -258,8 +258,8 @@
     },
     "instructions": {
       "type": "object",
-      "description": "What the memory files mention, checked against the target. Both lists are sorted by file, line and text; file is relative to the target. Texts are redacted (no absolute path of this machine).",
-      "required": ["brokenRefs", "externalRefs"],
+      "description": "What the memory files mention, checked against the target (brokenRefs, externalRefs), and the package manager that the target declares (packageManager). The lists are sorted by file, line and text; file is relative to the target. Texts are redacted (no absolute path of this machine).",
+      "required": ["brokenRefs", "externalRefs", "packageManager"],
       "properties": {
         "brokenRefs": {
           "type": "array",
@@ -292,6 +292,41 @@
               "text": { "type": "string" },
               "kind": { "enum": ["path", "link"] }
             }
+          }
+        },
+        "packageManager": {
+          "type": "object",
+          "description": "The package manager that the target declares, compared with its lockfiles and with the managers that the memory text names. Only file names are read; no lockfile is opened.",
+          "required": ["field", "fieldManager", "lockfiles", "mentions", "conflict"],
+          "properties": {
+            "field": { "type": ["string", "null"], "description": "The packageManager string of the root package.json, redacted; null when there is none." },
+            "fieldManager": { "enum": ["npm", "pnpm", "yarn", "bun", null], "description": "The name before @ in field, when it is one of the four managers." },
+            "lockfiles": {
+              "type": "array",
+              "description": "Lockfiles at the root, by name, sorted by path.",
+              "items": {
+                "type": "object",
+                "required": ["path", "manager"],
+                "properties": {
+                  "path": { "type": "string" },
+                  "manager": { "enum": ["npm", "pnpm", "yarn", "bun"] }
+                }
+              }
+            },
+            "mentions": {
+              "type": "array",
+              "description": "Whole-word names of a manager in the memory text, in prose and code: one entry per manager, file and line. Sorted by file, line and manager.",
+              "items": {
+                "type": "object",
+                "required": ["manager", "file", "line"],
+                "properties": {
+                  "manager": { "enum": ["npm", "pnpm", "yarn", "bun"] },
+                  "file": { "type": "string" },
+                  "line": { "type": "integer", "minimum": 1, "description": "1-based line in the memory file." }
+                }
+              }
+            },
+            "conflict": { "type": "boolean", "description": "True when the field, the lockfiles and the mentions name more than one manager in total." }
           }
         }
       }
@@ -429,6 +464,63 @@
               "loadMode": { "const": "unknown-static" },
               "envKeys": { "type": "array", "items": { "type": "string" } },
               "headerKeys": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "structure": {
+      "type": "object",
+      "description": "The structure of the target. So far, only the tools that enforce rules. Only file names are read; no file is opened.",
+      "required": ["enforcementTools"],
+      "properties": {
+        "enforcementTools": {
+          "type": "array",
+          "description": "Config files of tools that enforce rules: files at the root found by name, the workflows directly inside .github/workflows, and one entry for the .husky folder when it has files. Sorted by tool, then path.",
+          "items": {
+            "type": "object",
+            "required": ["tool", "path"],
+            "properties": {
+              "tool": { "enum": ["biome", "dependency-cruiser", "editorconfig", "eslint", "github-actions", "gitleaks", "husky", "jscpd", "lint-staged", "prettier", "secretlint", "typescript"] },
+              "path": { "type": "string", "description": "Relative to the target, with forward slashes. The husky entry is the folder .husky." }
+            }
+          }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "description": "How the target checks its work. The scripts come from the root package.json, read as data; the command text is not output.",
+      "required": ["commands", "mentioned"],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "description": "Scripts of the root package.json that run a check, sorted by name. A script with no category is not listed.",
+          "items": {
+            "type": "object",
+            "required": ["name", "categories"],
+            "properties": {
+              "name": { "type": "string", "description": "The script name." },
+              "categories": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": { "enum": ["build", "format", "lint", "test", "typecheck", "verify"] },
+                "description": "Sorted. Set by the script name and by the command text."
+              }
+            }
+          }
+        },
+        "mentioned": {
+          "type": "array",
+          "description": "Calls that the memory files make to a listed script, in inline code and fenced blocks. Sorted by file, line and script.",
+          "items": {
+            "type": "object",
+            "required": ["script", "file", "line", "text"],
+            "properties": {
+              "script": { "type": "string" },
+              "file": { "type": "string" },
+              "line": { "type": "integer", "minimum": 1, "description": "1-based line in the memory file." },
+              "text": { "type": "string", "description": "The call as written, from the manager on." }
             }
           }
         }

@@ -16,6 +16,8 @@
 
 import path from "node:path";
 import { codeSpans, markdownLines, maskCodeSpans, MASK } from "./markdown.mjs";
+import { packageScripts, readPackageJson } from "./package-json.mjs";
+import { scriptCallsInLine } from "./script-calls.mjs";
 import { createRedactor } from "./redact.mjs";
 
 export const MEASURE_ID = "references";
@@ -40,23 +42,6 @@ const PLACEHOLDER = /[<>{}$]|\.\.\.|…|path\/to\//;
 const LINE_SUFFIX = /:\d+(?::\d+)?$/;
 // A Markdown link or image: [text](target) or [text](target "title"). The target is group 1.
 const LINK = /\[[^\]]*\]\(\s*(<[^>]*>|[^()\s]+)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/dg;
-
-const MANAGERS = new Set(["npm", "pnpm", "yarn", "bun"]);
-// Built-in subcommands of pnpm and yarn. A word that is one of these is not a script.
-const BUILT_IN = new Set([
-  "install", "i", "add", "remove", "rm", "update", "up", "upgrade", "exec", "dlx", "create", "init", "link",
-  "unlink", "outdated", "list", "ls", "why", "audit", "publish", "pack", "config", "store", "import", "rebuild",
-  "prune", "patch", "info", "view", "login", "logout", "whoami", "version", "help", "cache", "set", "workspace",
-  "workspaces", "env", "dedupe", "licenses", "fetch", "setup", "global", "node", "self-update",
-]);
-const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
-const PROMPTS = new Set(["$", ">", "%"]);
-// Shell separators that end a command. A redirection such as 2>&1 splits too, which is harmless here.
-const SEPARATORS = /&&|\|\||[;|&]/;
-// A "#" that starts a word: the start of a shell comment.
-const COMMENT_START = /(^|\s)#/;
-const SCRIPT_EDGE_PUNCTUATION = /^["'`(]+/;
-const SCRIPT_TRAILING_PUNCTUATION = /[.,;:!?)"'`]+$/;
 
 const BROKEN = "broken";
 const EXTERNAL = "external";
@@ -84,12 +69,12 @@ function collectReferences(ctx) {
   for (const file of [...ctx.memory.keys()].sort(compareText)) {
     for (const line of markdownLines(ctx.memory.get(file).text)) {
       const where = { file, line: line.number };
-      if (line.fenced) {
-        checkCommands(state, where, line.text);
-        continue;
+      for (const call of scriptCallsInLine(line)) {
+        checkCommand(state, where, call);
       }
+      if (line.fenced) continue;
       for (const span of codeSpans(line.text)) {
-        checkCodeSpan(state, where, span.text);
+        checkCodeSpanPath(state, where, span.text);
       }
       for (const target of linkTargets(line.text)) {
         checkLink(state, where, target);
@@ -119,12 +104,11 @@ function toExternal(entry) {
 // ---------------------------------------------------------------------------------------------------
 // Paths
 
-// A code span. Its trimmed content is checked as a command, and, when it is one token, as a path. The
-// path check uses the token without a line suffix or a #fragment; the reported text is the content as written.
-function checkCodeSpan(state, where, content) {
+// A code span whose trimmed content is one token is checked as a path. The path check uses the token
+// without a line suffix or a #fragment; the reported text is the content as written.
+function checkCodeSpanPath(state, where, content) {
   const shown = content.trim();
   if (shown === "") return;
-  checkCommands(state, where, shown);
   if (/\s/.test(shown)) return;
   const token = withoutFragment(shown.replace(LINE_SUFFIX, ""));
   checkPath(state, { ...where, kind: "path", shown, token, inline: true });
@@ -226,16 +210,14 @@ function linkTargets(text) {
 // ---------------------------------------------------------------------------------------------------
 // Commands
 
-// Checks each script call of a text (a code span or a fenced line) against the root package.json.
-function checkCommands(state, where, text) {
-  for (const command of commandsIn(text)) {
-    const { scripts } = state;
-    // A package.json that cannot be read or parsed gives no answer: its commands are not reported.
-    if (scripts.status === "absent") {
-      reportCommand(state, where, command, "no-package-json");
-    } else if (scripts.status === "ok" && !scripts.names.has(command.script)) {
-      reportCommand(state, where, command, "missing-script");
-    }
+// Checks one script call (see script-calls.mjs) against the root package.json.
+function checkCommand(state, where, command) {
+  const { scripts } = state;
+  // A package.json that cannot be read or parsed gives no answer: its commands are not reported.
+  if (scripts.status === "absent") {
+    reportCommand(state, where, command, "no-package-json");
+  } else if (scripts.status === "ok" && !scripts.names.has(command.script)) {
+    reportCommand(state, where, command, "missing-script");
   }
 }
 
@@ -251,81 +233,29 @@ function reportCommand(state, where, command, reason) {
   });
 }
 
-// Each shell segment of the text may hold one command, at its start, after environment assignments and
-// prompt signs. A "#" word starts a shell comment that runs to the end of the line, so the text is cut
-// there before it is split into segments: a separator after the "#" is part of the comment.
-function commandsIn(text) {
-  const found = [];
-  const comment = text.search(COMMENT_START);
-  const code = comment === -1 ? text : text.slice(0, comment);
-  for (const segment of code.split(SEPARATORS)) {
-    const command = commandIn(segment.trim().split(/\s+/));
-    if (command !== null) found.push(command);
-  }
-  return found;
-}
-
-function commandIn(tokens) {
-  let at = 0;
-  while (at < tokens.length && (ENV_ASSIGNMENT.test(tokens[at]) || PROMPTS.has(tokens[at]))) at += 1;
-  const manager = tokens[at];
-  if (!MANAGERS.has(manager)) return null;
-  const word = tokens[at + 1];
-  let script;
-  let last;
-  if (word === "run") {
-    script = tokens[at + 2];
-    last = at + 2;
-  } else if (manager === "npm") {
-    if (word !== "test") return null;
-    script = "test";
-    last = at + 1;
-  } else if (manager === "bun" || word === undefined || word.startsWith("-") || BUILT_IN.has(word)) {
-    return null;
-  } else {
-    script = word;
-    last = at + 1;
-  }
-  if (script === undefined || script.startsWith("-")) return null;
-  const name = script.replace(SCRIPT_EDGE_PUNCTUATION, "").replace(SCRIPT_TRAILING_PUNCTUATION, "");
-  if (name === "") return null;
-  return { text: tokens.slice(at, last + 1).join(" "), script: name };
-}
-
 // The scripts of the root package.json, read as data. "absent" when there is no file. A file that cannot
 // be read or parsed is "invalid", with a warning. A missing "scripts" key is an empty list of scripts.
 function readScripts(ctx, warnings) {
-  const read = ctx.readText("package.json");
-  if (!read.ok) {
-    if (read.reason === "not-found") return { status: "absent" };
+  const read = readPackageJson(ctx);
+  if (read.status === "absent") return { status: "absent" };
+  if (read.status === "unreadable") {
     warnings.push({ path: "package.json", reason: "unreadable-package-json" });
     return { status: "invalid" };
   }
-  let data;
-  try {
-    data = JSON.parse(read.text);
-  } catch {
-    warnings.push({ path: "package.json", reason: "invalid-package-json", detail: "not-json" });
+  if (read.status === "invalid") {
+    warnings.push({ path: "package.json", reason: "invalid-package-json", detail: read.detail });
     return { status: "invalid" };
   }
-  if (!isObject(data)) {
-    warnings.push({ path: "package.json", reason: "invalid-package-json", detail: "not-object" });
+  const listed = packageScripts(read.data);
+  if (!listed.ok) {
+    warnings.push({ path: "package.json", reason: "invalid-package-json", detail: listed.detail });
     return { status: "invalid" };
   }
-  if (data.scripts === undefined) return { status: "ok", names: new Set() };
-  if (!isObject(data.scripts)) {
-    warnings.push({ path: "package.json", reason: "invalid-package-json", detail: "scripts-not-object" });
-    return { status: "invalid" };
-  }
-  return { status: "ok", names: new Set(Object.keys(data.scripts)) };
+  return { status: "ok", names: new Set(listed.scripts.keys()) };
 }
 
 // ---------------------------------------------------------------------------------------------------
 // Helpers
-
-function isObject(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function unique(values) {
   return [...new Set(values)];
