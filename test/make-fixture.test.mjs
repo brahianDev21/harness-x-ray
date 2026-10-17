@@ -78,6 +78,28 @@ test("cleanup removes a folder symlink without deleting what it points to", { sk
   assert.equal(fs.readFileSync(path.join(external, "keep.txt"), "utf8"), "must survive cleanup\n");
 });
 
+test("junction fixture: the junction resolves to its target, and cleanup keeps the target", {
+  skip: process.platform === "win32" ? false : "junctions are a Windows feature",
+}, (t) => {
+  const external = fs.mkdtempSync(path.join(os.tmpdir(), "hxr-external-"));
+  t.after(() => fs.rmSync(external, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(external, "keep.txt"), "must survive cleanup\n");
+
+  const fixture = makeFixture({
+    files: { "notes.txt": "inside\n" },
+    symlinks: [{ path: "linked-junction", target: external, type: "junction" }],
+  });
+  t.after(fixture.cleanup);
+
+  const junction = path.join(fixture.root, "linked-junction");
+  assert.ok(fs.lstatSync(junction).isSymbolicLink(), "lstat reports a junction as a link");
+  assert.equal(fs.readFileSync(path.join(junction, "keep.txt"), "utf8"), "must survive cleanup\n");
+
+  fixture.cleanup();
+  assert.equal(fs.existsSync(fixture.base), false);
+  assert.equal(fs.readFileSync(path.join(external, "keep.txt"), "utf8"), "must survive cleanup\n");
+});
+
 test("gitConfig is applied after the initial commit, and the commit exists", (t) => {
   // An inert placeholder: no git command in this test reads the index, and nothing executes it.
   const placeholder = "hxr-test-placeholder";

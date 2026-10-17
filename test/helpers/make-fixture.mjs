@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 
 const KNOWN_OPTIONS = new Set(["files", "outside", "git", "gitConfig", "symlinks"]);
+const LINK_TYPES = new Set(["file", "dir", "junction"]);
 
 // Identity and safety flags for the git commands this helper runs itself. They make the
 // result independent of the user's global config: no GPG signing, no CRLF conversion, and
@@ -43,15 +44,16 @@ export function symlinkSupport() {
  * @param {Record<string, string | Uint8Array>} [description.outside] Same shape, written to <base>/outside.
  * @param {boolean} [description.git] Run `git init -b main`, stage everything and commit it.
  * @param {Record<string, string>} [description.gitConfig] Keys for `git config --local`, applied after the commit.
- * @param {Array<{ path: string, target: string, type?: "file" | "dir" }>} [description.symlinks]
+ * @param {Array<{ path: string, target: string, type?: "file" | "dir" | "junction" }>} [description.symlinks]
  *   A relative target is resolved from the folder that contains the link, as with any symlink.
+ *   A "junction" on Windows needs no privileges. Elsewhere it is made as a folder symlink.
  * @returns {{ root: string, base: string, outsideDir: string, cleanup: () => void }}
  *   cleanup() is idempotent. The helper also removes the folder itself if creation fails.
  */
 export function makeFixture(description = {}) {
   const { files = {}, outside = {}, git = false, gitConfig = {}, symlinks = [] } = validateDescription(description);
 
-  if (symlinks.length > 0) {
+  if (symlinks.some((link) => !isWindowsJunction(link))) {
     const support = symlinkSupport();
     if (!support.supported) {
       const error = new Error(support.reason);
@@ -129,8 +131,8 @@ function validateDescription(description) {
     if (typeof link?.path !== "string" || typeof link?.target !== "string") {
       throw new TypeError("Each symlink needs a string path and a string target");
     }
-    if (link.type !== undefined && link.type !== "file" && link.type !== "dir") {
-      throw new TypeError(`Symlink type must be "file" or "dir": "${link.path}"`);
+    if (link.type !== undefined && !LINK_TYPES.has(link.type)) {
+      throw new TypeError(`Symlink type must be "file", "dir" or "junction": "${link.path}"`);
     }
   }
   return description;
@@ -180,8 +182,19 @@ function createSymlinks(root, symlinks, git) {
     const abs = resolveInside(root, link.path);
     if (git) assertNotGitDir(link.path);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
-    fs.symlinkSync(link.target, abs, link.type ?? "file");
+    if (isWindowsJunction(link)) {
+      // Node needs an absolute junction target. A relative one is resolved from the link's folder,
+      // the same rule as for symbolic links.
+      fs.symlinkSync(path.resolve(path.dirname(abs), link.target), abs, "junction");
+    } else {
+      const type = link.type === "junction" ? "dir" : (link.type ?? "file");
+      fs.symlinkSync(link.target, abs, type);
+    }
   }
+}
+
+function isWindowsJunction(link) {
+  return link.type === "junction" && process.platform === "win32";
 }
 
 function initGitRepo(root, base, gitConfig) {
