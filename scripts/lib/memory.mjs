@@ -15,6 +15,7 @@
 import os from "node:os";
 import path from "node:path";
 import { parseFrontmatter } from "./frontmatter.mjs";
+import { closesFence, maskCodeSpans, opensFence } from "./markdown.mjs";
 import { createRedactor } from "./redact.mjs";
 import { DEFAULT_MAX_BYTES, statOutside } from "./safe-fs.mjs";
 import { estimateTokens } from "./tokens.mjs";
@@ -49,14 +50,10 @@ const TOO_LARGE_REASON = "not read: larger than 4 MiB";
 // Reason code of a memory file that is skipped because it is larger than the cap.
 const TOO_LARGE = "too-large";
 
-// Fences and imports in the Markdown text of a memory file (see importsOf).
-const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
 // "@" at the start of a line or after whitespace, then the path up to the next whitespace. The mask
-// character stands for a code span, so an import never starts inside one.
+// character (see markdown.mjs) stands for a code span, so an import never starts inside one.
 const IMPORT_PATTERN = /(?<!\S)@([^\s\u0001]+)/gu;
 const TRAILING_PUNCTUATION = /[.,;:!?)]+$/;
-const MASK = "\u0001";
 
 export const memoryMeasure = createMemoryMeasure();
 
@@ -431,68 +428,6 @@ function importsOf(text) {
     }
   });
   return found;
-}
-
-function opensFence(line) {
-  const match = FENCE_OPEN.exec(line);
-  if (match === null) return null;
-  const marker = match[1];
-  if (marker[0] === "`" && match[2].includes("`")) return null;
-  return { char: marker[0], length: marker.length };
-}
-
-function closesFence(line, fence) {
-  const match = FENCE_CLOSE.exec(line);
-  return match !== null && match[1][0] === fence.char && match[1].length >= fence.length;
-}
-
-// The line with the text of each code span replaced by MASK, so that nothing inside a span can match.
-// A run of backticks without a closing run of the same length on the same line is not a span. A
-// backtick that follows a backslash is escaped and is not a span either.
-function maskCodeSpans(line) {
-  let out = "";
-  let index = 0;
-  while (index < line.length) {
-    if (line[index] !== "`") {
-      out += line[index];
-      index += 1;
-    } else if (index > 0 && line[index - 1] === "\\") {
-      out += "`";
-      index += 1;
-    } else {
-      const run = backtickRunAt(line, index);
-      const closeEnd = closingRunEnd(line, index + run, run);
-      if (closeEnd === -1) {
-        out += line.slice(index, index + run);
-        index += run;
-      } else {
-        out += MASK.repeat(closeEnd - index);
-        index = closeEnd;
-      }
-    }
-  }
-  return out;
-}
-
-function backtickRunAt(line, index) {
-  let end = index;
-  while (line[end] === "`") end += 1;
-  return end - index;
-}
-
-// The index just after the first backtick run of the given length at or after from, or -1.
-function closingRunEnd(line, from, length) {
-  let index = from;
-  while (index < line.length) {
-    if (line[index] !== "`") {
-      index += 1;
-    } else {
-      const run = backtickRunAt(line, index);
-      if (run === length) return index + run;
-      index += run;
-    }
-  }
-  return -1;
 }
 
 // ---------------------------------------------------------------------------------------------------

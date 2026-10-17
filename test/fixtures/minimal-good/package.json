@@ -1,0 +1,11 @@
+{
+  "name": "minimal-good",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node --test",
+    "lint": "node --check src/index.mjs",
+    "typecheck": "node --check src/index.mjs",
+    "format": "node --check src/index.mjs"
+  }
+}

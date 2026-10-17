@@ -3,7 +3,7 @@
   "title": "measurements.json",
   "description": "Output of scripts/scan.mjs. Documentation only: nothing validates against it. This file lists the fields that every scan writes. Measures add their own sections (for example security or context), and each one extends this file. Outside meta, no value holds an absolute path of the machine that ran the scan; paths are relative to the target and use forward slashes.",
   "type": "object",
-  "required": ["claudeConfig", "context", "inventory", "meta", "schemaVersion", "security", "target", "warnings"],
+  "required": ["claudeConfig", "context", "instructions", "inventory", "meta", "schemaVersion", "security", "target", "warnings"],
   "properties": {
     "schemaVersion": {
       "const": 1,
@@ -251,6 +251,46 @@
                   "matcher": { "type": ["string", "null"], "description": "Hook matcher (hook-output), or null." }
                 }
               }
+            }
+          }
+        }
+      }
+    },
+    "instructions": {
+      "type": "object",
+      "description": "What the memory files mention, checked against the target. Both lists are sorted by file, line and text; file is relative to the target. Texts are redacted (no absolute path of this machine).",
+      "required": ["brokenRefs", "externalRefs"],
+      "properties": {
+        "brokenRefs": {
+          "type": "array",
+          "description": "Paths and script commands that the memory files mention and the target does not have. Paths in code spans may exist from the root or from the folder of the memory file; links only from their own folder.",
+          "items": {
+            "type": "object",
+            "required": ["file", "line", "text", "kind", "reason"],
+            "properties": {
+              "file": { "type": "string" },
+              "line": { "type": "integer", "minimum": 1, "description": "1-based line in the memory file." },
+              "text": { "type": "string", "description": "The text as written: the code span, the link target, or the command." },
+              "kind": { "enum": ["path", "link", "script"], "description": "path: inline code; link: Markdown link or image; script: npm, pnpm, yarn or bun script call." },
+              "reason": {
+                "enum": ["not-found", "missing-script", "no-package-json"],
+                "description": "not-found: no file or folder; missing-script: the root package.json has no such script; no-package-json: the target has no package.json."
+              },
+              "script": { "type": "string", "description": "The script name. Only for kind script." }
+            }
+          }
+        },
+        "externalRefs": {
+          "type": "array",
+          "description": "Paths that are not checked: absolute paths, home paths and relative paths that leave the target. Never stat-ed or read.",
+          "items": {
+            "type": "object",
+            "required": ["file", "line", "text", "kind"],
+            "properties": {
+              "file": { "type": "string" },
+              "line": { "type": "integer", "minimum": 1 },
+              "text": { "type": "string" },
+              "kind": { "enum": ["path", "link"] }
             }
           }
         }

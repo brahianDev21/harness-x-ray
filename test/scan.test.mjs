@@ -18,9 +18,9 @@ const SCAN_SCRIPT = path.join(HARNESS_ROOT, "scripts", "scan.mjs");
 const EMPTY_FIXTURE = path.join(TEST_DIR, "fixtures", "empty");
 const SCHEMA_FILE = path.join(HARNESS_ROOT, "schemas", "measurements.schema.json");
 const PACKAGE_FILE = path.join(HARNESS_ROOT, "package.json");
-// Top-level keys of every scan with the registered measures. The core writes the first five, and the
-// claude-config measure always writes claudeConfig and security.
-const TOP_LEVEL_KEYS = ["claudeConfig", "context", "inventory", "meta", "schemaVersion", "security", "target", "warnings"];
+// Top-level keys of every scan with the registered measures. The core writes the first five, the
+// claude-config measure always writes claudeConfig and security, and the references measure writes instructions.
+const TOP_LEVEL_KEYS = ["claudeConfig", "context", "instructions", "inventory", "meta", "schemaVersion", "security", "target", "warnings"];
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const FIXED_NOW = new Date("2026-10-17T12:00:00.000Z");
 
