@@ -1,0 +1,16 @@
+{
+  "name": "harness-x-ray",
+  "version": "0.0.0",
+  "description": "Static audit of the harness around an AI coding agent: instructions, permissions, hooks and tools.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "scan": "node scripts/scan.mjs",
+    "check": "node scripts/check-catalog.mjs"
+  }
+}

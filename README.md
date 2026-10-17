@@ -1,0 +1,3 @@
+# Harness X-Ray
+
+Harness X-Ray is a static audit of the harness around an AI coding agent: the instructions, permissions, hooks, skills and tools that shape what the agent reads, runs and remembers in a repository. It is meant to be used from Claude Code. Pointed at another repository (the target), it reports what the harness seems to waste (context loaded on every session), what it leaves exposed (commands or secrets the agent can reach without a barrier) and what it lacks (verification steps, structure, reuse), with each recommendation tied to its source. It never executes code from the target and never writes to it. The project is in early development.

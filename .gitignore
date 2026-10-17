@@ -1,0 +1,9 @@
+# Scanner output, one folder per run
+runs/
+
+# Dependencies
+node_modules/
+
+# Local planning documents, never versioned
+docs/SPEC.md
+docs/*TICKETS*.md
