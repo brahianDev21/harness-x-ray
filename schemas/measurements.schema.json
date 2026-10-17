@@ -63,14 +63,40 @@
     },
     "inventory": {
       "type": "array",
-      "description": "Harness files. Added by measures; sorted by path.",
+      "description": "Harness files. Added by measures; sorted by path. One item per path.",
       "items": {
         "type": "object",
-        "required": ["path"],
+        "required": ["path", "kind", "loadMode", "loadReason", "bytes", "lines", "estTokens"],
         "properties": {
           "path": {
             "type": "string",
             "description": "POSIX path relative to the target."
+          },
+          "kind": {
+            "enum": ["command", "memory", "mcp", "rule", "settings", "skill", "subagent"],
+            "description": "What the file is. memory: CLAUDE.md, AGENTS.md or an import of one of them; rule: a file of .claude/rules/."
+          },
+          "loadMode": {
+            "enum": ["always", "on-demand", "not-loaded"],
+            "description": "When Claude Code loads the file. always: at the start of every session (counted in the budget); on-demand: when a related file is read or the skill is invoked; not-loaded: not loaded by default."
+          },
+          "loadReason": {
+            "type": "string",
+            "description": "Short English reason for loadMode. For an import it names the importing file."
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "lines": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "Number of lines. Null when the file was not read (memory files in subfolders, files over 4 MiB)."
+          },
+          "estTokens": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "Estimate with chars/4, labelled with estMethod. Null when the file was not read."
           }
         }
       }
@@ -105,8 +131,66 @@
     "context": {
       "type": "object",
       "description": "Context that Claude Code loads at the start of a session. Measures add items to the shared lists; the core sets the total and the method.",
-      "required": ["alwaysLoaded"],
+      "required": ["alwaysLoaded", "ancestors", "imports", "limits"],
       "properties": {
+        "ancestors": {
+          "type": "array",
+          "description": "Memory files of the parent folders of the target that exist, by existence and size only: their content is never read. Paths are relative to the target (for example ../CLAUDE.md). Not in the inventory and not in the budget.",
+          "items": {
+            "type": "object",
+            "required": ["path", "bytes"],
+            "properties": {
+              "path": { "type": "string" },
+              "bytes": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "imports": {
+          "type": "array",
+          "description": "Every @path import of a loaded memory file, sorted by from, line and ref. Imports inside fenced code blocks and code spans are not listed. Imports from rules are not listed.",
+          "items": {
+            "type": "object",
+            "required": ["from", "line", "ref", "path", "depth", "status"],
+            "properties": {
+              "from": { "type": "string", "description": "The importing file, relative to the target." },
+              "line": { "type": "integer", "minimum": 1 },
+              "ref": {
+                "type": "string",
+                "description": "The text after @, redacted. \"<outside>\" for an absolute path that is not inside the target."
+              },
+              "path": {
+                "type": ["string", "null"],
+                "description": "The root-relative path the import names, or null when it is external."
+              },
+              "depth": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Hop of the import: the importing file's depth plus one. The root memory file is depth 0. An import at depth 5 is too-deep and is not read."
+              },
+              "status": {
+                "enum": ["ok", "broken", "external", "too-deep", "cycle"],
+                "description": "ok: the file exists and is loaded (once). broken: missing or not a file. external: home path, absolute path outside the target, or a path that leaves the target; never read. too-deep: more than four hops. cycle: the file is one of the files that led to this import."
+              }
+            }
+          }
+        },
+        "limits": {
+          "type": "array",
+          "description": "Limits that the memory files break, sorted by path.",
+          "items": {
+            "type": "object",
+            "required": ["path", "limit", "value", "threshold"],
+            "properties": {
+              "path": { "type": "string" },
+              "limit": {
+                "enum": ["memory-lines", "memory-bytes"],
+                "description": "memory-lines: an always-loaded file over 200 lines. memory-bytes: a memory file over 4 MiB, which is skipped."
+              },
+              "value": { "type": "integer", "minimum": 0 },
+              "threshold": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
         "alwaysLoaded": {
           "type": "object",
           "required": ["estTokensTotal", "estMethod", "byComponent", "unknownStatic"],
@@ -129,7 +213,7 @@
                 "properties": {
                   "component": {
                     "type": "string",
-                    "description": "Fixed name: skills, commands, subagents, or memory (added by a later measure)."
+                    "description": "Fixed name: skills, commands, subagents, or memory."
                   },
                   "estTokens": {
                     "type": "integer",

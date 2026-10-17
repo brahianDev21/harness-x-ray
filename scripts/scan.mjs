@@ -9,12 +9,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { claudeConfigMeasure } from "./lib/claude-config.mjs";
+import { memoryMeasure } from "./lib/memory.mjs";
 import { writeStableJson } from "./lib/json-out.mjs";
 import { scan } from "./lib/scanner.mjs";
 import { UsageError, checkOutputDir, defaultOutputDir, resolveTarget } from "./lib/target.mjs";
 
 // The measures, in the order they run. Each measure adds its import and one line here.
-const MEASURES = [claudeConfigMeasure];
+const MEASURES = [claudeConfigMeasure, memoryMeasure];
 
 const HARNESS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const USAGE = "usage: node scripts/scan.mjs <target> [--out <dir>]";

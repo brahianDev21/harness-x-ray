@@ -97,6 +97,7 @@ test("scan: a copy of the empty fixture exits 0 with valid JSON and a short summ
     estMethod: "chars/4",
     byComponent: [
       { component: "commands", estTokens: 0, items: [] },
+      { component: "memory", estTokens: 0, items: [] },
       { component: "skills", estTokens: 0, items: [] },
       { component: "subagents", estTokens: 0, items: [] },
     ],
