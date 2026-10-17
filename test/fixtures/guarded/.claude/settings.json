@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean *)",
+      "Bash(git checkout *)",
+      "Bash(git restore *)",
+      "Bash(git branch -D *)",
+      "Bash(curl *)",
+      "Bash(wget *)",
+      "Bash(chmod *)",
+      "Bash(npm publish *)",
+      "Bash(docker *)",
+      "PowerShell(Remove-Item *)",
+      "PowerShell(cmd *)",
+      "Read(**/.env)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          { "type": "command", "command": "node .claude/hooks/guard-destructive.mjs", "onFailure": "block" }
+        ]
+      }
+    ]
+  }
+}

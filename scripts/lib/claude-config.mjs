@@ -6,7 +6,8 @@
 // (reading only), one inventory item per file, and the always-loaded budget of skills, commands and
 // subagents. The MCP servers and the context-injecting hooks go to context.alwaysLoaded.unknownStatic,
 // because their size cannot be known without running them. Every string copied from the target goes
-// through the redactor. Env and header values are never copied: only their key names.
+// through the redactor. Env and header values are never copied: only their key names. The parsed
+// configuration is shared with other measures through loadClaudeConfig, which parses the files once per scan.
 
 import { parseFrontmatter } from "./frontmatter.mjs";
 import { classifyScriptPath, findScriptWord, hookWords } from "./hook-command.mjs";
@@ -30,22 +31,75 @@ const MAX_DESCRIPTION_CHARS = 1536;
 const CONTEXT_EVENTS = new Set(["SessionStart", "UserPromptSubmit", "UserPromptExpansion", "PostModelSwitch"]);
 // Permission modes that Claude Code ignores when a project settings file sets them (docs: permission-modes).
 const IGNORED_MODES = new Set(["auto", "bypassPermissions"]);
-const APPLIED_MODES = new Set(["default", "acceptEdits", "plan", "dontAsk"]);
+// manual is the config value that the docs give as an alias of default.
+const APPLIED_MODES = new Set(["default", "manual", "acceptEdits", "plan", "dontAsk"]);
 // Frontmatter keys that this measure reads. An unsupported value in one of them makes the file's
 // description unreadable. Other keys are not read, so an unsupported value in them does not matter.
-const READ_KEYS = ["name", "description", "when_to_use", "disable-model-invocation", "tools", "permissionMode"];
+const READ_KEYS = ["name", "description", "when_to_use", "disable-model-invocation", "tools", "disallowedTools", "permissionMode"];
 const CONFIG_REASON = "configuration, not loaded into context";
 const BODY_REASON = "the body loads when invoked";
 const NAMELESS_REASON = "no name in the frontmatter, so Claude Code skips the file";
 
+// The key of the parsed configuration in ctx.memory. It is shared by every measure of one scan.
+const MEMORY_KEY = "claude-config/parsed";
+
 export const claudeConfigMeasure = Object.freeze({ id: MEASURE_ID, collect: collectClaudeConfig });
 
 /**
+ * The parsed configuration of the target, read once per scan. Other measures use it instead of
+ * parsing the files again. Only this measure emits the inventory and the warnings. The returned
+ * object is shared: callers must not change it.
+ * @param {object} ctx The scan context. Its memory is shared by the measures of one scan.
+ * @returns {{ settings: object[], hooks: object[], permissions: object, skills: object[], commands: object[],
+ *   subagents: object[], mcpServers: object[], inventory: object[], warnings: object[] }}
+ */
+export function loadClaudeConfig(ctx) {
+  if (!ctx.memory.has(MEMORY_KEY)) ctx.memory.set(MEMORY_KEY, parseClaudeConfig(ctx));
+  return ctx.memory.get(MEMORY_KEY);
+}
+
+/**
  * Reads the Claude Code configuration of the target.
- * @param {object} ctx The scan context: root, fs (safe-fs view) and readText.
+ * @param {object} ctx The scan context: root, fs (safe-fs view), readText and memory.
  * @returns {object} A partial measurements object, merged by the scan core.
  */
 function collectClaudeConfig(ctx) {
+  const config = loadClaudeConfig(ctx);
+
+  const unknownStatic = [
+    ...config.mcpServers.map((server) => ({ kind: "mcp-server", source: server.source, name: server.name })),
+    ...config.hooks
+      .filter((hook) => hook.injectsContext)
+      .map((hook) => ({ kind: "hook-output", source: hook.source, event: hook.event, matcher: hook.matcher })),
+  ];
+
+  return {
+    claudeConfig: {
+      settings: config.settings,
+      hooks: config.hooks,
+      skills: config.skills,
+      commands: config.commands,
+      subagents: config.subagents,
+      mcpServers: config.mcpServers,
+    },
+    security: { permissions: config.permissions },
+    inventory: config.inventory,
+    warnings: config.warnings,
+    context: {
+      alwaysLoaded: {
+        byComponent: [
+          budgetOf("skills", config.skills),
+          budgetOf("commands", config.commands),
+          budgetOf("subagents", config.subagents),
+        ],
+        unknownStatic,
+      },
+    },
+  };
+}
+
+// Reads every file of the configuration once, and collects what it finds and what it could not read.
+function parseClaudeConfig(ctx) {
   const redact = createRedactor({ root: ctx.root });
   const warnings = [];
   const inventory = [];
@@ -62,31 +116,16 @@ function collectClaudeConfig(ctx) {
   const commands = readMarkdownFiles(ctx, "command", findFiles(ctx, COMMANDS_DIR, isMarkdownName), options);
   const subagents = readMarkdownFiles(ctx, "subagent", findFiles(ctx, AGENTS_DIR, isMarkdownName), options);
 
-  const unknownStatic = [
-    ...mcpServers.map((server) => ({ kind: "mcp-server", source: server.source, name: server.name })),
-    ...settings.hooks
-      .filter((hook) => hook.injectsContext)
-      .map((hook) => ({ kind: "hook-output", source: hook.source, event: hook.event, matcher: hook.matcher })),
-  ];
-
   return {
-    claudeConfig: {
-      settings: settings.items,
-      hooks: settings.hooks,
-      skills,
-      commands,
-      subagents,
-      mcpServers,
-    },
-    security: { permissions: settings.permissions },
+    settings: settings.items,
+    hooks: settings.hooks,
+    permissions: settings.permissions,
+    skills,
+    commands,
+    subagents,
+    mcpServers,
     inventory,
     warnings,
-    context: {
-      alwaysLoaded: {
-        byComponent: [budgetOf("skills", skills), budgetOf("commands", commands), budgetOf("subagents", subagents)],
-        unknownStatic,
-      },
-    },
   };
 }
 
@@ -238,10 +277,13 @@ function hookItem({ event, matcher, handler }, rel, ctx, { redact, warn }) {
   const script = command === null ? null : scriptOf(command.words, ctx, redact);
   if (handler.timeout !== undefined && typeof handler.timeout !== "number") warn(rel, "unexpected-shape", "hooks.timeout");
   if (handler.onFailure !== undefined && typeof handler.onFailure !== "string") warn(rel, "unexpected-shape", "hooks.onFailure");
+  if (handler.if !== undefined && typeof handler.if !== "string") warn(rel, "unexpected-shape", "hooks.if");
   return {
     source: rel,
     event: redact(event),
     matcher: matcher === null ? null : redact(matcher),
+    // Docs (hooks): the rule that filters the calls the hook runs for. Only a string is kept.
+    if: typeof handler.if === "string" ? redact(handler.if) : null,
     type: redact(handler.type),
     command: command === null ? null : redact(command.text),
     timeout: typeof handler.timeout === "number" && Number.isFinite(handler.timeout) ? handler.timeout : null,
@@ -431,7 +473,7 @@ function describeMarkdown(kind, rel, text, { redact, warn }) {
       loadMode: null,
       frontmatterError: broken ? "broken" : "unsupported-value",
     };
-    if (kind === "subagent") Object.assign(item, { tools: null, permissionMode: null });
+    if (kind === "subagent") Object.assign(item, { tools: null, disallowedTools: null, permissionMode: null });
     return item;
   }
 
@@ -451,6 +493,7 @@ function describeMarkdown(kind, rel, text, { redact, warn }) {
   };
   if (kind === "subagent") {
     item.tools = toolsOf(fields.tools, redact);
+    item.disallowedTools = toolsOf(fields.disallowedTools, redact);
     item.permissionMode = typeof fields.permissionMode === "string" ? redact(fields.permissionMode) : null;
   }
   return item;

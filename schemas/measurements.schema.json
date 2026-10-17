@@ -174,8 +174,8 @@
     },
     "security": {
       "type": "object",
-      "description": "Security-relevant configuration. Reading only: nothing here is simulated or enforced.",
-      "required": ["permissions"],
+      "description": "Security-relevant configuration. permissions is read as written; destructiveCoverage simulates the rules against the commands of the data file. Nothing is run and nothing is enforced.",
+      "required": ["permissions", "destructiveCoverage"],
       "properties": {
         "permissions": {
           "type": "object",
@@ -196,7 +196,7 @@
               "properties": {
                 "effect": {
                   "enum": ["ignored-from-project", "applies", "unknown-value"],
-                  "description": "auto and bypassPermissions are ignored when a project file sets them; default, acceptEdits, plan and dontAsk apply."
+                  "description": "auto and bypassPermissions are ignored when a project file sets them; default (also written manual), acceptEdits, plan and dontAsk apply."
                 }
               }
             },
@@ -209,6 +209,97 @@
               "type": "array",
               "description": "Fixed codes, sorted: allow-requires-folder-trust, additional-directories-require-folder-trust.",
               "items": { "type": "string" }
+            }
+          }
+        },
+        "destructiveCoverage": {
+          "type": "object",
+          "description": "The commands of data/destructive-commands.json simulated against the project rules, defaultMode and PreToolUse hooks (permissions.mjs). Nothing runs: an outcome says what the configuration decides, not what a hook would do.",
+          "required": ["mode", "commands", "preToolUseHooks", "subagents"],
+          "properties": {
+            "mode": {
+              "type": ["object", "null"],
+              "description": "The project defaultMode as claude-config parsed it (value, source, effect), or null. The outcomes use its value."
+            },
+            "commands": {
+              "type": "array",
+              "description": "One item per command of the data file, in the order of the file.",
+              "items": {
+                "type": "object",
+                "required": ["id", "shell", "tool", "command", "category", "insideProject", "criticalPath", "builtInProtection", "outcome", "decidedBy", "reason", "preToolUseHook"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "shell": { "enum": ["bash", "powershell", "cmd"] },
+                  "tool": { "enum": ["Bash", "PowerShell"], "description": "The Claude Code tool that runs the command. cmd commands run inside PowerShell." },
+                  "command": { "type": "string" },
+                  "parts": { "type": "array", "items": { "type": "string" }, "description": "The simple commands of a compound command." },
+                  "category": { "type": "string" },
+                  "insideProject": { "type": "boolean", "description": "The example acts inside the project." },
+                  "criticalPath": { "type": "boolean", "description": "The example's target is a critical path." },
+                  "builtInProtection": { "type": ["string", "null"], "description": "What Claude Code protects on its own for this kind of command, or null." },
+                  "outcome": { "enum": ["blocked", "asks", "passes", "undeterminable"] },
+                  "decidedBy": {
+                    "type": ["object", "null"],
+                    "description": "What decides the outcome: { kind: rule, list, rule, source }, { kind: mode, mode, ignoredMode? } or { kind: critical-path }. Null when nothing does."
+                  },
+                  "reason": { "type": "string", "description": "Fixed code from permissions.mjs." },
+                  "preToolUseHook": { "enum": ["runs", "none", "undeterminable"], "description": "Whether at least one PreToolUse hook runs for the command." }
+                }
+              }
+            },
+            "preToolUseHooks": {
+              "type": "array",
+              "description": "Each PreToolUse hook whose matcher can cover Bash or PowerShell, in the order of claudeConfig.hooks.",
+              "items": {
+                "type": "object",
+                "required": ["source", "matcher", "if", "type", "command", "script", "onFailure", "failsOpen", "tools"],
+                "properties": {
+                  "source": { "type": "string" },
+                  "matcher": { "type": ["string", "null"] },
+                  "if": { "type": ["string", "null"], "description": "The permission rule that filters the calls the hook runs for, or null." },
+                  "type": { "type": "string" },
+                  "command": { "type": ["string", "null"] },
+                  "script": { "type": ["object", "null"] },
+                  "onFailure": { "type": ["string", "null"] },
+                  "failsOpen": { "type": "boolean" },
+                  "tools": {
+                    "anyOf": [
+                      { "type": "array", "items": { "enum": ["Bash", "PowerShell"] } },
+                      { "const": "undeterminable" }
+                    ],
+                    "description": "The shell tools that the matcher covers, or undeterminable when the matcher is an invalid regular expression."
+                  }
+                }
+              }
+            },
+            "subagents": {
+              "type": "array",
+              "description": "Each subagent with a name, a permissionMode and a shell tool (from tools and disallowedTools), with the outcome of each command that it can run.",
+              "items": {
+                "type": "object",
+                "required": ["path", "name", "permissionMode", "effectiveMode", "shellTools", "results"],
+                "properties": {
+                  "path": { "type": "string" },
+                  "name": { "type": "string" },
+                  "permissionMode": { "type": "string" },
+                  "effectiveMode": { "type": "string", "description": "The mode the subagent runs in (docs: sub-agents), or undeterminable when auto may apply." },
+                  "ignoredMode": { "type": "string", "description": "The subagent's own permissionMode, when that value does not apply. Absent otherwise." },
+                  "shellTools": { "type": "array", "items": { "enum": ["Bash", "PowerShell"] } },
+                  "results": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["id", "outcome", "decidedBy", "reason"],
+                      "properties": {
+                        "id": { "type": "string" },
+                        "outcome": { "enum": ["blocked", "asks", "passes", "undeterminable"] },
+                        "decidedBy": { "type": ["object", "null"] },
+                        "reason": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
         }
@@ -247,11 +338,12 @@
           "description": "One item per hook handler. The command is read, never run.",
           "items": {
             "type": "object",
-            "required": ["source", "event", "matcher", "type", "command", "timeout", "onFailure", "script", "injectsContext", "failsOpen"],
+            "required": ["source", "event", "matcher", "if", "type", "command", "timeout", "onFailure", "script", "injectsContext", "failsOpen"],
             "properties": {
               "source": { "type": "string" },
               "event": { "type": "string" },
               "matcher": { "type": ["string", "null"] },
+              "if": { "type": ["string", "null"], "description": "The permission rule that filters the calls the hook runs for (docs: hooks), or null." },
               "type": { "type": "string" },
               "command": { "type": ["string", "null"], "description": "Command hooks only." },
               "timeout": { "type": ["number", "null"] },
@@ -283,11 +375,12 @@
         },
         "subagents": {
           "type": "array",
-          "description": "One item per .claude/agents/**/*.md file, with tools and permissionMode as written.",
+          "description": "One item per .claude/agents/**/*.md file, with tools, disallowedTools and permissionMode as written.",
           "items": {
             "allOf": [{ "$ref": "#/$defs/markdownItem" }],
             "properties": {
               "tools": { "type": ["string", "array", "null"] },
+              "disallowedTools": { "type": ["string", "array", "null"] },
               "permissionMode": { "type": ["string", "null"] }
             }
           }
