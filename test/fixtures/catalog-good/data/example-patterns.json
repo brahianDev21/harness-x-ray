@@ -1,0 +1,6 @@
+{
+  "items": [
+    { "id": "alpha", "regex": "^alpha\\d+$", "flags": "i" },
+    { "id": "beta", "globs": ["**/*.[ch]"], "pattern": "[not compiled" }
+  ]
+}

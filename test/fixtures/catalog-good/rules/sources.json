@@ -1,0 +1,20 @@
+{
+  "sources": [
+    {
+      "id": "example-docs",
+      "title": "Example configuration guide",
+      "url": "https://example.com/docs/configuration",
+      "type": "official-docs",
+      "accessed": "2026-10-01",
+      "note": "Describes the memory file loading order."
+    },
+    {
+      "id": "example-study",
+      "title": "Example study of agent instructions",
+      "url": "https://example.com/papers/agent-instructions",
+      "type": "study",
+      "accessed": "2026-10-01",
+      "note": "Reports the effect of instruction length on task success."
+    }
+  ]
+}
