@@ -1,3 +1,236 @@
 {
-  "sources": []
+  "sources": [
+    {
+      "id": "atlas-agents-md",
+      "title": "AGENTS.md: persistent project instructions",
+      "url": "https://agentatlas-dev.vercel.app/en/techniques/agents-md/",
+      "type": "atlas",
+      "accessed": "2026-10-17",
+      "note": "Author's guide: AGENTS.md should stay short because it is guidance, not enforced configuration, so controls belong in permissions or sandboxing."
+    },
+    {
+      "id": "atlas-context-engineering",
+      "title": "Context engineering for agents",
+      "url": "https://agentatlas-dev.vercel.app/en/techniques/context-engineering/",
+      "type": "atlas",
+      "accessed": "2026-10-17",
+      "note": "Author's guide: load only what the current decision needs and keep the rest on demand; it cites one external article."
+    },
+    {
+      "id": "atlas-hooks",
+      "title": "Hooks: checks that run on their own",
+      "url": "https://agentatlas-dev.vercel.app/en/techniques/hooks/",
+      "type": "atlas",
+      "accessed": "2026-10-17",
+      "note": "Author's guide: hooks guarantee steps that must happen every time, where a written instruction can be skipped; it cites the Claude Code hooks docs."
+    },
+    {
+      "id": "atlas-safe-agent-execution",
+      "title": "Safe agent execution",
+      "url": "https://agentatlas-dev.vercel.app/en/techniques/safe-agent-execution/",
+      "type": "atlas",
+      "accessed": "2026-10-17",
+      "note": "Author's guide: written instructions cannot reliably stop an agent, so safety should come from layered permissions, sandboxing and approvals in the environment."
+    },
+    {
+      "id": "atlas-security",
+      "title": "Piece: security",
+      "url": "https://agentatlas-dev.vercel.app/en/harnesses/security/",
+      "type": "atlas",
+      "accessed": "2026-10-17",
+      "note": "Author's harness piece with permission rules and hooks that guard secrets and irreversible commands; the page states that these are not a sandbox."
+    },
+    {
+      "id": "atlas-skills",
+      "title": "Skills: reusable procedures for agents",
+      "url": "https://agentatlas-dev.vercel.app/en/techniques/skills/",
+      "type": "atlas",
+      "accessed": "2026-10-17",
+      "note": "Author's guide: a skill loads only when needed, and its description decides when that happens; it cites the Claude Code skills docs."
+    },
+    {
+      "id": "atlas-tool-use-permissions",
+      "title": "Tools and permissions",
+      "url": "https://agentatlas-dev.vercel.app/en/techniques/tool-use-permissions/",
+      "type": "atlas",
+      "accessed": "2026-10-17",
+      "note": "Author's guide: the host decides whether a tool call runs, so allow, ask and block rules belong in configuration rather than in the prompt."
+    },
+    {
+      "id": "atlas-verification-evaluation",
+      "title": "Verification and evaluation",
+      "url": "https://agentatlas-dev.vercel.app/en/techniques/verification-evaluation/",
+      "type": "atlas",
+      "accessed": "2026-10-17",
+      "note": "Author's guide: check an agent's claim of completion with runnable tests, type checks and linters rather than trusting its own report."
+    },
+    {
+      "id": "cc-docs-best-practices",
+      "title": "Best practices for Claude Code",
+      "url": "https://code.claude.com/docs/en/best-practices",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Says to give Claude a check it can run, such as tests, a build, a linter or a screenshot, so it can verify its own changes."
+    },
+    {
+      "id": "cc-docs-claude-directory",
+      "title": "Explore the .claude directory",
+      "url": "https://code.claude.com/docs/en/claude-directory",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Session transcripts in ~/.claude are plaintext and keep what tools read, such as .env values, until cleanupPeriodDays removes them."
+    },
+    {
+      "id": "cc-docs-hooks",
+      "title": "Hooks reference",
+      "url": "https://code.claude.com/docs/en/hooks",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Documents PreToolUse hooks that block a tool call with exit code 2 or a deny decision, and says a failing hook lets the action proceed unless onFailure is block."
+    },
+    {
+      "id": "cc-docs-mcp",
+      "title": "Connect Claude Code to tools via MCP",
+      "url": "https://code.claude.com/docs/en/mcp",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Covers project-scoped servers in .mcp.json, which need approval in interactive sessions, and warns to verify trust in each server and about prompt injection."
+    },
+    {
+      "id": "cc-docs-memory",
+      "title": "How Claude remembers your project",
+      "url": "https://code.claude.com/docs/en/memory",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "States that CLAUDE.md and auto memory are context, not enforced configuration (a PreToolUse hook blocks an action); more specific, concise instructions are followed more consistently; keep each CLAUDE.md under 200 lines because longer files cost context and reduce adherence."
+    },
+    {
+      "id": "cc-docs-memory-agents-md",
+      "title": "How Claude remembers your project: AGENTS.md",
+      "url": "https://code.claude.com/docs/en/memory#agents-md",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Says Claude reads AGENTS.md by default only when no CLAUDE.md or CLAUDE.local.md exists in the working directory or above it."
+    },
+    {
+      "id": "cc-docs-permission-modes",
+      "title": "Choose a permission mode",
+      "url": "https://code.claude.com/docs/en/permission-modes",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Lists the permission modes and what each runs without asking, and states that deny rules apply in every mode, including bypassPermissions."
+    },
+    {
+      "id": "cc-docs-permissions",
+      "title": "Configure permissions",
+      "url": "https://code.claude.com/docs/en/permissions",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Rules are checked deny first, then ask, then allow; Bash rules match command text and are not a security boundary around the program."
+    },
+    {
+      "id": "cc-docs-sandboxing",
+      "title": "Configure the sandboxed Bash tool",
+      "url": "https://code.claude.com/docs/en/sandboxing",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "The sandbox is off by default, covers shell commands but not file tools, MCP or hooks, and runs on macOS, Linux and WSL2 but not on native Windows."
+    },
+    {
+      "id": "cc-docs-security",
+      "title": "Security",
+      "url": "https://code.claude.com/docs/en/security",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Lists Claude Code's built-in protections (permission modes, sandboxed Bash, prompt-injection safeguards) and says no system is completely immune to attacks."
+    },
+    {
+      "id": "cc-docs-settings",
+      "title": "Settings files and precedence",
+      "url": "https://code.claude.com/docs/en/settings",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Explains the settings scopes (managed, command line, project local, shared project, user) and which value wins when a key such as permissions or hooks is set in several."
+    },
+    {
+      "id": "cc-docs-skills",
+      "title": "Extend Claude with skills",
+      "url": "https://code.claude.com/docs/en/skills",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Skill descriptions stay in context while the full SKILL.md loads only when invoked, and the skill listing truncates a description at 1,536 characters."
+    },
+    {
+      "id": "cc-docs-sub-agents",
+      "title": "Create custom subagents",
+      "url": "https://code.claude.com/docs/en/sub-agents",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Subagents are Markdown files with frontmatter that run in their own context window with their own tools and permissions, including a permissionMode field."
+    },
+    {
+      "id": "cc-docs-tools-reference",
+      "title": "Tools reference",
+      "url": "https://code.claude.com/docs/en/tools-reference",
+      "type": "official-docs",
+      "accessed": "2026-10-17",
+      "note": "Lists the built-in tools with their permission requirements, and says Bash output stays inline up to about 30,000 characters by default before it is saved to a file."
+    },
+    {
+      "id": "eth-agents-md-evaluation",
+      "title": "Evaluating AGENTS.md: Are Repository-Level Context Files Helpful for Coding Agents?",
+      "url": "https://arxiv.org/abs/2602.11988",
+      "type": "study",
+      "accessed": "2026-10-17",
+      "note": "Its abstract reports that repository context files do not generally raise coding agents' task success and raise inference cost by more than 20% on average."
+    },
+    {
+      "id": "gitclear-ai-copilot-code-quality-2025",
+      "title": "AI Copilot Code Quality: 2025 Look Back at 12 Months of Data",
+      "url": "https://www.gitclear.com/ai_assistant_code_quality_2025_research",
+      "type": "study",
+      "accessed": "2026-10-17",
+      "note": "Vendor data report from GitClear, not peer reviewed: it finds a rise in copy-pasted and cloned lines in code changes from 2020 to 2024."
+    },
+    {
+      "id": "gitclear-coding-on-copilot-2023",
+      "title": "Coding on Copilot: 2023 Data Suggests Downward Pressure on Code Quality",
+      "url": "https://www.gitclear.com/coding_on_copilot_data_shows_ais_downward_pressure_on_code_quality",
+      "type": "study",
+      "accessed": "2026-10-17",
+      "note": "Vendor data report from GitClear, not peer reviewed: it finds copy-pasted code rising relative to moved code in changes from 2020 to 2023."
+    },
+    {
+      "id": "owasp-llm-excessive-agency",
+      "title": "LLM06:2025 Excessive Agency",
+      "url": "https://genai.owasp.org/llmrisk/llm062025-excessive-agency/",
+      "type": "industry-guidance",
+      "accessed": "2026-10-17",
+      "note": "Describes the risk of LLM systems given too many tools, permissions or autonomy, and recommends least-privilege tools and human approval for high-impact actions."
+    },
+    {
+      "id": "owasp-llm-sensitive-information-disclosure",
+      "title": "LLM02:2025 Sensitive Information Disclosure",
+      "url": "https://genai.owasp.org/llmrisk/llm022025-sensitive-information-disclosure/",
+      "type": "industry-guidance",
+      "accessed": "2026-10-17",
+      "note": "Describes LLM applications leaking sensitive data such as credentials and personal data, and recommends sanitizing data and applying least privilege."
+    },
+    {
+      "id": "owasp-llm-top-10",
+      "title": "2025 Top 10 Risk & Mitigations for LLMs and Gen AI Apps",
+      "url": "https://genai.owasp.org/llm-top-10/",
+      "type": "industry-guidance",
+      "accessed": "2026-10-17",
+      "note": "OWASP's 2025 list of the ten main risks for LLM applications, including excessive agency and sensitive information disclosure."
+    },
+    {
+      "id": "ponytail",
+      "title": "Ponytail",
+      "url": "https://github.com/DietrichGebert/ponytail",
+      "type": "benchmark",
+      "accessed": "2026-10-17",
+      "note": "A skill (skills/ponytail/SKILL.md) with a six-step decision ladder: does it need to exist, is it already in the codebase, standard library or platform, installed dependency, one line, minimal code; its benchmark figures (39 tasks, 5 runs) are the author's claims, not verified."
+    }
+  ]
 }
