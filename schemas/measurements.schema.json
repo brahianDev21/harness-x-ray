@@ -3,7 +3,7 @@
   "title": "measurements.json",
   "description": "Output of scripts/scan.mjs. Documentation only: nothing validates against it. This file lists the fields that every scan writes. Measures add their own sections (for example security or context), and each one extends this file. Outside meta, no value holds an absolute path of the machine that ran the scan; paths are relative to the target and use forward slashes.",
   "type": "object",
-  "required": ["claudeConfig", "context", "instructions", "inventory", "meta", "schemaVersion", "security", "structure", "target", "verification", "warnings"],
+  "required": ["claudeConfig", "code", "context", "instructions", "inventory", "meta", "schemaVersion", "security", "structure", "target", "verification", "warnings"],
   "properties": {
     "schemaVersion": {
       "const": 1,
@@ -118,11 +118,11 @@
           },
           "reason": {
             "type": "string",
-            "description": "Fixed code, such as outside-root, too-large or binary."
+            "description": "Fixed code, such as outside-root, too-large or binary. The duplication measure writes code-file-too-large, code-file-minified and code-file-unreadable (its detail is the safe-fs reason) for a code file it skips, and code-files-cut or code-bytes-cut for the files that a cap cut."
           },
           "detail": {
             "type": "string",
-            "description": "Optional fixed code with more context, never a message from the system. The structure measure writes count=N with the entries it cut."
+            "description": "Optional fixed code with more context, never a message from the system. The structure measure writes count=N with the entries it cut, and the duplication measure writes count=N with the files or bytes it cut."
           }
         },
         "additionalProperties": false
@@ -769,6 +769,104 @@
               "file": { "type": "string" },
               "line": { "type": "integer", "minimum": 1, "description": "1-based line in the memory file." },
               "text": { "type": "string", "description": "The call as written, from the manager on." }
+            }
+          }
+        }
+      }
+    },
+    "code": {
+      "type": "object",
+      "description": "Source code of the target, read as data by the duplication measure. Only paths, line numbers and counts are written, never code text. The caps, the line rules and the window length are in scripts/lib/duplication.mjs.",
+      "required": ["duplication"],
+      "properties": {
+        "duplication": {
+          "type": "object",
+          "description": "Blocks of normalized lines (no blank lines, comments, imports or punctuation-only lines) that repeat between files or inside one file. A group is a block with two or more copies, and it is listed only when it adds a redundant line that no group before it in the list already counts. Test files are only in inTests. When the file cap or the byte cap cuts files, a warning with reason code-files-cut or code-bytes-cut gives the count that were cut.",
+          "required": ["windowLines", "filesScanned", "linesScanned", "redundantLines", "duplicatedLinesPct", "groupCount", "groups", "inTests"],
+          "properties": {
+            "windowLines": { "type": "integer", "minimum": 1, "description": "Length of a window, in normalized lines. Every group is at least this long." },
+            "filesScanned": { "type": "integer", "minimum": 0, "description": "Main code files that were read and normalized. Test files and skipped files are not counted." },
+            "linesScanned": { "type": "integer", "minimum": 0, "description": "Normalized lines of the main files." },
+            "redundantLines": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Normalized lines of the main files that are not the first copy of a group. A line that several groups mark is counted once."
+            },
+            "duplicatedLinesPct": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "redundantLines divided by linesScanned, times 100, rounded to two decimals. 0 when nothing was scanned."
+            },
+            "groupCount": { "type": "integer", "minimum": 0, "description": "Number of listed groups, before the listing is cut to the first ones." },
+            "groups": {
+              "type": "array",
+              "description": "The first groups of the main files: most redundant lines first, then by the file and line of the first copy. At most MAX_GROUPS items.",
+              "items": {
+                "type": "object",
+                "required": ["lines", "redundantLines", "copies"],
+                "properties": {
+                  "lines": { "type": "integer", "minimum": 1, "description": "Normalized lines in each copy." },
+                  "redundantLines": { "type": "integer", "minimum": 0, "description": "lines multiplied by the number of copies minus one." },
+                  "copies": {
+                    "type": "array",
+                    "minItems": 2,
+                    "description": "Sorted by file, then by line. The first copy is not redundant.",
+                    "items": {
+                      "type": "object",
+                      "required": ["file", "line", "endLine"],
+                      "properties": {
+                        "file": { "type": "string", "description": "POSIX path relative to the target." },
+                        "line": { "type": "integer", "minimum": 1, "description": "Original line of the first normalized line of the copy." },
+                        "endLine": { "type": "integer", "minimum": 1, "description": "Original line of the last normalized line of the copy." }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "inTests": {
+              "type": "object",
+              "description": "The same numbers and groups, computed over the test files only (folders such as test, tests, __tests__, spec, e2e, __mocks__ and fixtures, or names such as *.test.* and *.spec.*).",
+              "required": ["filesScanned", "linesScanned", "redundantLines", "duplicatedLinesPct", "groupCount", "groups"],
+              "properties": {
+                "filesScanned": { "type": "integer", "minimum": 0, "description": "Test code files that were read and normalized." },
+                "linesScanned": { "type": "integer", "minimum": 0, "description": "Normalized lines of the test files." },
+                "redundantLines": { "type": "integer", "minimum": 0, "description": "Redundant normalized lines of the test files." },
+                "duplicatedLinesPct": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100,
+                  "description": "redundantLines divided by linesScanned, times 100, rounded to two decimals. 0 when nothing was scanned."
+                },
+                "groupCount": { "type": "integer", "minimum": 0, "description": "Number of groups among the test files." },
+                "groups": {
+                  "type": "array",
+                  "description": "The same shape and order as the main groups.",
+                  "items": {
+                    "type": "object",
+                    "required": ["lines", "redundantLines", "copies"],
+                    "properties": {
+                      "lines": { "type": "integer", "minimum": 1, "description": "Normalized lines in each copy." },
+                      "redundantLines": { "type": "integer", "minimum": 0, "description": "lines multiplied by the number of copies minus one." },
+                      "copies": {
+                        "type": "array",
+                        "minItems": 2,
+                        "description": "Sorted by file, then by line. The first copy is not redundant.",
+                        "items": {
+                          "type": "object",
+                          "required": ["file", "line", "endLine"],
+                          "properties": {
+                            "file": { "type": "string", "description": "POSIX path relative to the target." },
+                            "line": { "type": "integer", "minimum": 1, "description": "Original line of the first normalized line of the copy." },
+                            "endLine": { "type": "integer", "minimum": 1, "description": "Original line of the last normalized line of the copy." }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
         }

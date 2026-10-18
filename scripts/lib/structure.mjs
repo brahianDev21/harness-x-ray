@@ -64,6 +64,25 @@ export function loadGeneratedPatterns() {
   return loaded;
 }
 
+/**
+ * The id of the generated-file pattern that a path matches, or null. It uses the same rules as classifyGenerated: a file
+ * is generated when one of its folders (not its base name) is a directory pattern, and the first such folder from the
+ * left decides the id; otherwise the base name must match a file pattern. The path is not read or stat-ed.
+ * @param {string} relPath POSIX path relative to the target.
+ * @param {ReturnType<typeof loadGeneratedPatterns>} [patterns] The patterns to use. Defaults to the data file.
+ * @returns {string | null} The pattern id, such as "dist" or "minified-js".
+ */
+export function generatedPatternOf(relPath, patterns = loadGeneratedPatterns()) {
+  const segments = relPath.split("/");
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    const folder = patterns.directories.find((item) => item.folder === segments[index]);
+    if (folder !== undefined) return folder.id;
+  }
+  const name = segments[segments.length - 1];
+  const file = patterns.files.find((item) => item.regex.test(name));
+  return file === undefined ? null : file.id;
+}
+
 // Reads the target through ctx only. Returns the section that the scan core merges.
 function collectStructure(ctx) {
   const config = loadClaudeConfig(ctx);

@@ -22,6 +22,7 @@ const PACKAGE_FILE = path.join(HARNESS_ROOT, "package.json");
 // claude-config measure always writes claudeConfig and security, and the references measure writes instructions.
 const TOP_LEVEL_KEYS = [
   "claudeConfig",
+  "code",
   "context",
   "instructions",
   "inventory",

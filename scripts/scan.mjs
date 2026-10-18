@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { claudeConfigMeasure } from "./lib/claude-config.mjs";
 import { destructiveCommandsMeasure } from "./lib/destructive-commands.mjs";
+import { duplicationMeasure } from "./lib/duplication.mjs";
 import { writeStableJson } from "./lib/json-out.mjs";
 import { memoryMeasure } from "./lib/memory.mjs";
 import { referencesMeasure } from "./lib/references.mjs";
@@ -29,6 +30,7 @@ const MEASURES = [
   destructiveCommandsMeasure,
   secretsMeasure,
   structureMeasure,
+  duplicationMeasure,
 ];
 
 const HARNESS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
