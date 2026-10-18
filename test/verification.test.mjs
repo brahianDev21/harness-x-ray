@@ -403,7 +403,7 @@ test("a lockfile's content never reaches the output, and a package.json that can
 test("verification: the measurements schema documents the verification, structure and packageManager fields", () => {
   const schema = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "schemas", "measurements.schema.json"), "utf8"));
   assert.deepEqual(schema.properties.verification.required, ["commands", "mentioned"]);
-  assert.deepEqual(schema.properties.structure.required, ["enforcementTools"]);
+  assert.deepEqual(schema.properties.structure.required, ["enforcementTools", "generatedFiles", "largeFiles", "mapCoverage", "tree"]);
   assert.ok(schema.properties.instructions.required.includes("packageManager"));
   const manager = schema.properties.instructions.properties.packageManager;
   assert.deepEqual(manager.required, ["field", "fieldManager", "lockfiles", "mentions", "conflict"]);
