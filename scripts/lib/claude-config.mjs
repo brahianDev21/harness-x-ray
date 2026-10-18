@@ -6,7 +6,8 @@
 // (reading only), one inventory item per file, and the always-loaded budget of skills, commands and
 // subagents. The MCP servers and the context-injecting hooks go to context.alwaysLoaded.unknownStatic,
 // because their size cannot be known without running them. Every string copied from the target goes
-// through the redactor. Env and header values are never copied: only their key names.
+// through the redactor. Env and header values are never copied: only their key names. The parsed
+// configuration is shared with other measures through loadClaudeConfig, which parses the files once per scan.
 
 import { parseFrontmatter } from "./frontmatter.mjs";
 import { classifyScriptPath, findScriptWord, hookWords } from "./hook-command.mjs";
@@ -30,22 +31,79 @@ const MAX_DESCRIPTION_CHARS = 1536;
 const CONTEXT_EVENTS = new Set(["SessionStart", "UserPromptSubmit", "UserPromptExpansion", "PostModelSwitch"]);
 // Permission modes that Claude Code ignores when a project settings file sets them (docs: permission-modes).
 const IGNORED_MODES = new Set(["auto", "bypassPermissions"]);
-const APPLIED_MODES = new Set(["default", "acceptEdits", "plan", "dontAsk"]);
+// manual is the config value that the docs give as an alias of default.
+const APPLIED_MODES = new Set(["default", "manual", "acceptEdits", "plan", "dontAsk"]);
 // Frontmatter keys that this measure reads. An unsupported value in one of them makes the file's
 // description unreadable. Other keys are not read, so an unsupported value in them does not matter.
-const READ_KEYS = ["name", "description", "when_to_use", "disable-model-invocation", "tools", "permissionMode"];
+const READ_KEYS = ["name", "description", "when_to_use", "disable-model-invocation", "tools", "disallowedTools", "permissionMode"];
 const CONFIG_REASON = "configuration, not loaded into context";
 const BODY_REASON = "the body loads when invoked";
 const NAMELESS_REASON = "no name in the frontmatter, so Claude Code skips the file";
 
+// The parsed configuration of each scan, keyed by its context. ctx.memory holds only memory file texts,
+// which other measures iterate, so the parsed configuration is kept here instead.
+const parsedByScan = new WeakMap();
+
 export const claudeConfigMeasure = Object.freeze({ id: MEASURE_ID, collect: collectClaudeConfig });
 
 /**
+ * The parsed configuration of the target, read once per scan. Other measures use it instead of
+ * parsing the files again. Only this measure emits the inventory and the warnings. The returned
+ * object is shared: callers must not change it.
+ * @param {object} ctx The scan context. One context is one scan, so it keys the parsed configuration.
+ * @returns {{ settings: object[], hooks: object[], permissions: object, skills: object[], commands: object[],
+ *   subagents: object[], mcpServers: object[], parsedFiles: { settings: Array<{ path: string, data: object }>,
+ *   mcp: { path: string, data: object } | null }, inventory: object[], warnings: object[] }}
+ *   parsedFiles holds the parsed JSON objects of the settings and of .mcp.json, for measures that read values which the
+ *   output does not copy (secrets). It is never written to the output.
+ */
+export function loadClaudeConfig(ctx) {
+  if (!parsedByScan.has(ctx)) parsedByScan.set(ctx, parseClaudeConfig(ctx));
+  return parsedByScan.get(ctx);
+}
+
+/**
  * Reads the Claude Code configuration of the target.
- * @param {object} ctx The scan context: root, fs (safe-fs view) and readText.
+ * @param {object} ctx The scan context: root, fs (safe-fs view), readText and memory.
  * @returns {object} A partial measurements object, merged by the scan core.
  */
 function collectClaudeConfig(ctx) {
+  const config = loadClaudeConfig(ctx);
+
+  const unknownStatic = [
+    ...config.mcpServers.map((server) => ({ kind: "mcp-server", source: server.source, name: server.name })),
+    ...config.hooks
+      .filter((hook) => hook.injectsContext)
+      .map((hook) => ({ kind: "hook-output", source: hook.source, event: hook.event, matcher: hook.matcher })),
+  ];
+
+  return {
+    claudeConfig: {
+      settings: config.settings,
+      hooks: config.hooks,
+      skills: config.skills,
+      commands: config.commands,
+      subagents: config.subagents,
+      mcpServers: config.mcpServers,
+    },
+    security: { permissions: config.permissions },
+    inventory: config.inventory,
+    warnings: config.warnings,
+    context: {
+      alwaysLoaded: {
+        byComponent: [
+          budgetOf("skills", config.skills),
+          budgetOf("commands", config.commands),
+          budgetOf("subagents", config.subagents),
+        ],
+        unknownStatic,
+      },
+    },
+  };
+}
+
+// Reads every file of the configuration once, and collects what it finds and what it could not read.
+function parseClaudeConfig(ctx) {
   const redact = createRedactor({ root: ctx.root });
   const warnings = [];
   const inventory = [];
@@ -55,38 +113,24 @@ function collectClaudeConfig(ctx) {
   const options = { redact, warn, inventory };
 
   const settings = readSettings(ctx, options);
-  const mcpServers = readMcpServers(ctx, options);
+  const mcp = readMcpServers(ctx, options);
   // A skill is a SKILL.md inside its own folder (docs: skills). A SKILL.md directly in the skills folder is not one.
   const skillFiles = findFiles(ctx, SKILLS_DIR, (name) => name === "SKILL.md").filter((rel) => rel !== `${SKILLS_DIR}/SKILL.md`);
   const skills = readMarkdownFiles(ctx, "skill", skillFiles, options);
   const commands = readMarkdownFiles(ctx, "command", findFiles(ctx, COMMANDS_DIR, isMarkdownName), options);
   const subagents = readMarkdownFiles(ctx, "subagent", findFiles(ctx, AGENTS_DIR, isMarkdownName), options);
 
-  const unknownStatic = [
-    ...mcpServers.map((server) => ({ kind: "mcp-server", source: server.source, name: server.name })),
-    ...settings.hooks
-      .filter((hook) => hook.injectsContext)
-      .map((hook) => ({ kind: "hook-output", source: hook.source, event: hook.event, matcher: hook.matcher })),
-  ];
-
   return {
-    claudeConfig: {
-      settings: settings.items,
-      hooks: settings.hooks,
-      skills,
-      commands,
-      subagents,
-      mcpServers,
-    },
-    security: { permissions: settings.permissions },
+    settings: settings.items,
+    hooks: settings.hooks,
+    permissions: settings.permissions,
+    skills,
+    commands,
+    subagents,
+    mcpServers: mcp.servers,
+    parsedFiles: { settings: settings.objects, mcp: mcp.document },
     inventory,
     warnings,
-    context: {
-      alwaysLoaded: {
-        byComponent: [budgetOf("skills", skills), budgetOf("commands", commands), budgetOf("subagents", subagents)],
-        unknownStatic,
-      },
-    },
   };
 }
 
@@ -99,6 +143,7 @@ function collectClaudeConfig(ctx) {
 function readSettings(ctx, { redact, warn, inventory }) {
   const items = [];
   const hooks = [];
+  const objects = [];
   const lists = { allow: [], ask: [], deny: [], additionalDirectories: [] };
   let defaultMode = null;
   let disableBypassPermissionsMode = null;
@@ -112,6 +157,7 @@ function readSettings(ctx, { redact, warn, inventory }) {
       items.push({ path: rel, parsed: false, envKeys: [], enableAllProjectMcpServers: null, sandbox: emptySandbox() });
       continue;
     }
+    objects.push({ path: rel, data });
     const summary = summarizeSettings(data, rel, { redact, warn });
     items.push(summary.item);
     for (const key of Object.keys(lists)) lists[key].push(...summary[key]);
@@ -133,7 +179,7 @@ function readSettings(ctx, { redact, warn, inventory }) {
     disableBypassPermissionsMode,
     notes: notes.sort(compareText),
   };
-  return { items: items.sort(byPath), hooks, permissions };
+  return { items: items.sort(byPath), hooks, permissions, objects };
 }
 
 // What one parsed settings file says. Unexpected shapes are warnings, and the values that are fine are
@@ -238,10 +284,13 @@ function hookItem({ event, matcher, handler }, rel, ctx, { redact, warn }) {
   const script = command === null ? null : scriptOf(command.words, ctx, redact);
   if (handler.timeout !== undefined && typeof handler.timeout !== "number") warn(rel, "unexpected-shape", "hooks.timeout");
   if (handler.onFailure !== undefined && typeof handler.onFailure !== "string") warn(rel, "unexpected-shape", "hooks.onFailure");
+  if (handler.if !== undefined && typeof handler.if !== "string") warn(rel, "unexpected-shape", "hooks.if");
   return {
     source: rel,
     event: redact(event),
     matcher: matcher === null ? null : redact(matcher),
+    // Docs (hooks): the rule that filters the calls the hook runs for. Only a string is kept.
+    if: typeof handler.if === "string" ? redact(handler.if) : null,
     type: redact(handler.type),
     command: command === null ? null : redact(command.text),
     timeout: typeof handler.timeout === "number" && Number.isFinite(handler.timeout) ? handler.timeout : null,
@@ -346,16 +395,19 @@ function parseObject(text, rel, warn) {
 // MCP servers (.mcp.json)
 
 // Lists the servers of .mcp.json by name, type and the key names of env and headers. The values, the
-// command, the arguments and the URL are never copied.
+// command, the arguments and the URL are never copied. Returns the servers and the parsed file (null when it
+// is missing or not a JSON object), which the secrets measure reads through loadClaudeConfig.
 function readMcpServers(ctx, { redact, warn, inventory }) {
   const read = ctx.readText(MCP_FILE);
-  if (!read.ok) return [];
+  if (!read.ok) return { servers: [], document: null };
   inventory.push(configInventory(MCP_FILE, "mcp", read));
   const data = parseObject(read.text, MCP_FILE, warn);
-  if (data === null || data.mcpServers === undefined) return [];
+  if (data === null) return { servers: [], document: null };
+  const document = { path: MCP_FILE, data };
+  if (data.mcpServers === undefined) return { servers: [], document };
   if (!isPlainObject(data.mcpServers)) {
     warn(MCP_FILE, "unexpected-shape", "mcpServers");
-    return [];
+    return { servers: [], document };
   }
   const servers = [];
   for (const name of Object.keys(data.mcpServers).sort(compareText)) {
@@ -373,7 +425,7 @@ function readMcpServers(ctx, { redact, warn, inventory }) {
       headerKeys: server.headers === undefined ? [] : keyNames(server.headers, MCP_FILE, "mcpServers.headers", { redact, warn }),
     });
   }
-  return servers;
+  return { servers, document };
 }
 
 // Docs (mcp): an entry without "type" is read as stdio, but an entry with "url" and no "type" is a
@@ -431,7 +483,7 @@ function describeMarkdown(kind, rel, text, { redact, warn }) {
       loadMode: null,
       frontmatterError: broken ? "broken" : "unsupported-value",
     };
-    if (kind === "subagent") Object.assign(item, { tools: null, permissionMode: null });
+    if (kind === "subagent") Object.assign(item, { tools: null, disallowedTools: null, permissionMode: null });
     return item;
   }
 
@@ -451,6 +503,7 @@ function describeMarkdown(kind, rel, text, { redact, warn }) {
   };
   if (kind === "subagent") {
     item.tools = toolsOf(fields.tools, redact);
+    item.disallowedTools = toolsOf(fields.disallowedTools, redact);
     item.permissionMode = typeof fields.permissionMode === "string" ? redact(fields.permissionMode) : null;
   }
   return item;

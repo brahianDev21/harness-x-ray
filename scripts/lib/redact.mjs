@@ -3,9 +3,13 @@
 // slashes, and the drive forms of Git Bash (/c/... and //c/...). On Windows the match ignores letter
 // case. A folder with no segments, such as "/" or "C:\", is never replaced, because it would match
 // almost any text.
+//
+// Token-shaped text (the specific patterns of secret-patterns.mjs) is masked as well, anywhere in the
+// string. Generic assignments are not: a key name alone does not show a secret.
 
 import fs from "node:fs";
 import os from "node:os";
+import { maskSpecificSecrets } from "./secret-patterns.mjs";
 
 // Matches one or more separators, either kind.
 const SEPARATOR = "[\\\\/]+";
@@ -31,7 +35,7 @@ export function createRedactor({ root, home = os.homedir(), platform = process.p
     if (typeof value !== "string") return value;
     let text = value;
     for (const rule of rules) text = text.replace(rule.pattern, rule.replacement);
-    return text;
+    return maskSpecificSecrets(text);
   };
 }
 
