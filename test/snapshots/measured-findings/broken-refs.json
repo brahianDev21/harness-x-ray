@@ -1,0 +1,429 @@
+{
+  "candidates": [
+    {
+      "file": ".claude/rules/tooling.md",
+      "id": "cand-1",
+      "kind": "memory-file",
+      "loadMode": "on-demand",
+      "measurementRef": "/inventory/0",
+      "rules": [
+        "RUL-01",
+        "RUL-02",
+        "RUL-03",
+        "VER-01",
+        "SEC-04",
+        "SEC-05",
+        "STR-01",
+        "COD-04"
+      ]
+    },
+    {
+      "file": "AGENTS.md",
+      "id": "cand-2",
+      "kind": "memory-file",
+      "loadMode": "not-loaded",
+      "measurementRef": "/inventory/1",
+      "rules": [
+        "RUL-01",
+        "RUL-02",
+        "RUL-03",
+        "VER-01",
+        "SEC-04",
+        "SEC-05",
+        "STR-01",
+        "COD-04"
+      ]
+    },
+    {
+      "file": "CLAUDE.md",
+      "id": "cand-3",
+      "kind": "memory-file",
+      "loadMode": "always",
+      "measurementRef": "/inventory/2",
+      "rules": [
+        "RUL-01",
+        "RUL-02",
+        "RUL-03",
+        "VER-01",
+        "SEC-04",
+        "SEC-05",
+        "STR-01",
+        "COD-04"
+      ]
+    }
+  ],
+  "measuredFindings": [
+    {
+      "axis": "instructions",
+      "evidence": [
+        {
+          "file": ".claude/rules/tooling.md",
+          "line": 6
+        }
+      ],
+      "id": "mf-1",
+      "impact": "medium",
+      "measurementRef": "/instructions/brokenRefs/0",
+      "rule": "RUL-04",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/instructions/brokenRefs/0",
+          "trigger": "reference-missing"
+        }
+      ]
+    },
+    {
+      "axis": "instructions",
+      "evidence": [
+        {
+          "file": ".claude/rules/tooling.md",
+          "line": 7
+        }
+      ],
+      "id": "mf-2",
+      "impact": "medium",
+      "measurementRef": "/instructions/brokenRefs/1",
+      "rule": "RUL-04",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/instructions/brokenRefs/1",
+          "trigger": "reference-missing"
+        }
+      ]
+    },
+    {
+      "axis": "instructions",
+      "evidence": [
+        {
+          "file": ".claude/rules/tooling.md",
+          "line": 8
+        }
+      ],
+      "id": "mf-3",
+      "impact": "medium",
+      "measurementRef": "/instructions/brokenRefs/2",
+      "rule": "RUL-04",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/instructions/brokenRefs/2",
+          "trigger": "reference-missing"
+        }
+      ]
+    },
+    {
+      "axis": "instructions",
+      "evidence": [
+        {
+          "file": "AGENTS.md",
+          "line": 4
+        }
+      ],
+      "id": "mf-4",
+      "impact": "medium",
+      "measurementRef": "/instructions/brokenRefs/3",
+      "rule": "RUL-04",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/instructions/brokenRefs/3",
+          "trigger": "reference-missing"
+        }
+      ]
+    },
+    {
+      "axis": "instructions",
+      "evidence": [
+        {
+          "file": "AGENTS.md",
+          "line": 5
+        }
+      ],
+      "id": "mf-5",
+      "impact": "medium",
+      "measurementRef": "/instructions/brokenRefs/4",
+      "rule": "RUL-04",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/instructions/brokenRefs/4",
+          "trigger": "reference-missing"
+        }
+      ]
+    },
+    {
+      "axis": "instructions",
+      "evidence": [
+        {
+          "file": "CLAUDE.md",
+          "line": 3
+        }
+      ],
+      "id": "mf-6",
+      "impact": "medium",
+      "measurementRef": "/instructions/brokenRefs/5",
+      "rule": "RUL-04",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/instructions/brokenRefs/5",
+          "trigger": "reference-missing"
+        }
+      ]
+    },
+    {
+      "axis": "instructions",
+      "evidence": [
+        {
+          "file": "CLAUDE.md",
+          "line": 4
+        }
+      ],
+      "id": "mf-7",
+      "impact": "medium",
+      "measurementRef": "/instructions/brokenRefs/6",
+      "rule": "RUL-04",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/instructions/brokenRefs/6",
+          "trigger": "reference-missing"
+        }
+      ]
+    },
+    {
+      "axis": "instructions",
+      "evidence": [
+        {
+          "file": "CLAUDE.md",
+          "line": 5
+        }
+      ],
+      "id": "mf-8",
+      "impact": "medium",
+      "measurementRef": "/instructions/brokenRefs/7",
+      "rule": "RUL-04",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/instructions/brokenRefs/7",
+          "trigger": "reference-missing"
+        }
+      ]
+    },
+    {
+      "axis": "instructions",
+      "evidence": [
+        {
+          "file": "CLAUDE.md",
+          "line": 6
+        }
+      ],
+      "id": "mf-9",
+      "impact": "medium",
+      "measurementRef": "/instructions/brokenRefs/8",
+      "rule": "RUL-04",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/instructions/brokenRefs/8",
+          "trigger": "reference-missing"
+        }
+      ]
+    },
+    {
+      "axis": "instructions",
+      "evidence": [
+        {
+          "file": "CLAUDE.md",
+          "line": 12
+        }
+      ],
+      "id": "mf-10",
+      "impact": "medium",
+      "measurementRef": "/instructions/brokenRefs/9",
+      "rule": "RUL-04",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/instructions/brokenRefs/9",
+          "trigger": "reference-missing"
+        }
+      ]
+    },
+    {
+      "axis": "instructions",
+      "evidence": [
+        {
+          "file": "CLAUDE.md",
+          "line": 16
+        }
+      ],
+      "id": "mf-11",
+      "impact": "medium",
+      "measurementRef": "/instructions/brokenRefs/10",
+      "rule": "RUL-04",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/instructions/brokenRefs/10",
+          "trigger": "reference-missing"
+        }
+      ]
+    },
+    {
+      "axis": "instructions",
+      "evidence": [
+        {
+          "file": "CLAUDE.md",
+          "line": 17
+        }
+      ],
+      "id": "mf-12",
+      "impact": "medium",
+      "measurementRef": "/instructions/brokenRefs/11",
+      "rule": "RUL-04",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/instructions/brokenRefs/11",
+          "trigger": "reference-missing"
+        }
+      ]
+    },
+    {
+      "axis": "context",
+      "evidence": [
+        {
+          "file": "AGENTS.md"
+        },
+        {
+          "file": "CLAUDE.md"
+        }
+      ],
+      "id": "mf-13",
+      "impact": "medium",
+      "measurementRef": "/inventory/1",
+      "rule": "CTX-07",
+      "triggers": [
+        {
+          "detail": {
+            "causedBy": "target"
+          },
+          "impact": "medium",
+          "measurementRef": "/inventory/1",
+          "trigger": "agents-md-not-loaded"
+        }
+      ]
+    },
+    {
+      "axis": "security",
+      "evidence": [],
+      "id": "mf-14",
+      "impact": "medium",
+      "measurementRef": "/security/destructiveCoverage/commands/0",
+      "rule": "SEC-02",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/0",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/1",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/2",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/3",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/4",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/5",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/6",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/7",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/8",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/9",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/10",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/11",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/12",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/13",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/14",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/15",
+          "trigger": "default-mode-without-hook"
+        }
+      ]
+    },
+    {
+      "axis": "security",
+      "evidence": [],
+      "id": "mf-15",
+      "impact": "medium",
+      "measurementRef": "/security/secrets/readProtection/envAtRoot/decision",
+      "rule": "SEC-03",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/security/secrets/readProtection/envAtRoot/decision",
+          "trigger": "env-at-root-readable"
+        }
+      ]
+    }
+  ],
+  "undeterminable": []
+}
+

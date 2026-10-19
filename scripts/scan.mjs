@@ -12,6 +12,7 @@ import { claudeConfigMeasure } from "./lib/claude-config.mjs";
 import { destructiveCommandsMeasure } from "./lib/destructive-commands.mjs";
 import { duplicationMeasure } from "./lib/duplication.mjs";
 import { writeStableJson } from "./lib/json-out.mjs";
+import { countByAxis, deriveMeasuredOutput } from "./lib/measured-findings.mjs";
 import { memoryMeasure } from "./lib/memory.mjs";
 import { referencesMeasure } from "./lib/references.mjs";
 import { scan } from "./lib/scanner.mjs";
@@ -48,7 +49,7 @@ async function main(argv) {
         : path.resolve(out);
     checkOutputDir(outDir, target.root);
 
-    const measurements = await scan({ root: target.root, measures: MEASURES });
+    const measurements = await scan({ root: target.root, measures: MEASURES, derive: deriveMeasuredOutput });
     fs.mkdirSync(outDir, { recursive: true });
     const file = path.join(outDir, "measurements.json");
     writeStableJson(file, measurements);
@@ -84,13 +85,15 @@ function parseCommandLine(argv) {
   return { target: positionals[0], out: values.out };
 }
 
-// Five lines at most. Nothing else is printed on success.
+// Six lines at most. Nothing else is printed on success.
 function printSummary(measurements, file) {
-  const { target, warnings } = measurements;
+  const { target, warnings, measuredFindings } = measurements;
   const listed = target.fileListSource === "git" ? "listed by git" : "listed by walking the folder";
+  const perAxis = Object.entries(countByAxis(measuredFindings)).map(([axis, count]) => `${axis} ${count}`).join(", ");
   console.log(`target: ${target.name}`);
   console.log(`files: ${target.fileCount} (${listed})`);
   console.log(`commit: ${target.git.head ?? "none"}`);
   console.log(`warnings: ${warnings.length}`);
+  console.log(`measured findings: ${perAxis}`);
   console.log(`measurements: ${file}`);
 }

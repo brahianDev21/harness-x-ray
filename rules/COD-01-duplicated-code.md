@@ -30,7 +30,7 @@ This is a measured rule. The scanner writes the `code.duplication` output, and t
 - `code.duplication.duplicatedLinesPct`: the share of normalized lines that are redundant, in percent.
 - `code.duplication.groups[]`: the 20 largest groups, each with the `file:line` of every copy.
 - `code.duplication.inTests`: the same measures for test files, counted apart. They do not enter the percentage.
-- `code.filesScanned`: the number of main-code files scanned. Files skipped because of the caps appear in `warnings`.
+- `code.duplication.filesScanned`: the number of main-code files scanned. Files skipped because of the caps appear in `warnings`.
 
 ### Metric
 

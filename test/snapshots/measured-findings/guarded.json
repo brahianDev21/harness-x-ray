@@ -1,0 +1,17 @@
+{
+  "candidates": [
+    {
+      "file": ".claude/hooks/guard-destructive.mjs",
+      "id": "cand-1",
+      "kind": "hook-script",
+      "measurementRef": "/claudeConfig/hooks/0/script",
+      "rules": [
+        "SEC-02",
+        "SEC-04"
+      ]
+    }
+  ],
+  "measuredFindings": [],
+  "undeterminable": []
+}
+

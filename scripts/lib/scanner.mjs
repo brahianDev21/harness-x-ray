@@ -10,6 +10,10 @@
 // The core always writes context.alwaysLoaded: the components of the always-loaded budget and the
 // items whose size is unknown. It sorts them, and it sets the total and the method. A measure never
 // sets the total.
+//
+// After the merge, the optional derive function runs once on a frozen copy of the result (no context, so it
+// cannot read the target). The keys it returns are the DERIVED_KEYS: the measured findings, the candidates and
+// the undeterminable cases of measured-findings.mjs. A measure cannot write them.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -30,6 +34,8 @@ const SHARED_LISTS = new Set([
   "/context/alwaysLoaded/byComponent",
   "/context/alwaysLoaded/unknownStatic",
 ]);
+// The top-level keys that only the derive step writes (see the derive option of scan). No measure may set them.
+export const DERIVED_KEYS = Object.freeze(["candidates", "measuredFindings", "undeterminable"]);
 
 /**
  * Scans one target.
@@ -38,11 +44,16 @@ const SHARED_LISTS = new Set([
  * @param {Array<{ id: string, collect: (ctx: object) => object | Promise<object> }>} [options.measures]
  *   Run in this order. Each one returns a plain object with its sections.
  * @param {Date} [options.now] Time of the scan, written to meta.scannedAt.
+ * @param {(merged: object) => object} [options.derive] Runs once, after the measures have merged and the lists are
+ *   sorted. It receives a deep-frozen copy of the merged result and no context, so it cannot read the target. It
+ *   returns a plain object whose keys are DERIVED_KEYS; those keys are added to the result.
  * @returns {Promise<object>} The measurements object, ready for toStableJson.
- * @throws {Error} If a measure fails, two measures set the same value, or a measure returns something malformed.
+ * @throws {Error} If a measure fails, two measures set the same value, a measure sets a derived key, or derive
+ *   returns something malformed.
  */
-export async function scan({ root, measures = [], now = new Date() }) {
+export async function scan({ root, measures = [], now = new Date(), derive }) {
   validateMeasures(measures);
+  if (derive !== undefined && typeof derive !== "function") throw new TypeError("derive must be a function");
   const fsView = createTargetFs(root);
   const listing = await listFiles(root);
   const ctx = Object.freeze({
@@ -57,7 +68,8 @@ export async function scan({ root, measures = [], now = new Date() }) {
 
   const result = {
     schemaVersion: SCHEMA_VERSION,
-    meta: { tool: readToolName(), scannedAt: now.toISOString() },
+    // targetRoot is the only absolute path of the machine that the output holds. It lives in meta on purpose.
+    meta: { tool: readToolName(), scannedAt: now.toISOString(), targetRoot: root },
     target: {
       name: path.basename(root) || "root",
       git: { isRepo: listing.fileListSource === "git", head: listing.commit },
@@ -84,7 +96,28 @@ export async function scan({ root, measures = [], now = new Date() }) {
     ...listing.warnings.map((item) => toWarning(item, "git")),
     ...fsView.warnings().map((item) => toWarning(item, "fs")),
   ]);
+  if (derive !== undefined) addDerived(result, derive);
   return result;
+}
+
+// Runs derive on a frozen copy of the merged result, and adds the keys it returns. A key that derive may not
+// write, or that the result already has, is an error.
+function addDerived(result, derive) {
+  const derived = derive(deepFreeze(structuredClone(result)));
+  if (!isPlainObject(derived)) throw new TypeError("derive must return a plain object");
+  for (const key of Object.keys(derived)) {
+    if (!DERIVED_KEYS.includes(key)) throw new TypeError(`derive returned "${key}", which is not a derived key`);
+    if (Object.hasOwn(result, key)) throw new Error(`derived key "${key}" already exists in the result`);
+    defineOwn(result, key, derived[key]);
+  }
+}
+
+function deepFreeze(value) {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 function readToolName() {
@@ -124,6 +157,9 @@ function mergeSection(target, section, owner, pointer, owners) {
   for (const key of Object.keys(section)) {
     const value = section[key];
     if (value === undefined) continue;
+    if (pointer === "" && DERIVED_KEYS.includes(key)) {
+      throw new Error(`Measure "${owner}" sets ${key}, which only the derive step writes`);
+    }
     const childPointer = `${pointer}/${key}`;
     if (SHARED_LISTS.has(childPointer)) {
       appendShared(target[key], childPointer, value, owner);

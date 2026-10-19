@@ -229,6 +229,24 @@ export function mask(value, prefix = null) {
 }
 
 /**
+ * Whether a text has the shape that mask() gives: a head that is a registered prefix or one or two characters, one
+ * ellipsis, and a tail of at most four characters. A raw token has no ellipsis, so it is never taken for a mask. Kept
+ * next to mask() so that the two cannot drift apart.
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function isMasked(value) {
+  if (typeof value !== "string") return false;
+  if (value === ELLIPSIS) return true;
+  const parts = value.split(ELLIPSIS);
+  if (parts.length !== 2) return false;
+  const [head, tail] = parts;
+  if (tail.length > TAIL_LENGTH) return false;
+  if (head.length >= 1 && head.length <= 2) return true;
+  return loadSecretPatterns().contentPatterns.some((item) => item.prefix === head);
+}
+
+/**
  * The text with every specific match replaced by its masked form. Used by the redactor for every string copied from the target.
  * @param {string} text
  * @returns {string}

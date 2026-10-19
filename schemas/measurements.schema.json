@@ -3,7 +3,7 @@
   "title": "measurements.json",
   "description": "Output of scripts/scan.mjs. Documentation only: nothing validates against it. This file lists the fields that every scan writes. Measures add their own sections (for example security or context), and each one extends this file. Outside meta, no value holds an absolute path of the machine that ran the scan; paths are relative to the target and use forward slashes.",
   "type": "object",
-  "required": ["claudeConfig", "code", "context", "instructions", "inventory", "meta", "schemaVersion", "security", "structure", "target", "verification", "warnings"],
+  "required": ["candidates", "claudeConfig", "code", "context", "instructions", "inventory", "measuredFindings", "meta", "schemaVersion", "security", "structure", "target", "undeterminable", "verification", "warnings"],
   "properties": {
     "schemaVersion": {
       "const": 1,
@@ -12,7 +12,7 @@
     "meta": {
       "type": "object",
       "description": "Values that depend on the machine or on the time. Determinism checks ignore this key.",
-      "required": ["tool", "scannedAt"],
+      "required": ["scannedAt", "targetRoot", "tool"],
       "properties": {
         "tool": {
           "type": "string",
@@ -23,6 +23,10 @@
           "type": "string",
           "format": "date-time",
           "description": "UTC time of the scan, in ISO 8601."
+        },
+        "targetRoot": {
+          "type": "string",
+          "description": "Absolute path of the scanned folder, as the scanner resolved it. It is the only absolute path of this machine in the file, and the findings validator uses it to read the evidence."
         }
       }
     },
@@ -124,6 +128,30 @@
             "type": "string",
             "description": "Optional fixed code with more context, never a message from the system. The structure measure writes count=N with the entries it cut, and the duplication measure writes count=N with the files or bytes it cut."
           }
+        },
+        "additionalProperties": false
+      }
+    },
+    "measuredFindings": {
+      "type": "array",
+      "description": "Findings of the measured MVP rules. Written after the measures by the derive step (scripts/lib/measured-findings.mjs), from these measurements only; the target is never read again. Ids mf-N follow the order of EMITTERS (axis order), then the order of the measurements inside each emitter. A finding's impact is the highest impact of its triggers; its measurementRef is the ref of its first trigger with that impact, except for CTX-01 and COD-01, whose ref is their number. Each trigger has its own measurementRef. Impacts follow the thresholds in THRESHOLDS, which are provisional.",
+      "items": { "$ref": "#/$defs/measuredFinding" }
+    },
+    "candidates": {
+      "type": "array",
+      "description": "What the agent reads for the judgment rules. Not findings. Carry paths relative to the target and line numbers, never code text. Ids cand-N follow the order of the list: duplication groups (COD-01, COD-04), then hook scripts sorted by path (SEC-02, SEC-04), then memory and rule files in inventory order (RUL-01, RUL-02, RUL-03, VER-01, SEC-04, SEC-05, STR-01, COD-04).",
+      "items": { "$ref": "#/$defs/candidate" }
+    },
+    "undeterminable": {
+      "type": "array",
+      "description": "Cases that a measured rule could not decide, with the reason. Never findings. In the order of EMITTERS, then the order of the measurements.",
+      "items": {
+        "type": "object",
+        "required": ["rule", "measurementRef", "reason"],
+        "properties": {
+          "rule": { "type": "string", "pattern": "^(RUL|CTX|SEC|VER|STR|COD)-[0-9]{2}$" },
+          "measurementRef": { "$ref": "#/$defs/measurementRef" },
+          "reason": { "type": "string", "description": "What is undeterminable and the reason the measure gives." }
         },
         "additionalProperties": false
       }
@@ -705,7 +733,7 @@
         },
         "largeFiles": {
           "type": "array",
-          "description": "Versioned files above the provisional threshold (1 MiB), sorted by path. Lockfiles (by base name, in any folder) and files of a generated entry are left out. When more than 200 are found, the first 200 by path are listed and a warning with reason large-files-cut gives the count that were cut.",
+          "description": "Versioned files above THRESHOLDS.largeFileBytes (262,144 bytes, 256 KiB; provisional), sorted by path. Lockfiles (by base name, in any folder) and files of a generated entry are left out. When more than 200 are found, the first 200 by path are listed and a warning with reason large-files-cut gives the count that were cut.",
           "items": {
             "type": "object",
             "required": ["path", "bytes", "protection", "memory"],
@@ -874,6 +902,75 @@
     }
   },
   "$defs": {
+    "measurementRef": {
+      "type": "string",
+      "pattern": "^(/[^/]+)+$",
+      "description": "RFC 6901 JSON pointer into this file. The scanner writes only keys and array indexes, so no escape is needed. The value it names exists in the same measurements.json."
+    },
+    "evidence": {
+      "type": "object",
+      "description": "A place in the target that the finding cites. file is a POSIX path relative to the target (a folder when the entry is a folder, or a settings or hook file that holds the harness setting). line and endLine are present only for a copy or a memory line that has them.",
+      "required": ["file"],
+      "properties": {
+        "file": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 },
+        "endLine": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "trigger": {
+      "type": "object",
+      "description": "One reason for a finding. trigger is a fixed kebab-case name of the case that matched. impact is the impact of this trigger. threshold is present when the trigger compares a number with a THRESHOLDS key (key and its value, provisional). detail holds small facts that the trigger needs, such as the command ids that pass through an allow entry, or the decisions of a folder; it never holds code text.",
+      "required": ["trigger", "impact", "measurementRef"],
+      "properties": {
+        "trigger": { "type": "string", "pattern": "^[a-z]+(-[a-z0-9]+)*$" },
+        "impact": { "enum": ["high", "medium", "low"] },
+        "measurementRef": { "$ref": "#/$defs/measurementRef" },
+        "threshold": {
+          "type": "object",
+          "required": ["key", "value"],
+          "properties": {
+            "key": { "type": "string" },
+            "value": { "type": "number" }
+          },
+          "additionalProperties": false
+        },
+        "detail": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "measuredFinding": {
+      "type": "object",
+      "description": "A finding of a measured rule. Its axis is the axis of its rule prefix. The impact is the highest impact of its triggers.",
+      "required": ["id", "rule", "axis", "impact", "measurementRef", "evidence", "triggers"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^mf-[1-9][0-9]*$" },
+        "rule": { "type": "string", "pattern": "^(RUL|CTX|SEC|VER|STR|COD)-[0-9]{2}$" },
+        "axis": { "enum": ["instructions", "context", "security", "verification", "structure", "code"] },
+        "impact": { "enum": ["high", "medium", "low"] },
+        "measurementRef": { "$ref": "#/$defs/measurementRef" },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
+        "triggers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/trigger" } }
+      },
+      "additionalProperties": false
+    },
+    "candidate": {
+      "type": "object",
+      "description": "Something the agent must read for a judgment rule. kind selects the other fields: duplication-group has lines, redundantLines and copies (file, line, endLine; never code text); hook-script and memory-file have file; memory-file has loadMode (always, on-demand, not-loaded or null for a rule that could not be read).",
+      "required": ["id", "kind", "rules", "measurementRef"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^cand-[1-9][0-9]*$" },
+        "kind": { "enum": ["duplication-group", "hook-script", "memory-file"] },
+        "rules": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^(RUL|CTX|SEC|VER|STR|COD)-[0-9]{2}$" } },
+        "measurementRef": { "$ref": "#/$defs/measurementRef" },
+        "file": { "type": "string" },
+        "lines": { "type": "integer", "minimum": 1 },
+        "redundantLines": { "type": "integer", "minimum": 0 },
+        "copies": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
+        "loadMode": { "enum": ["always", "on-demand", "not-loaded", null] }
+      },
+      "additionalProperties": false
+    },
     "verdict": {
       "type": "object",
       "description": "What the permission rules decide for one Read (docs: permissions). rule and source are null when no rule decides.",

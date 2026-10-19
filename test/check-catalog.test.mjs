@@ -136,6 +136,14 @@ test("the repository catalog has no errors", async () => {
   assert.deepEqual(result.errors, [], describeIssues(result.errors));
 });
 
+test("the repository emitters are exactly the measured MVP rules, and the check prints no emitter warning", async () => {
+  const loaded = await loadEmitters(HARNESS_ROOT);
+  const result = checkCatalog({ root: HARNESS_ROOT, emitters: loaded.emitters });
+  const measuredMvp = ["RUL-04", "CTX-01", "CTX-07", "SEC-01", "SEC-02", "SEC-03", "STR-02", "COD-01"];
+  assert.deepEqual(Object.keys(loaded.emitters), measuredMvp);
+  assert.deepEqual(result.warnings.filter((warning) => warning.field === "EMITTERS"), []);
+});
+
 test("a root without a rules folder is refused", (t) => {
   const fixture = makeFixture({});
   t.after(fixture.cleanup);

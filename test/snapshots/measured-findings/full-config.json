@@ -1,0 +1,100 @@
+{
+  "candidates": [
+    {
+      "file": ".claude/hooks/guard-bash.mjs",
+      "id": "cand-1",
+      "kind": "hook-script",
+      "measurementRef": "/claudeConfig/hooks/0/script",
+      "rules": [
+        "SEC-02",
+        "SEC-04"
+      ]
+    },
+    {
+      "file": ".claude/hooks/session-context.mjs",
+      "id": "cand-2",
+      "kind": "hook-script",
+      "measurementRef": "/claudeConfig/hooks/2/script",
+      "rules": [
+        "SEC-02",
+        "SEC-04"
+      ]
+    }
+  ],
+  "measuredFindings": [
+    {
+      "axis": "security",
+      "evidence": [
+        {
+          "file": ".claude/settings.json"
+        }
+      ],
+      "id": "mf-1",
+      "impact": "medium",
+      "measurementRef": "/security/destructiveCoverage/commands/13",
+      "rule": "SEC-02",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/13",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/14",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/15",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/preToolUseHooks/1",
+          "trigger": "hook-fails-open"
+        }
+      ]
+    },
+    {
+      "axis": "security",
+      "evidence": [
+        {
+          "file": ".claude/settings.json",
+          "line": 11
+        },
+        {
+          "file": ".mcp.json",
+          "line": 7
+        },
+        {
+          "file": ".mcp.json",
+          "line": 14
+        }
+      ],
+      "id": "mf-2",
+      "impact": "high",
+      "measurementRef": "/security/secrets/literals/0",
+      "rule": "SEC-03",
+      "triggers": [
+        {
+          "impact": "high",
+          "measurementRef": "/security/secrets/literals/0",
+          "trigger": "literal-secret"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/secrets/literals/1",
+          "trigger": "literal-secret"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/secrets/literals/2",
+          "trigger": "literal-secret"
+        }
+      ]
+    }
+  ],
+  "undeterminable": []
+}
+
