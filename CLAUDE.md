@@ -4,13 +4,14 @@
 
 Harness X-Ray: a Node.js (ESM) tool that statically audits the harness of another repository (its CLAUDE.md, permissions, hooks, skills and tools) and reports findings with their sources. It is built with Claude Code and has no npm dependencies.
 
-Status: early development. The scan core, all the MVP measures (Claude Code configuration, memory, references, verification, destructive commands, secrets, structure, duplication) and the full MVP rule catalog with its checker exist; measured findings, the findings validator and the report are not written yet.
+Status: early development. The scan core, all the MVP measures, the measured findings, the full MVP rule catalog with its checker, the `findings.json` validator and the report renderer exist; the `xray-scan` skill and this repository's own harness are not written yet.
 
 ## Commands
 
 - `npm test`: runs the test suite with `node:test`. Run it before reporting work as done.
-- `npm run scan -- <target> [--out <dir>]`: scans a target and writes `measurements.json`. The measures are registered in the `MEASURES` list of `scripts/scan.mjs`.
-- `npm run check`: validates the rule catalog in `rules/` (frontmatter, sections, sources, evidence levels), the `data/*.json` files (valid JSON, unique ids, compilable regexes) and, once the emitters exist, that every measured MVP rule has one. Exit 0 with no errors, 1 with errors.
+- `npm run scan -- <target> [--out <dir>]`: scans a target and writes `measurements.json`, with the measured findings and candidates. The measures are registered in the `MEASURES` list of `scripts/scan.mjs`; the provisional thresholds are in `scripts/lib/thresholds.mjs`.
+- `node scripts/render-report.mjs <runDir>`: validates `<runDir>/findings.json` against the catalog, the scan and the target, then writes `<runDir>/report.md`. Exit 0 when written, 1 when validation fails, 2 for a usage or input error; a failed run writes nothing.
+- `npm run check`: validates the rule catalog in `rules/` (frontmatter, sections, sources, evidence levels), the `data/*.json` files (valid JSON, unique ids, compilable regexes) and that every measured MVP rule has an emitter. Exit 0 with no errors, 1 with errors.
 
 ## Principles
 
