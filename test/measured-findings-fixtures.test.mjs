@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { toStableJson } from "../scripts/lib/json-out.mjs";
 import { makeFixture } from "./helpers/make-fixture.mjs";
+import { SECRET_FIXTURE_FILES } from "./helpers/secret-fixture-files.mjs";
 
 const execFileAsync = promisify(execFile);
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -21,6 +22,8 @@ const FIXTURES = path.join(TEST_DIR, "fixtures");
 const SNAPSHOTS = path.join(TEST_DIR, "snapshots", "measured-findings");
 // catalog-good is a catalog for check-catalog.mjs. It is not a folder of a project, so it is not scanned.
 const CATALOG_FIXTURES = new Set(["catalog-good"]);
+// Secret files that a fixture needs but does not version (see test/helpers/secret-fixture-files.mjs).
+const UNVERSIONED_FILES = new Map([["secrets", SECRET_FIXTURE_FILES]]);
 const TARGETS = fs
   .readdirSync(FIXTURES, { withFileTypes: true })
   .filter((entry) => entry.isDirectory() && !CATALOG_FIXTURES.has(entry.name))
@@ -91,7 +94,7 @@ test("there is one snapshot for each target fixture and no other", () => {
 
 for (const name of TARGETS) {
   test(`fixture ${name}: measured findings match the snapshot, refs resolve, evidence exists, and two scans agree`, async (t) => {
-    const fixture = makeFixture({ fromDir: path.join(FIXTURES, name), git: true });
+    const fixture = makeFixture({ fromDir: path.join(FIXTURES, name), git: true, files: UNVERSIONED_FILES.get(name) ?? {} });
     t.after(fixture.cleanup);
     const first = await scanInto(fixture.root, path.join(fixture.base, "first"));
     const second = await scanInto(fixture.root, path.join(fixture.base, "second"));
