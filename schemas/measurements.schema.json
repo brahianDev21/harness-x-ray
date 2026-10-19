@@ -3,7 +3,7 @@
   "title": "measurements.json",
   "description": "Output of scripts/scan.mjs. Documentation only: nothing validates against it. This file lists the fields that every scan writes. Measures add their own sections (for example security or context), and each one extends this file. Outside meta, no value holds an absolute path of the machine that ran the scan; paths are relative to the target and use forward slashes.",
   "type": "object",
-  "required": ["claudeConfig", "context", "instructions", "inventory", "meta", "schemaVersion", "security", "structure", "target", "verification", "warnings"],
+  "required": ["claudeConfig", "code", "context", "instructions", "inventory", "meta", "schemaVersion", "security", "structure", "target", "verification", "warnings"],
   "properties": {
     "schemaVersion": {
       "const": 1,
@@ -118,11 +118,11 @@
           },
           "reason": {
             "type": "string",
-            "description": "Fixed code, such as outside-root, too-large or binary."
+            "description": "Fixed code, such as outside-root, too-large or binary. The duplication measure writes code-file-too-large, code-file-minified and code-file-unreadable (its detail is the safe-fs reason) for a code file it skips, and code-files-cut or code-bytes-cut for the files that a cap cut."
           },
           "detail": {
             "type": "string",
-            "description": "Optional fixed code with more context. Never a message from the system."
+            "description": "Optional fixed code with more context, never a message from the system. The structure measure writes count=N with the entries it cut, and the duplication measure writes count=N with the files or bytes it cut."
           }
         },
         "additionalProperties": false
@@ -642,8 +642,8 @@
     },
     "structure": {
       "type": "object",
-      "description": "The structure of the target. So far, only the tools that enforce rules. Only file names are read; no file is opened.",
-      "required": ["enforcementTools"],
+      "description": "The structure of the target: the folder tree, how far the memory maps it, the large files and the generated files, and the tools that enforce rules. Only file names and sizes come from the file list; no file is opened. Each large and generated entry says what the permission rules decide for Read and Edit, and whether the memory marks it as not to touch. Heuristics and thresholds are in scripts/lib/structure.mjs.",
+      "required": ["enforcementTools", "generatedFiles", "largeFiles", "mapCoverage", "tree"],
       "properties": {
         "enforcementTools": {
           "type": "array",
@@ -654,6 +654,83 @@
             "properties": {
               "tool": { "enum": ["biome", "dependency-cruiser", "editorconfig", "eslint", "github-actions", "gitleaks", "husky", "jscpd", "lint-staged", "prettier", "secretlint", "typescript"] },
               "path": { "type": "string", "description": "Relative to the target, with forward slashes. The husky entry is the folder .husky." }
+            }
+          }
+        },
+        "tree": {
+          "type": "array",
+          "description": "One entry per top-level folder and per second-level folder, built from the file list. files counts the files below the folder at any depth, generated ones included. Sorted by path. Files directly in the root are not counted.",
+          "items": {
+            "type": "object",
+            "required": ["path", "files"],
+            "properties": {
+              "path": { "type": "string", "description": "POSIX path relative to the target, without a trailing slash." },
+              "files": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        "mapCoverage": {
+          "type": "object",
+          "description": "Which top-level folders the memory maps. Only the folders that are not generated are counted. Memory files marked not-loaded are not read for this.",
+          "required": ["dirs", "mentioned", "byDir"],
+          "properties": {
+            "dirs": { "type": "integer", "minimum": 0, "description": "Number of top-level folders counted (the length of byDir)." },
+            "mentioned": { "type": "integer", "minimum": 0, "description": "Number of those folders that the memory mentions." },
+            "byDir": {
+              "type": "array",
+              "description": "One item per counted folder, sorted by dir.",
+              "items": {
+                "type": "object",
+                "required": ["dir", "files", "mentioned", "mentions"],
+                "properties": {
+                  "dir": { "type": "string", "description": "Name of the top-level folder." },
+                  "files": { "type": "integer", "minimum": 1, "description": "Files below the folder, at any depth." },
+                  "mentioned": { "type": "boolean" },
+                  "mentions": {
+                    "type": "array",
+                    "description": "At most one entry per memory file: the first line of that file that mentions the folder. Sorted by file, then line.",
+                    "items": {
+                      "type": "object",
+                      "required": ["file", "line"],
+                      "properties": {
+                        "file": { "type": "string", "description": "Memory file, relative to the target." },
+                        "line": { "type": "integer", "minimum": 1, "description": "1-based line in the memory file." }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "largeFiles": {
+          "type": "array",
+          "description": "Versioned files above the provisional threshold (1 MiB), sorted by path. Lockfiles (by base name, in any folder) and files of a generated entry are left out. When more than 200 are found, the first 200 by path are listed and a warning with reason large-files-cut gives the count that were cut.",
+          "items": {
+            "type": "object",
+            "required": ["path", "bytes", "protection", "memory"],
+            "properties": {
+              "path": { "type": "string", "description": "POSIX path relative to the target." },
+              "bytes": { "type": "integer", "minimum": 0 },
+              "protection": { "$ref": "#/$defs/protection" },
+              "memory": { "$ref": "#/$defs/entryMemory" }
+            }
+          }
+        },
+        "generatedFiles": {
+          "type": "array",
+          "description": "Generated files and folders, sorted by path. A folder whose name is a pattern of data/generated-patterns.json is one entry at its outermost level, with every file below it; a file matching a file pattern is one entry. When more than 200 are found, the first 200 by path are listed and a warning with reason generated-entries-cut gives the count that were cut.",
+          "items": {
+            "type": "object",
+            "required": ["kind", "path", "pattern", "files", "bytes", "protection", "memory"],
+            "properties": {
+              "kind": { "enum": ["folder", "file"] },
+              "path": { "type": "string", "description": "POSIX path relative to the target. A folder has no trailing slash." },
+              "pattern": { "type": "string", "description": "Id of the pattern of data/generated-patterns.json that matched." },
+              "files": { "type": "integer", "minimum": 1, "description": "Files in the entry: one for a file, every file below for a folder." },
+              "bytes": { "type": "integer", "minimum": 0, "description": "Total size of the files in the entry." },
+              "protection": { "$ref": "#/$defs/protection" },
+              "memory": { "$ref": "#/$defs/entryMemory" }
             }
           }
         }
@@ -696,6 +773,104 @@
           }
         }
       }
+    },
+    "code": {
+      "type": "object",
+      "description": "Source code of the target, read as data by the duplication measure. Only paths, line numbers and counts are written, never code text. The caps, the line rules and the window length are in scripts/lib/duplication.mjs.",
+      "required": ["duplication"],
+      "properties": {
+        "duplication": {
+          "type": "object",
+          "description": "Blocks of normalized lines (no blank lines, comments, imports or punctuation-only lines) that repeat between files or inside one file. A group is a block with two or more copies, and it is listed only when it adds a redundant line that no group before it in the list already counts. Test files are only in inTests. When the file cap or the byte cap cuts files, a warning with reason code-files-cut or code-bytes-cut gives the count that were cut.",
+          "required": ["windowLines", "filesScanned", "linesScanned", "redundantLines", "duplicatedLinesPct", "groupCount", "groups", "inTests"],
+          "properties": {
+            "windowLines": { "type": "integer", "minimum": 1, "description": "Length of a window, in normalized lines. Every group is at least this long." },
+            "filesScanned": { "type": "integer", "minimum": 0, "description": "Main code files that were read and normalized. Test files and skipped files are not counted." },
+            "linesScanned": { "type": "integer", "minimum": 0, "description": "Normalized lines of the main files." },
+            "redundantLines": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Normalized lines of the main files that are not the first copy of a group. A line that several groups mark is counted once."
+            },
+            "duplicatedLinesPct": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "redundantLines divided by linesScanned, times 100, rounded to two decimals. 0 when nothing was scanned."
+            },
+            "groupCount": { "type": "integer", "minimum": 0, "description": "Number of listed groups, before the listing is cut to the first ones." },
+            "groups": {
+              "type": "array",
+              "description": "The first groups of the main files: most redundant lines first, then by the file and line of the first copy. At most MAX_GROUPS items.",
+              "items": {
+                "type": "object",
+                "required": ["lines", "redundantLines", "copies"],
+                "properties": {
+                  "lines": { "type": "integer", "minimum": 1, "description": "Normalized lines in each copy." },
+                  "redundantLines": { "type": "integer", "minimum": 0, "description": "lines multiplied by the number of copies minus one." },
+                  "copies": {
+                    "type": "array",
+                    "minItems": 2,
+                    "description": "Sorted by file, then by line. The first copy is not redundant.",
+                    "items": {
+                      "type": "object",
+                      "required": ["file", "line", "endLine"],
+                      "properties": {
+                        "file": { "type": "string", "description": "POSIX path relative to the target." },
+                        "line": { "type": "integer", "minimum": 1, "description": "Original line of the first normalized line of the copy." },
+                        "endLine": { "type": "integer", "minimum": 1, "description": "Original line of the last normalized line of the copy." }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "inTests": {
+              "type": "object",
+              "description": "The same numbers and groups, computed over the test files only (folders such as test, tests, __tests__, spec, e2e, __mocks__ and fixtures, or names such as *.test.* and *.spec.*).",
+              "required": ["filesScanned", "linesScanned", "redundantLines", "duplicatedLinesPct", "groupCount", "groups"],
+              "properties": {
+                "filesScanned": { "type": "integer", "minimum": 0, "description": "Test code files that were read and normalized." },
+                "linesScanned": { "type": "integer", "minimum": 0, "description": "Normalized lines of the test files." },
+                "redundantLines": { "type": "integer", "minimum": 0, "description": "Redundant normalized lines of the test files." },
+                "duplicatedLinesPct": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100,
+                  "description": "redundantLines divided by linesScanned, times 100, rounded to two decimals. 0 when nothing was scanned."
+                },
+                "groupCount": { "type": "integer", "minimum": 0, "description": "Number of groups among the test files." },
+                "groups": {
+                  "type": "array",
+                  "description": "The same shape and order as the main groups.",
+                  "items": {
+                    "type": "object",
+                    "required": ["lines", "redundantLines", "copies"],
+                    "properties": {
+                      "lines": { "type": "integer", "minimum": 1, "description": "Normalized lines in each copy." },
+                      "redundantLines": { "type": "integer", "minimum": 0, "description": "lines multiplied by the number of copies minus one." },
+                      "copies": {
+                        "type": "array",
+                        "minItems": 2,
+                        "description": "Sorted by file, then by line. The first copy is not redundant.",
+                        "items": {
+                          "type": "object",
+                          "required": ["file", "line", "endLine"],
+                          "properties": {
+                            "file": { "type": "string", "description": "POSIX path relative to the target." },
+                            "line": { "type": "integer", "minimum": 1, "description": "Original line of the first normalized line of the copy." },
+                            "endLine": { "type": "integer", "minimum": 1, "description": "Original line of the last normalized line of the copy." }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
@@ -708,6 +883,48 @@
         "rule": { "type": ["string", "null"] },
         "source": { "type": ["string", "null"] },
         "reason": { "type": "string", "description": "Fixed code from permissions.mjs." }
+      }
+    },
+    "protection": {
+      "type": "object",
+      "description": "What the permission rules decide for one tool (Read or Edit) on an entry. A file gives its own verdict. A folder gives the verdict of its files when they all agree; when the rules differ but the decision is the same, rule and source are null and reason is several-rules; when the decisions differ, decision is mixed and counts gives the number of files per decision.",
+      "required": ["decision", "rule", "source", "reason"],
+      "properties": {
+        "decision": { "enum": ["deny", "ask", "allow", "default", "undeterminable", "mixed"] },
+        "rule": { "type": ["string", "null"] },
+        "source": { "type": ["string", "null"] },
+        "reason": { "type": "string", "description": "Fixed code from permissions.mjs, or several-rules or several-decisions (structure only)." },
+        "counts": {
+          "type": "object",
+          "description": "Only when decision is mixed: the number of files with each decision. Undeterminable files are counted, never guessed.",
+          "required": ["allow", "ask", "default", "deny", "undeterminable"],
+          "properties": {
+            "allow": { "type": "integer", "minimum": 0 },
+            "ask": { "type": "integer", "minimum": 0 },
+            "default": { "type": "integer", "minimum": 0 },
+            "deny": { "type": "integer", "minimum": 0 },
+            "undeterminable": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "entryMemory": {
+      "type": "object",
+      "description": "The memory lines that name an entry (its path, or for a folder its path with a slash; for a file also its pattern glob), in file and line order. marked is true when one of those lines also contains a do-not-touch phrase from data/generated-patterns.json. A heuristic: the memory text is data.",
+      "required": ["marked", "mentions"],
+      "properties": {
+        "marked": { "type": "boolean" },
+        "mentions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["file", "line"],
+            "properties": {
+              "file": { "type": "string", "description": "Memory file, relative to the target." },
+              "line": { "type": "integer", "minimum": 1, "description": "1-based line in the memory file." }
+            }
+          }
+        }
       }
     },
     "markdownItem": {

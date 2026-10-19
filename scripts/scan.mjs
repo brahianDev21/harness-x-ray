@@ -10,16 +10,18 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { claudeConfigMeasure } from "./lib/claude-config.mjs";
 import { destructiveCommandsMeasure } from "./lib/destructive-commands.mjs";
+import { duplicationMeasure } from "./lib/duplication.mjs";
 import { writeStableJson } from "./lib/json-out.mjs";
 import { memoryMeasure } from "./lib/memory.mjs";
 import { referencesMeasure } from "./lib/references.mjs";
 import { scan } from "./lib/scanner.mjs";
 import { secretsMeasure } from "./lib/secrets.mjs";
+import { structureMeasure } from "./lib/structure.mjs";
 import { UsageError, checkOutputDir, defaultOutputDir, resolveTarget } from "./lib/target.mjs";
 import { verificationMeasure } from "./lib/verification.mjs";
 
-// The measures, in the order they run. Each measure adds its import and one line here. The references and
-// verification measures read the memory texts, so they run after the memory measure.
+// The measures, in the order they run. Each measure adds its import and one line here. The references, verification
+// and structure measures read the memory texts, so they run after the memory measure.
 const MEASURES = [
   claudeConfigMeasure,
   memoryMeasure,
@@ -27,6 +29,8 @@ const MEASURES = [
   verificationMeasure,
   destructiveCommandsMeasure,
   secretsMeasure,
+  structureMeasure,
+  duplicationMeasure,
 ];
 
 const HARNESS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");

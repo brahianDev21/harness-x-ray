@@ -1,0 +1,433 @@
+// Measure "structure": the folders of the target, how far the memory maps them, and the large and generated files
+// that need care. It reads the file list (ctx.files), the memory texts that the memory measure left in ctx.memory and
+// the permission rules through loadClaudeConfig. It opens no file of the target and runs nothing. The patterns are the
+// harness's own data, in data/generated-patterns.json.
+//
+// Output, under structure (the enforcementTools key belongs to the verification measure):
+// - tree: one entry per top-level folder and per second-level folder, with the number of files below it.
+// - mapCoverage: the top-level folders that are not generated, and the memory files that mention each one.
+// - largeFiles: versioned files above LARGE_FILE_BYTES, without lockfiles and without generated files.
+// - generatedFiles: one entry per generated folder and one per generated file.
+// Each large and generated entry has protection (what the permission rules decide for Read and Edit) and memory (the
+// memory lines that name the entry, and whether one of them marks it as not to touch).
+//
+// Heuristics. All of them are conservative, and the memory text is data: nothing in it is followed.
+// - A path is mentioned by a memory line when the path begins the line, or follows whitespace, a backtick, a quote,
+//   "(" or "[", optionally after "./". A path that follows other text (x/src/, ../src/, xsrc/, **src/**) is part of a
+//   longer path or word, so it does not count. Fenced code blocks count too, which is how tree listings mention folders.
+// - A top-level folder is also mentioned by a code span that is exactly its name, or its name with a slash.
+// - A folder entry is mentioned by its path followed by a slash. A file entry is mentioned by its path, or by its
+//   pattern glob (for example `*.min.js`), when no path character follows.
+// - A mention marks the entry as not to touch when the same line also contains a do-not-touch phrase from the data
+//   file. Phrases are compared without regard to case, and a curly apostrophe counts as a straight one.
+// Memory files marked not-loaded are skipped everywhere in this measure.
+
+import fs from "node:fs";
+import { loadClaudeConfig } from "./claude-config.mjs";
+import { codeSpans, markdownLines } from "./markdown.mjs";
+import { isPlainObject } from "./json-out.mjs";
+import { decide } from "./permissions.mjs";
+
+export const MEASURE_ID = "structure";
+
+// Provisional, not calibrated on real repositories: a versioned file above this many bytes is listed as large.
+export const LARGE_FILE_BYTES = 1024 * 1024;
+// Provisional caps on the number of entries of each list. What is cut is counted in one warning.
+export const MAX_LARGE_ENTRIES = 200;
+export const MAX_GENERATED_ENTRIES = 200;
+
+const DATA_URL = new URL("../../data/generated-patterns.json", import.meta.url);
+const TOP_LEVEL = new Set(["directories", "files", "lockfiles", "doNotTouchPhrases"]);
+const DIRECTORY_FIELDS = new Set(["id", "folder", "why"]);
+const FILE_FIELDS = new Set(["id", "glob", "regex", "why"]);
+const KEBAB_CASE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const DECISIONS = ["allow", "ask", "default", "deny", "undeterminable"];
+// What may come right before a path that starts a mention (nothing, or one of the characters of the header comment), and
+// what must not come right after a file path: a path character, or a dot that continues a name (app.min.js is not
+// app.min.jsx). A dot that ends a sentence is allowed.
+const PATH_START = /(?<![^\s"'`(\[])/.source;
+const PATH_END = /(?![\w\/-]|\.\w)/.source;
+
+let loaded = null;
+
+export const structureMeasure = Object.freeze({ id: MEASURE_ID, collect: collectStructure });
+
+/**
+ * The generated-file patterns of data/generated-patterns.json, checked and compiled. The file is read and checked once
+ * per process. The object is shared: callers must not change it.
+ * @returns {{ directories: Array<{ id: string, folder: string }>, files: Array<{ id: string, glob: string, regex: RegExp }>,
+ *   lockfiles: Set<string>, phrases: string[] }} Lockfile names and phrases are lowercase; phrases use straight apostrophes.
+ * @throws {Error} When the data file does not have the expected shape.
+ */
+export function loadGeneratedPatterns() {
+  loaded ??= compilePatterns(validatePatternData(JSON.parse(fs.readFileSync(DATA_URL, "utf8"))));
+  return loaded;
+}
+
+/**
+ * The id of the generated-file pattern that a path matches, or null. It uses the same rules as classifyGenerated: a file
+ * is generated when one of its folders (not its base name) is a directory pattern, and the first such folder from the
+ * left decides the id; otherwise the base name must match a file pattern. The path is not read or stat-ed.
+ * @param {string} relPath POSIX path relative to the target.
+ * @param {ReturnType<typeof loadGeneratedPatterns>} [patterns] The patterns to use. Defaults to the data file.
+ * @returns {string | null} The pattern id, such as "dist" or "minified-js".
+ */
+export function generatedPatternOf(relPath, patterns = loadGeneratedPatterns()) {
+  const segments = relPath.split("/");
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    const folder = patterns.directories.find((item) => item.folder === segments[index]);
+    if (folder !== undefined) return folder.id;
+  }
+  const name = segments[segments.length - 1];
+  const file = patterns.files.find((item) => item.regex.test(name));
+  return file === undefined ? null : file.id;
+}
+
+// Reads the target through ctx only. Returns the section that the scan core merges.
+function collectStructure(ctx) {
+  const config = loadClaudeConfig(ctx);
+  const rules = { allow: config.permissions.allow, ask: config.permissions.ask, deny: config.permissions.deny };
+  const patterns = loadGeneratedPatterns();
+  const lines = memoryLines(ctx.memory);
+  const generated = classifyGenerated(ctx.files, patterns);
+  const warnings = [];
+
+  const generatedKept = capped(generated.entries, MAX_GENERATED_ENTRIES, "generated-entries-cut", warnings);
+  const largeKept = capped(
+    largeCandidates(ctx.files, generated.members, patterns.lockfiles),
+    MAX_LARGE_ENTRIES,
+    "large-files-cut",
+    warnings,
+  );
+
+  return {
+    structure: {
+      tree: treeOf(ctx.files),
+      mapCoverage: mapCoverageOf(ctx.files, generated.topFolders, lines),
+      largeFiles: largeKept.map((file) => largeEntry(file, rules, lines, patterns.phrases)),
+      generatedFiles: generatedKept.map((entry) => generatedEntry(entry, rules, lines, patterns.phrases)),
+    },
+    warnings,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The tree
+
+// One entry per top-level folder and per second-level folder. files counts the files below the folder, at any depth.
+function treeOf(files) {
+  const counts = new Map();
+  for (const { path } of files) {
+    const segments = path.split("/");
+    for (let depth = 1; depth <= Math.min(2, segments.length - 1); depth += 1) {
+      const folder = segments.slice(0, depth).join("/");
+      counts.set(folder, (counts.get(folder) ?? 0) + 1);
+    }
+  }
+  return [...counts].map(([path, count]) => ({ path, files: count })).sort(byPath);
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Map coverage
+
+// The top-level folders that are not generated, and for each one the memory files that mention it.
+function mapCoverageOf(files, generatedTop, lines) {
+  const counts = new Map();
+  for (const { path } of files) {
+    const slash = path.indexOf("/");
+    if (slash === -1) continue;
+    const dir = path.slice(0, slash);
+    counts.set(dir, (counts.get(dir) ?? 0) + 1);
+  }
+  const byDir = [...counts.keys()]
+    .filter((dir) => !generatedTop.has(dir))
+    .sort(compareText)
+    .map((dir) => {
+      const regex = folderRegex(dir);
+      const mentions = firstMentionPerFile(lines, (line) => dirMentioned(line, dir, regex));
+      return { dir, files: counts.get(dir), mentioned: mentions.length > 0, mentions };
+    });
+  return { dirs: byDir.length, mentioned: byDir.filter((item) => item.mentioned).length, byDir };
+}
+
+// A folder is mentioned by its path with a slash, or by a code span that is exactly the name or the name with a slash.
+function dirMentioned(line, dir, regex) {
+  return regex.test(line.text) || line.spans.some((span) => span.text === dir || span.text === `${dir}/`);
+}
+
+// The first matching line of each memory file. The lines are ordered by file, so this keeps the first one of each.
+function firstMentionPerFile(lines, predicate) {
+  const seen = new Set();
+  const mentions = [];
+  for (const line of lines) {
+    if (seen.has(line.file) || !predicate(line)) continue;
+    seen.add(line.file);
+    mentions.push({ file: line.file, line: line.number });
+  }
+  return mentions;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Generated and large files
+
+// The generated entries before the cap. A folder whose name is a directory pattern is one entry, at the outermost
+// level where that name appears; every file below it belongs to that entry. A file outside such a folder is one entry
+// when its base name matches a file pattern. members holds the path of every file that belongs to an entry.
+// topFolders holds the top-level folders that are entries themselves.
+function classifyGenerated(files, patterns) {
+  const folderByName = new Map(patterns.directories.map((item) => [item.folder, item]));
+  const folders = new Map();
+  const singles = [];
+  const members = new Set();
+  for (const { path, bytes } of files) {
+    const segments = path.split("/");
+    const index = segments.findIndex((segment, at) => at < segments.length - 1 && folderByName.has(segment));
+    if (index !== -1) {
+      const folderPath = segments.slice(0, index + 1).join("/");
+      if (!folders.has(folderPath)) {
+        folders.set(folderPath, { kind: "folder", path: folderPath, pattern: folderByName.get(segments[index]), members: [] });
+      }
+      folders.get(folderPath).members.push({ path, bytes });
+      members.add(path);
+      continue;
+    }
+    const name = segments[segments.length - 1];
+    const pattern = patterns.files.find((item) => item.regex.test(name));
+    if (pattern !== undefined) {
+      singles.push({ kind: "file", path, pattern, members: [{ path, bytes }] });
+      members.add(path);
+    }
+  }
+  const entries = [...folders.values(), ...singles].sort((a, b) => compareText(a.path, b.path));
+  const topFolders = new Set([...folders.keys()].filter((folder) => !folder.includes("/")));
+  return { entries, members, topFolders };
+}
+
+// The versioned files above LARGE_FILE_BYTES, sorted by path. Lockfiles are left out by base name, in any folder, and so
+// are the files that already belong to a generated entry.
+function largeCandidates(files, generatedMembers, lockfiles) {
+  return files
+    .filter(
+      (file) =>
+        file.bytes > LARGE_FILE_BYTES &&
+        !lockfiles.has(baseName(file.path).toLowerCase()) &&
+        !generatedMembers.has(file.path),
+    )
+    .map(({ path, bytes }) => ({ path, bytes }))
+    .sort(byPath);
+}
+
+// The first max entries of a sorted list. What is cut is counted in one warning, with a fixed reason.
+function capped(list, max, reason, warnings) {
+  if (list.length > max) warnings.push({ path: ".", reason, detail: `count=${list.length - max}` });
+  return list.slice(0, max);
+}
+
+function largeEntry(file, rules, lines, phrases) {
+  return {
+    path: file.path,
+    bytes: file.bytes,
+    protection: protectionOf(rules, [file.path]),
+    memory: memoryOf(lines, [fileRegex(file.path)], phrases),
+  };
+}
+
+function generatedEntry(entry, rules, lines, phrases) {
+  const paths = entry.members.map((member) => member.path);
+  const matchers =
+    entry.kind === "folder" ? [folderRegex(entry.path)] : [fileRegex(entry.path), globRegex(entry.pattern.glob)];
+  return {
+    kind: entry.kind,
+    path: entry.path,
+    pattern: entry.pattern.id,
+    files: paths.length,
+    bytes: entry.members.reduce((sum, member) => sum + member.bytes, 0),
+    protection: protectionOf(rules, paths),
+    memory: memoryOf(lines, matchers, phrases),
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Protection and memory of one entry
+
+// The verdict of Read and of Edit for the entry. A folder with several files gives the verdict of its files when they
+// all agree. When the decisions differ, the decision is mixed and counts says how many files had each decision. When the
+// decisions agree but the rules differ, the decision stays and no rule is named. Undeterminable stays undeterminable.
+function protectionOf(rules, paths) {
+  return { read: verdictFor(rules, "Read", paths), edit: verdictFor(rules, "Edit", paths) };
+}
+
+function verdictFor(rules, tool, paths) {
+  const verdicts = paths.map((path) => verdictOf(decide(rules, { tool, path })));
+  const decisions = new Set(verdicts.map((verdict) => verdict.decision));
+  if (decisions.size > 1) {
+    const counts = Object.fromEntries(DECISIONS.map((decision) => [decision, 0]));
+    for (const verdict of verdicts) counts[verdict.decision] += 1;
+    return { decision: "mixed", rule: null, source: null, reason: "several-decisions", counts };
+  }
+  const [first] = verdicts;
+  const same = verdicts.every(
+    (verdict) => verdict.rule === first.rule && verdict.source === first.source && verdict.reason === first.reason,
+  );
+  return same ? first : { decision: first.decision, rule: null, source: null, reason: "several-rules" };
+}
+
+// The four fields of a verdict that the output shows.
+function verdictOf(verdict) {
+  return { decision: verdict.decision, rule: verdict.rule, source: verdict.source, reason: verdict.reason };
+}
+
+// The memory lines that mention the entry, one per line, in file and line order. marked is true when one of them also
+// contains a do-not-touch phrase.
+function memoryOf(lines, matchers, phrases) {
+  const mentions = [];
+  let marked = false;
+  for (const line of lines) {
+    if (!matchers.some((regex) => regex.test(line.text))) continue;
+    mentions.push({ file: line.file, line: line.number });
+    if (phrases.some((phrase) => line.normal.includes(phrase))) marked = true;
+  }
+  return { marked, mentions };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Memory lines and regular expressions
+
+// The lines of the memory files that Claude Code loads: every memory file except those marked not-loaded. Rules are
+// included (their loadMode is null). Ordered by file, then line.
+function memoryLines(memory) {
+  const lines = [];
+  for (const file of [...memory.keys()].sort(compareText)) {
+    const entry = memory.get(file);
+    if (entry.loadMode === "not-loaded") continue;
+    for (const line of markdownLines(entry.text)) {
+      lines.push({
+        file,
+        number: line.number,
+        text: line.text,
+        spans: codeSpans(line.text),
+        normal: normalizeText(line.text),
+      });
+    }
+  }
+  return lines;
+}
+
+// A folder path followed by a slash, starting at a path boundary, with an optional "./" in front.
+function folderRegex(folder) {
+  return new RegExp(`${PATH_START}(?:\\./)?${escapeRegExp(folder)}/`);
+}
+
+// A file path, starting at a path boundary and not followed by a path character.
+function fileRegex(filePath) {
+  return new RegExp(`${PATH_START}(?:\\./)?${escapeRegExp(filePath)}${PATH_END}`);
+}
+
+// A pattern glob as written in memory text, at a path boundary and not followed by a path character.
+function globRegex(glob) {
+  return new RegExp(`${PATH_START}${escapeRegExp(glob)}${PATH_END}`);
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Data file
+
+function validatePatternData(data) {
+  const where = "generated-patterns";
+  if (!isPlainObject(data)) throw new Error(`${where}: the data must be an object`);
+  for (const key of Object.keys(data)) {
+    if (!TOP_LEVEL.has(key)) throw new Error(`${where}: unknown field "${key}"`);
+  }
+  const ids = new Set();
+  const claim = (id, entry) => {
+    if (typeof id !== "string" || !KEBAB_CASE.test(id)) throw new Error(`${entry}: id must be kebab-case`);
+    if (ids.has(id)) throw new Error(`${entry}: duplicate id "${id}"`);
+    ids.add(id);
+  };
+  const folders = new Set();
+  nonEmptyList(data, "directories", where).forEach((item, index) => {
+    const entry = `${where}: directories[${index}]`;
+    checkFields(item, DIRECTORY_FIELDS, entry);
+    claim(item.id, entry);
+    if (!isName(item.folder)) throw new Error(`${entry}.folder must be a folder name, without a slash`);
+    if (folders.has(item.folder)) throw new Error(`${entry}.folder "${item.folder}" is listed twice`);
+    folders.add(item.folder);
+    nonEmptyText(item.why, `${entry}.why`);
+  });
+  nonEmptyList(data, "files", where).forEach((item, index) => {
+    const entry = `${where}: files[${index}]`;
+    checkFields(item, FILE_FIELDS, entry);
+    claim(item.id, entry);
+    nonEmptyText(item.glob, `${entry}.glob`);
+    compileRegex(item.regex, `${entry}.regex`);
+    nonEmptyText(item.why, `${entry}.why`);
+  });
+  nonEmptyList(data, "lockfiles", where).forEach((name, index) => {
+    if (!isName(name)) throw new Error(`${where}: lockfiles[${index}] must be a file name, without a slash`);
+  });
+  nonEmptyList(data, "doNotTouchPhrases", where).forEach((phrase, index) => {
+    nonEmptyText(phrase, `${where}: doNotTouchPhrases[${index}]`);
+  });
+  return data;
+}
+
+function compilePatterns(data) {
+  return {
+    directories: data.directories.map((item) => ({ id: item.id, folder: item.folder })),
+    files: data.files.map((item) => ({ id: item.id, glob: item.glob, regex: new RegExp(item.regex) })),
+    lockfiles: new Set(data.lockfiles.map((name) => name.toLowerCase())),
+    phrases: data.doNotTouchPhrases.map(normalizeText),
+  };
+}
+
+function nonEmptyList(data, key, where) {
+  if (!Array.isArray(data[key]) || data[key].length === 0) throw new Error(`${where}: ${key} must be a non-empty list`);
+  return data[key];
+}
+
+function checkFields(item, allowed, entry) {
+  if (!isPlainObject(item)) throw new Error(`${entry} is not an object`);
+  for (const key of Object.keys(item)) {
+    if (!allowed.has(key)) throw new Error(`${entry} has the unknown field "${key}"`);
+  }
+}
+
+function nonEmptyText(value, entry) {
+  if (typeof value !== "string" || value.trim() === "") throw new Error(`${entry} must be a non-empty string`);
+}
+
+function isName(value) {
+  return typeof value === "string" && value !== "" && !value.includes("/");
+}
+
+function compileRegex(source, entry) {
+  nonEmptyText(source, entry);
+  try {
+    return new RegExp(source);
+  } catch (error) {
+    throw new Error(`${entry} is not a valid regular expression: ${error.message}`, { cause: error });
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Helpers
+
+// Lowercase, with curly apostrophes read as straight ones, so that a phrase matches either spelling.
+function normalizeText(text) {
+  return text.replaceAll("’", "'").toLowerCase();
+}
+
+function baseName(relPath) {
+  return relPath.slice(relPath.lastIndexOf("/") + 1);
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const byPath = (a, b) => compareText(a.path, b.path);
+
+// Plain code-unit comparison, so the order does not depend on the locale.
+function compareText(a, b) {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
