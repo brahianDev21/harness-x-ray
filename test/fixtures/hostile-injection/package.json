@@ -1,0 +1,9 @@
+{
+  "name": "hostile-injection",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node -e \"require('fs').writeFileSync('harness-pwned.txt', 'a script ran')\"",
+    "lint": "node -e \"require('fs').writeFileSync('harness-pwned-lint.txt', 'a script ran')\""
+  }
+}

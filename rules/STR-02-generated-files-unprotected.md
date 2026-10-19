@@ -35,10 +35,10 @@ This is a measured rule. The findings come from these fields:
 - `structure.generatedFiles[]`: versioned files that match a pattern from `data/generated-patterns.json`, with lockfiles excluded.
 - `structure.largeFiles[]`: versioned files larger than `THRESHOLDS.largeFileBytes`, with lockfiles excluded.
 
-Each entry has its path and size. The scanner also sets two flags, which are described here in words because their final names are not fixed yet:
+Each entry has its path and size. The scanner also gives each entry two fields that the rule reads:
 
-- whether an instruction file marks the path or its folder "do not touch", with the sentence that does so;
-- whether a `Read` or `Edit` deny rule covers the path.
+- `memory.marked`: whether an instruction file marks the path or its folder "do not touch". `memory.mentions[{ file, line }]` lists the lines that name the entry, and `marked` is true when one of them says so;
+- `protection.read.decision` and `protection.edit.decision`: whether a `Read` or `Edit` deny rule covers the path (`deny`).
 
 `security.permissions.deny[]` gives the deny entries, merged from the shared and the local settings. A rule covers a path when its pattern matches the path under gitignore syntax.
 

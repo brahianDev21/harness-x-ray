@@ -1,0 +1,70 @@
+{
+  "candidates": [
+    {
+      "file": ".claude/hooks/check-bash.mjs",
+      "id": "cand-1",
+      "kind": "hook-script",
+      "measurementRef": "/claudeConfig/hooks/0/script",
+      "rules": [
+        "SEC-02",
+        "SEC-04"
+      ]
+    }
+  ],
+  "measuredFindings": [
+    {
+      "axis": "security",
+      "evidence": [
+        {
+          "file": ".claude/settings.json"
+        },
+        {
+          "file": ".claude/hooks/check-bash.mjs"
+        }
+      ],
+      "id": "mf-1",
+      "impact": "medium",
+      "measurementRef": "/security/destructiveCoverage/commands/13",
+      "rule": "SEC-02",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/13",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/14",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/15",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/preToolUseHooks/0",
+          "trigger": "hook-fails-open"
+        }
+      ]
+    },
+    {
+      "axis": "security",
+      "evidence": [],
+      "id": "mf-2",
+      "impact": "medium",
+      "measurementRef": "/security/secrets/readProtection/envAtRoot/decision",
+      "rule": "SEC-03",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/security/secrets/readProtection/envAtRoot/decision",
+          "trigger": "env-at-root-readable"
+        }
+      ]
+    }
+  ],
+  "undeterminable": []
+}
+

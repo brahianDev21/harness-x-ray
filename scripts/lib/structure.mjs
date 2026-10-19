@@ -6,7 +6,7 @@
 // Output, under structure (the enforcementTools key belongs to the verification measure):
 // - tree: one entry per top-level folder and per second-level folder, with the number of files below it.
 // - mapCoverage: the top-level folders that are not generated, and the memory files that mention each one.
-// - largeFiles: versioned files above LARGE_FILE_BYTES, without lockfiles and without generated files.
+// - largeFiles: versioned files above THRESHOLDS.largeFileBytes, without lockfiles and without generated files.
 // - generatedFiles: one entry per generated folder and one per generated file.
 // Each large and generated entry has protection (what the permission rules decide for Read and Edit) and memory (the
 // memory lines that name the entry, and whether one of them marks it as not to touch).
@@ -27,11 +27,10 @@ import { loadClaudeConfig } from "./claude-config.mjs";
 import { codeSpans, markdownLines } from "./markdown.mjs";
 import { isPlainObject } from "./json-out.mjs";
 import { decide } from "./permissions.mjs";
+import { THRESHOLDS } from "./thresholds.mjs";
 
 export const MEASURE_ID = "structure";
 
-// Provisional, not calibrated on real repositories: a versioned file above this many bytes is listed as large.
-export const LARGE_FILE_BYTES = 1024 * 1024;
 // Provisional caps on the number of entries of each list. What is cut is counted in one warning.
 export const MAX_LARGE_ENTRIES = 200;
 export const MAX_GENERATED_ENTRIES = 200;
@@ -203,13 +202,13 @@ function classifyGenerated(files, patterns) {
   return { entries, members, topFolders };
 }
 
-// The versioned files above LARGE_FILE_BYTES, sorted by path. Lockfiles are left out by base name, in any folder, and so
-// are the files that already belong to a generated entry.
+// The versioned files above THRESHOLDS.largeFileBytes, sorted by path. Lockfiles are left out by base name, in any
+// folder, and so are the files that already belong to a generated entry.
 function largeCandidates(files, generatedMembers, lockfiles) {
   return files
     .filter(
       (file) =>
-        file.bytes > LARGE_FILE_BYTES &&
+        file.bytes > THRESHOLDS.largeFileBytes &&
         !lockfiles.has(baseName(file.path).toLowerCase()) &&
         !generatedMembers.has(file.path),
     )

@@ -1,0 +1,223 @@
+{
+  "candidates": [],
+  "measuredFindings": [
+    {
+      "axis": "security",
+      "evidence": [
+        {
+          "file": ".claude/settings.json"
+        },
+        {
+          "file": ".claude/agents/edit-helper.md"
+        },
+        {
+          "file": ".claude/agents/fast-runner.md"
+        }
+      ],
+      "id": "mf-1",
+      "impact": "high",
+      "measurementRef": "/security/permissions/allow/0",
+      "rule": "SEC-01",
+      "triggers": [
+        {
+          "detail": {
+            "commands": [
+              "git-branch-force-delete",
+              "git-checkout-discard",
+              "git-clean-force",
+              "git-push-force-long",
+              "git-push-force-short",
+              "git-reset-hard",
+              "git-restore-discard"
+            ]
+          },
+          "impact": "high",
+          "measurementRef": "/security/permissions/allow/0",
+          "trigger": "destructive-allow-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/permissions/defaultMode",
+          "trigger": "accept-edits-in-project"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/0",
+          "trigger": "subagent-accept-edits-shell"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/1",
+          "trigger": "subagent-accept-edits-shell"
+        }
+      ]
+    },
+    {
+      "axis": "security",
+      "evidence": [
+        {
+          "file": ".claude/settings.json"
+        },
+        {
+          "file": ".claude/agents/edit-helper.md"
+        },
+        {
+          "file": ".claude/agents/fast-runner.md"
+        }
+      ],
+      "id": "mf-2",
+      "impact": "high",
+      "measurementRef": "/security/destructiveCoverage/commands/0",
+      "rule": "SEC-02",
+      "triggers": [
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/commands/0",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/commands/1",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/commands/2",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/commands/3",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/commands/4",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/commands/5",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/commands/6",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/commands/7",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/commands/13",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/0/results/0",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/0/results/1",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/0/results/2",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/0/results/3",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/0/results/4",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/0/results/5",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/0/results/6",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/0/results/7",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/1/results/0",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/1/results/1",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/1/results/2",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/1/results/3",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/1/results/4",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/1/results/5",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/1/results/6",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/1/results/7",
+          "trigger": "destructive-command-passes"
+        },
+        {
+          "impact": "high",
+          "measurementRef": "/security/destructiveCoverage/subagents/1/results/13",
+          "trigger": "destructive-command-passes"
+        }
+      ]
+    },
+    {
+      "axis": "security",
+      "evidence": [],
+      "id": "mf-3",
+      "impact": "medium",
+      "measurementRef": "/security/secrets/readProtection/envAtRoot/decision",
+      "rule": "SEC-03",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/security/secrets/readProtection/envAtRoot/decision",
+          "trigger": "env-at-root-readable"
+        }
+      ]
+    }
+  ],
+  "undeterminable": []
+}
+

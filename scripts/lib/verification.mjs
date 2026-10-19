@@ -141,6 +141,16 @@ function nameCategories(name) {
   return NAME_RULES.filter(([, rule]) => matchesName(name, rule)).map(([category]) => category);
 }
 
+/**
+ * The categories of a script name alone (test, lint, typecheck, verify, ...). The measured findings use it for a
+ * script that a memory file names but the package.json does not define, so no command text is available.
+ * @param {string} name Script name.
+ * @returns {string[]} Sorted categories; empty when the name is not a check.
+ */
+export function categoriesOfScriptName(name) {
+  return nameCategories(name).sort(compareText);
+}
+
 function matchesName(name, rule) {
   return (
     (rule.exact ?? []).includes(name) ||

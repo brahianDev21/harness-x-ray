@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createMemoryMeasure } from "../scripts/lib/memory.mjs";
 import { scan } from "../scripts/lib/scanner.mjs";
-import { LARGE_FILE_BYTES, MAX_GENERATED_ENTRIES, structureMeasure } from "../scripts/lib/structure.mjs";
+import { MAX_GENERATED_ENTRIES, structureMeasure } from "../scripts/lib/structure.mjs";
+import { THRESHOLDS } from "../scripts/lib/thresholds.mjs";
 import { makeFixture } from "./helpers/make-fixture.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -153,8 +154,25 @@ test("a big lockfile is not a large file, while a file of the same size with ano
     ["data/snapshot.json"],
     "the lockfiles at the root and in a folder are left out; the control file is listed",
   );
-  assert.equal(result.structure.largeFiles[0].bytes, LARGE_FILE_BYTES * 2);
+  assert.equal(result.structure.largeFiles[0].bytes, 2 * MIB);
   assert.deepEqual(result.structure.generatedFiles, []);
+});
+
+test("a versioned file above the large-file threshold (256 KiB) is listed, and one at the threshold is not", async (t) => {
+  const fixture = freshFixture(t, {
+    git: true,
+    files: {
+      "data/at-limit.bin": Buffer.alloc(THRESHOLDS.largeFileBytes, 0x2e),
+      "data/over-limit.bin": Buffer.alloc(THRESHOLDS.largeFileBytes + 1, 0x2e),
+    },
+  });
+  const result = await structureScan(fixture);
+
+  assert.equal(THRESHOLDS.largeFileBytes, 256 * 1024);
+  assert.deepEqual(
+    result.structure.largeFiles.map((item) => item.path),
+    ["data/over-limit.bin"],
+  );
 });
 
 test("without git, the folders are walked and dist and coverage are generated entries", async (t) => {

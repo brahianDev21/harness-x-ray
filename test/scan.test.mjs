@@ -20,17 +20,21 @@ const SCHEMA_FILE = path.join(HARNESS_ROOT, "schemas", "measurements.schema.json
 const PACKAGE_FILE = path.join(HARNESS_ROOT, "package.json");
 // Top-level keys of every scan with the registered measures. The core writes the first five, the
 // claude-config measure always writes claudeConfig and security, and the references measure writes instructions.
+// The derive step of the CLI writes the last three.
 const TOP_LEVEL_KEYS = [
+  "candidates",
   "claudeConfig",
   "code",
   "context",
   "instructions",
   "inventory",
+  "measuredFindings",
   "meta",
   "schemaVersion",
   "security",
   "structure",
   "target",
+  "undeterminable",
   "verification",
   "warnings",
 ];
@@ -482,4 +486,54 @@ test("the measurements schema documents every top-level key", () => {
   assert.equal(schema.$schema, "https://json-schema.org/draft/2020-12/schema");
   assert.deepEqual([...schema.required].sort(), TOP_LEVEL_KEYS);
   assert.deepEqual(Object.keys(schema.properties).sort(), TOP_LEVEL_KEYS);
+});
+
+test("scan: derive gets a deep-frozen copy of the merged result and no context, and its keys are added", async (t) => {
+  const fixture = gitFixture(t);
+  const seen = {};
+  const measures = [{ id: "alpha", collect: () => ({ security: { mode: "default" } }) }];
+  function derive(merged, ...extra) {
+    seen.extraArguments = extra.length;
+    seen.frozen = Object.isFrozen(merged) && Object.isFrozen(merged.security);
+    try {
+      merged.security.mode = "changed";
+      seen.mutated = true;
+    } catch {
+      seen.mutated = false;
+    }
+    return { measuredFindings: [{ id: "mf-1", rule: "TEST-01" }] };
+  }
+
+  const result = await scan({ root: fixture.root, measures, now: FIXED_NOW, derive });
+
+  assert.deepEqual(seen, { extraArguments: 0, frozen: true, mutated: false });
+  assert.equal(result.security.mode, "default", "the merged result is not changed by derive");
+  assert.deepEqual(result.measuredFindings, [{ id: "mf-1", rule: "TEST-01" }]);
+  assert.equal(Object.hasOwn(result, "candidates"), false, "only the keys that derive returns are added");
+});
+
+test("scan: a measure cannot set a derived key, derive cannot add an unknown key, and derive must return an object", async (t) => {
+  const fixture = gitFixture(t);
+  const sets = [{ id: "rogue", collect: () => ({ measuredFindings: [] }) }];
+  await assert.rejects(
+    scan({ root: fixture.root, measures: sets, now: FIXED_NOW }),
+    /Measure "rogue" sets measuredFindings, which only the derive step writes/,
+  );
+  await assert.rejects(
+    scan({ root: fixture.root, measures: [], now: FIXED_NOW, derive: () => ({ inventory: [] }) }),
+    /derive returned "inventory", which is not a derived key/,
+  );
+  await assert.rejects(
+    scan({ root: fixture.root, measures: [], now: FIXED_NOW, derive: () => [] }),
+    /derive must return a plain object/,
+  );
+  await assert.rejects(scan({ root: fixture.root, measures: [], now: FIXED_NOW, derive: "x" }), /derive must be a function/);
+});
+
+test("scan: without derive, no derived key is written", async (t) => {
+  const fixture = gitFixture(t);
+  const result = await scan({ root: fixture.root, measures: [], now: FIXED_NOW });
+  for (const key of ["candidates", "measuredFindings", "undeterminable"]) {
+    assert.equal(Object.hasOwn(result, key), false, key);
+  }
 });

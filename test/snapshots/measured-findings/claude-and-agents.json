@@ -1,0 +1,172 @@
+{
+  "candidates": [
+    {
+      "file": "AGENTS.md",
+      "id": "cand-1",
+      "kind": "memory-file",
+      "loadMode": "not-loaded",
+      "measurementRef": "/inventory/0",
+      "rules": [
+        "RUL-01",
+        "RUL-02",
+        "RUL-03",
+        "VER-01",
+        "SEC-04",
+        "SEC-05",
+        "STR-01",
+        "COD-04"
+      ]
+    },
+    {
+      "file": "CLAUDE.md",
+      "id": "cand-2",
+      "kind": "memory-file",
+      "loadMode": "always",
+      "measurementRef": "/inventory/1",
+      "rules": [
+        "RUL-01",
+        "RUL-02",
+        "RUL-03",
+        "VER-01",
+        "SEC-04",
+        "SEC-05",
+        "STR-01",
+        "COD-04"
+      ]
+    }
+  ],
+  "measuredFindings": [
+    {
+      "axis": "context",
+      "evidence": [
+        {
+          "file": "AGENTS.md"
+        },
+        {
+          "file": "CLAUDE.md"
+        }
+      ],
+      "id": "mf-1",
+      "impact": "medium",
+      "measurementRef": "/inventory/0",
+      "rule": "CTX-07",
+      "triggers": [
+        {
+          "detail": {
+            "causedBy": "target"
+          },
+          "impact": "medium",
+          "measurementRef": "/inventory/0",
+          "trigger": "agents-md-not-loaded"
+        }
+      ]
+    },
+    {
+      "axis": "security",
+      "evidence": [],
+      "id": "mf-2",
+      "impact": "medium",
+      "measurementRef": "/security/destructiveCoverage/commands/0",
+      "rule": "SEC-02",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/0",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/1",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/2",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/3",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/4",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/5",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/6",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/7",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/8",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/9",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/10",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/11",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/12",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/13",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/14",
+          "trigger": "default-mode-without-hook"
+        },
+        {
+          "impact": "medium",
+          "measurementRef": "/security/destructiveCoverage/commands/15",
+          "trigger": "default-mode-without-hook"
+        }
+      ]
+    },
+    {
+      "axis": "security",
+      "evidence": [],
+      "id": "mf-3",
+      "impact": "medium",
+      "measurementRef": "/security/secrets/readProtection/envAtRoot/decision",
+      "rule": "SEC-03",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/security/secrets/readProtection/envAtRoot/decision",
+          "trigger": "env-at-root-readable"
+        }
+      ]
+    }
+  ],
+  "undeterminable": []
+}
+
