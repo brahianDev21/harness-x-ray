@@ -37,8 +37,8 @@
       "title": "Piece: security",
       "url": "https://agentatlas-dev.vercel.app/en/harnesses/security/",
       "type": "atlas",
-      "accessed": "2026-10-17",
-      "note": "Author's harness piece with permission rules and hooks that guard secrets and irreversible commands; the page states that these are not a sandbox."
+      "accessed": "2026-10-18",
+      "note": "Author's harness template with permission rules and a PreToolUse hook that guard secrets and irreversible commands; its README says none of it is a sandbox and that each agent's own settings must point to the hooks and permissions, so they are wired by hand."
     },
     {
       "id": "atlas-skills",
@@ -85,8 +85,8 @@
       "title": "Hooks reference",
       "url": "https://code.claude.com/docs/en/hooks",
       "type": "official-docs",
-      "accessed": "2026-10-17",
-      "note": "Documents PreToolUse hooks that block a tool call with exit code 2 or a deny decision, and says a failing hook lets the action proceed unless onFailure is block."
+      "accessed": "2026-10-18",
+      "note": "Documents PreToolUse hooks that block a tool call with exit code 2 or a deny decision; says a failing hook lets the action proceed unless onFailure is block (Claude Code v2.1.295 or later), and that the if filter is best-effort, so permission rules are the hard control."
     },
     {
       "id": "cc-docs-hooks-events",
@@ -173,16 +173,40 @@
       "title": "Choose a permission mode",
       "url": "https://code.claude.com/docs/en/permission-modes",
       "type": "official-docs",
-      "accessed": "2026-10-17",
-      "note": "Lists the permission modes and what each runs without asking, and states that deny rules apply in every mode, including bypassPermissions."
+      "accessed": "2026-10-18",
+      "note": "Lists the permission modes and what each runs without asking; says project settings ignore auto and bypassPermissions, that acceptEdits approves mkdir, touch, rm, rmdir, mv, cp and sed inside the working directory, and that deny rules apply in every mode, including bypassPermissions."
+    },
+    {
+      "id": "cc-docs-permission-modes-classifier-boundaries",
+      "title": "Choose a permission mode: boundaries you state in conversation",
+      "url": "https://code.claude.com/docs/en/permission-modes#boundaries-you-state-in-conversation",
+      "type": "official-docs",
+      "accessed": "2026-10-18",
+      "note": "Says auto mode's classifier treats boundaries stated in the conversation as a block signal, that they are not stored as rules and can be lost when context is compacted, and that a deny rule is the hard guarantee."
+    },
+    {
+      "id": "cc-docs-permission-modes-critical-paths",
+      "title": "Choose a permission mode: critical paths",
+      "url": "https://code.claude.com/docs/en/permission-modes#critical-paths",
+      "type": "official-docs",
+      "accessed": "2026-10-18",
+      "note": "Says rm and rmdir on the filesystem root, the home directory or the working directory are never approved by an allow rule or an allow hook, and that a matching deny rule still blocks them."
+    },
+    {
+      "id": "cc-docs-permission-modes-protected-paths",
+      "title": "Choose a permission mode: protected paths",
+      "url": "https://code.claude.com/docs/en/permission-modes#protected-paths",
+      "type": "official-docs",
+      "accessed": "2026-10-18",
+      "note": "Lists directories and files such as .git, .claude and .mcp.json whose writes are not auto-approved outside bypassPermissions, and says allow rules in settings files do not pre-approve those writes."
     },
     {
       "id": "cc-docs-permissions",
       "title": "Configure permissions",
       "url": "https://code.claude.com/docs/en/permissions",
       "type": "official-docs",
-      "accessed": "2026-10-17",
-      "note": "Rules are checked deny first, then ask, then allow; Bash rules match command text and are not a security boundary around the program."
+      "accessed": "2026-10-18",
+      "note": "Rules are checked deny first, then ask, then allow; a Read or Edit deny covers the file tools, recognized Bash file commands such as cat and tee, and Bash redirection targets, and a Read deny also blocks Edit and Write on the same path, but not commands that read files without naming them or scripts that open files themselves; Bash rules are not a security boundary around the program."
     },
     {
       "id": "cc-docs-sandboxing",
@@ -197,8 +221,8 @@
       "title": "Security",
       "url": "https://code.claude.com/docs/en/security",
       "type": "official-docs",
-      "accessed": "2026-10-17",
-      "note": "Lists Claude Code's built-in protections (permission modes, sandboxed Bash, prompt-injection safeguards) and says no system is completely immune to attacks."
+      "accessed": "2026-10-18",
+      "note": "Lists Claude Code's built-in protections (permission modes, sandboxed Bash, Accept Edits, prompt-injection safeguards); says the working-directory boundary is a permission prompt, so an approved Bash command can still write anywhere the user can; and says no system is completely immune to attacks."
     },
     {
       "id": "cc-docs-settings",
@@ -221,8 +245,8 @@
       "title": "Create custom subagents",
       "url": "https://code.claude.com/docs/en/sub-agents",
       "type": "official-docs",
-      "accessed": "2026-10-17",
-      "note": "Subagents are Markdown files with frontmatter that run in their own context window with their own tools and permissions, including a permissionMode field."
+      "accessed": "2026-10-18",
+      "note": "Subagents are Markdown files with frontmatter that run with their own tools; when the main conversation runs in acceptEdits, auto or bypassPermissions, the subagent runs in that mode and ignores its own permissionMode field."
     },
     {
       "id": "cc-docs-tools-reference",

@@ -1,0 +1,136 @@
+---
+id: SEC-02
+title: Destructive commands pass or depend only on manual confirmation
+axis: security
+kind: measured
+measuredSupport: []
+defaultImpact: high
+sources: [cc-docs-permissions, cc-docs-permission-modes, cc-docs-permission-modes-critical-paths, cc-docs-hooks, cc-docs-security, cc-docs-sandboxing, owasp-llm-excessive-agency, atlas-safe-agent-execution, atlas-security]
+evidence: official-docs
+since: mvp
+status: draft
+---
+
+## What it checks
+
+For each destructive command in the scanner's list, what the project's rules, mode and PreToolUse hooks would do with it. The list includes `rm -rf`, `git push --force`, `git push -f`, `git reset --hard`, `git clean -fdx`, `git checkout -- .`, `git restore .`, `git branch -D`, `curl ... | sh`, `wget ... | bash`, `chmod -R 777`, `npm publish`, `docker system prune -af`, and the PowerShell and cmd removals of a folder (`Remove-Item -Recurse -Force`, `rd /s /q`, `del /s /q`). Each command gets one outcome: `blocked`, `asks`, `passes` or `undeterminable`.
+
+The rule also checks the same commands inside each subagent that has a shell tool.
+
+A static scan is not a security audit. It simulates the rules and the modes; it does not run any command or any hook, so it cannot tell whether a hook script really blocks what it claims. The reviewer checks that by reading the script (SEC-04).
+
+## Why it matters
+
+Destructive commands are hard or impossible to undo. A force push rewrites shared history, `git reset --hard` and `git clean` discard uncommitted work, and `npm publish` releases a package. Whether the project is safe then depends on a barrier, and the rule asks which barrier exists.
+
+The permission modes page lists the commands that the classifier of `auto` mode blocks by default, including force push, `git reset --hard`, `git checkout -- .`, `git clean -fd` and `curl | bash`. The page describes no such list for the other modes. The built-in protection that holds even in modes that skip other prompts is the critical-path rule: an allow rule or an allow hook never approves `rm` or `rmdir` on the filesystem root, the home directory or the working directory, and a matching deny rule still blocks them. A removal inside a project folder such as `build` is not a critical path.
+
+Rules compare text. The permissions page says a deny or ask rule covers the invocation Claude usually writes, not the program, so another form of the same command can pass.
+
+Auto mode is the built-in starting mode for interactive terminal and VS Code sessions in Claude Code v2.1.283 or later, and a person can change it. The scanner does not see the mode that a person has chosen, so its outcomes assume the project's `defaultMode`, or `default` when the project sets none.
+
+## How it is detected
+
+This is a measured rule. No `THRESHOLDS` key applies.
+
+Fields the scanner reads:
+
+- `security.destructiveCoverage.commands[]`: `outcome`; `decidedBy`, which is `{ kind: "rule", list, rule }`, `{ kind: "mode", mode }` with an optional `ignoredMode`, or `{ kind: "critical-path" }`; `reason`; and `preToolUseHook`, which is `runs`, `none` or `undeterminable`.
+- `security.destructiveCoverage.commands[].builtInProtection` and `criticalPath`, copied from the data file. The data marks `rm` with `critical-path-removal`, the PowerShell removal with `remove-item-system-paths`, and the cmd removals with `cmd-system-path-removal`. The scanner simulates the critical-path rule for `rm` and `rmdir` only, and applies it when `criticalPath` is `true`. The PowerShell and cmd marks describe protection of system paths, which the examples do not target, so they do not change an outcome here.
+- `security.destructiveCoverage.subagents[].results[]`: the `outcome` of each shell command a subagent can run.
+- `security.destructiveCoverage.preToolUseHooks[]`: `failsOpen` and `onFailure` for each PreToolUse hook that covers Bash or PowerShell.
+
+Triggers:
+
+| Finding | Trigger | Impact |
+|---|---|---|
+| Any command or subagent result with `outcome: passes` | `commands[].outcome`, `subagents[].results[].outcome` | High |
+| No command passes, and a command has `outcome: asks` with `decidedBy.kind` `mode` and `mode` `default` (with or without `ignoredMode`), and its `preToolUseHook` is `none` | `commands[]` | Medium |
+| No command passes, and a PreToolUse hook that covers a command has `failsOpen: true` | `preToolUseHooks[].failsOpen` | Medium |
+| Every command is `blocked`, or has a hook that runs (`preToolUseHook: runs`) with `failsOpen: false` | `commands[]` | No finding |
+
+A command with an `ask` or `deny` rule that covers it, or with a hook that runs, is not part of the medium case: the project has written a control for it. Medium means that the only barrier is the confirmation the mode asks for. The impact is an opinion of the rule, not a measurement of how often a prompt is skipped. An `undeterminable` outcome is listed with its `reason`, and it is not a finding.
+
+## Recommendation
+
+Put the control in this order: rules first, then a hook, then the fail-closed setting, then hardening.
+
+1. **Rules.** Put a destructive form in `deny` when the team never needs it, and in `ask` when a person may need it. Rules match text, so write the forms the team actually uses:
+
+```json
+{
+  "permissions": {
+    "deny": ["Bash(git push --force *)", "Bash(git push -f *)", "Bash(git reset --hard *)", "Bash(npm publish *)"],
+    "ask": ["Bash(rm -rf *)", "Bash(git clean *)", "Bash(git push *)"]
+  }
+}
+```
+
+`Bash(git clean *)` also matches `git clean -n`, a dry run; narrow it if the team uses that.
+
+2. **A PreToolUse hook on Bash and PowerShell.** The hook receives the call as JSON input and exits with code 2 to block it. The Atlas `security` template is a reference for this shape: its hook `block-dangerous-commands.mjs` blocks recursive deletion, force pushes, hard resets and forced cleans. Its list is the team's choice, not a copy to adopt unchanged. Connect it in `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/block-dangerous-commands.mjs"],
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+A hook that only logs the call, or that exits with code 0 in every case, does not block it.
+
+3. **`onFailure: "block"`** in that hook, which needs Claude Code v2.1.295 or later. Without it, a hook that crashes, times out or exits with another code lets the command run.
+
+4. **Remove `acceptEdits` from the project settings** (SEC-01), so that `rm` inside the project asks.
+
+5. **Hardening, where the sandbox runs.** On macOS, Linux and WSL2, setting `sandbox.enabled` to `true` runs shell commands inside an operating-system boundary. The sandbox is off by default and does not run on native Windows, where WSL2 is the way to use it.
+
+## When not to apply
+
+- The person runs in `auto` mode. The classifier reviews the commands and blocks several of them by default, and the scanner does not see that. The finding still describes the project settings, and the report says that the mode was assumed.
+- The outcome is `undeterminable`, for example because of a wrapper, an alias, a quote character or a compound command the scanner cannot split. The rule does not guess; it lists the outcome and its reason.
+- A command that is not in the scanner's list. The list has examples, so a command missing from it is not measured.
+- A command with an `ask` or `deny` rule, or a hook that runs, when the hook fails closed. The project has a control for it.
+
+## Examples
+
+Commands and settings in these examples are illustrative, not measurements.
+
+### Applies: an allow rule lets a force push pass (high)
+
+Bad, `.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": ["Bash(git *)"]
+  }
+}
+```
+
+`git push --force` has outcome `passes`, decided by an `allow` rule. Good: allow the commands the team runs, such as `Bash(git status)` and `Bash(git diff *)`, and deny the force push.
+
+### Applies: acceptEdits lets rm pass inside the project (high)
+
+Bad: the project sets `"defaultMode": "acceptEdits"`. `rm -rf build` has outcome `passes`, decided by mode `acceptEdits`. The critical-path rule does not apply, because `build` is not the root, the home directory or the working directory. Good: remove `acceptEdits` from the project, and put `Bash(rm -rf *)` in `ask`.
+
+### Applies: only the confirmation prompt is left (medium)
+
+Bad: no `deny`, `ask` or hook in the project, and no `defaultMode`. Every command has outcome `asks` decided by mode `default`, and `preToolUseHook` is `none`. No command passes, so the finding is medium: the only barrier is the prompt. Good: add the `deny` and `ask` rules and the hook above with `onFailure: "block"`. The medium finding goes away.
+
+### Does not apply: a hook that runs and fails closed
+
+Good: the project has the `deny` rules and the hook above with `onFailure: "block"`, and `rm -rf build` asks with the hook running. Each command is blocked by a rule, or asks behind a hook that fails closed. No command passes. No finding.
