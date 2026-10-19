@@ -12,7 +12,7 @@
     "meta": {
       "type": "object",
       "description": "Values that depend on the machine or on the time. Determinism checks ignore this key.",
-      "required": ["tool", "scannedAt"],
+      "required": ["scannedAt", "targetRoot", "tool"],
       "properties": {
         "tool": {
           "type": "string",
@@ -23,6 +23,10 @@
           "type": "string",
           "format": "date-time",
           "description": "UTC time of the scan, in ISO 8601."
+        },
+        "targetRoot": {
+          "type": "string",
+          "description": "Absolute path of the scanned folder, as the scanner resolved it. It is the only absolute path of this machine in the file, and the findings validator uses it to read the evidence."
         }
       }
     },

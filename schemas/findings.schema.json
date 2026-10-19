@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "findings.json",
+  "description": "Findings written by the agent for one scan. Documentation only: scripts/lib/findings-validate.mjs is the check, and it reports every problem it finds with the finding index and the field to fix. Unknown fields are errors everywhere (additionalProperties is false), so a misspelled field cannot pass silently. A measured finding takes its impact from its measured finding; the validator warns when they differ. A judgment finding is the agent's opinion, and the report says so.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["findings"],
+  "properties": {
+    "language": {
+      "enum": ["en", "es"],
+      "default": "en",
+      "description": "Language of summary and recommendation. Missing means en. The labels of the report come from templates/labels.<language>.json. Rule ids and titles stay in English."
+    },
+    "findings": {
+      "type": "array",
+      "description": "One entry per finding. An empty list is valid: it means the scan found nothing the agent could support.",
+      "items": { "$ref": "#/$defs/finding" }
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule", "axis", "kind", "evidence", "impact", "summary", "recommendation", "testInFunction2"],
+      "properties": {
+        "rule": {
+          "type": "string",
+          "pattern": "^(RUL|CTX|SEC|VER|STR|COD)-\\d{2}$",
+          "description": "Id of a rule in rules/. The validator rejects an id that is not in the catalog."
+        },
+        "axis": {
+          "enum": ["instructions", "context", "security", "verification", "structure", "code"],
+          "description": "Must equal the axis of the rule."
+        },
+        "kind": {
+          "enum": ["measured", "judgment"],
+          "description": "Must equal the kind of the rule. A measured finding names a measuredFinding; a judgment finding may name the measured findings that support it."
+        },
+        "measuredFindingId": {
+          "type": "string",
+          "pattern": "^mf-[1-9][0-9]*$",
+          "description": "Only for kind measured, and required there. Must be the id of a measuredFindings entry of measurements.json with the same rule."
+        },
+        "measuredSupport": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^mf-[1-9][0-9]*$" },
+          "description": "Only for kind judgment, optional. Ids of measuredFindings entries of measurements.json that support the judgment. Each must exist; the rule may differ from this finding's rule."
+        },
+        "evidence": {
+          "type": "array",
+          "description": "Where the finding is. Each file must exist in the target. Paths are relative to the target, with forward slashes; absolute paths, backslashes and .. segments are rejected. The list may be empty when the finding is an absence with no file to cite, as a measured finding can be.",
+          "items": { "$ref": "#/$defs/evidence" }
+        },
+        "impact": {
+          "enum": ["high", "medium", "low"],
+          "description": "Estimated impact. For a measured finding it must equal the impact of its measured finding (the validator warns when it does not)."
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "What the finding says. Required and not blank. Any secret-shaped value in it must be masked with mask()."
+        },
+        "recommendation": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "A change to the harness. Required and not blank."
+        },
+        "testInFunction2": {
+          "type": ["string", "null"],
+          "pattern": "\\S",
+          "description": "What to test with the controlled runs of function 2, or null. Required, but its value may be null."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["kind"], "properties": { "kind": { "const": "measured" } } },
+          "then": {
+            "required": ["measuredFindingId"],
+            "not": { "required": ["measuredSupport"] }
+          }
+        },
+        {
+          "if": { "required": ["kind"], "properties": { "kind": { "const": "judgment" } } },
+          "then": { "not": { "required": ["measuredFindingId"] } }
+        }
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file"],
+      "properties": {
+        "file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path of a file of the target, relative to the target root."
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "First line, counted from 1 as an editor shows it. Without line, the evidence is the file as a whole, and only its existence is checked. Required when quote is given."
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Last line of a range. Requires line, and must be at least line and inside the file."
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Text that must appear on the line (or inside the range), with runs of spaces, tabs and line breaks compared as one space. It must not hold a raw secret, and a masked form does not appear in the file, so for a line that holds a secret, cite the line without a quote."
+        }
+      }
+    }
+  }
+}

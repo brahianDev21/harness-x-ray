@@ -68,7 +68,8 @@ export async function scan({ root, measures = [], now = new Date(), derive }) {
 
   const result = {
     schemaVersion: SCHEMA_VERSION,
-    meta: { tool: readToolName(), scannedAt: now.toISOString() },
+    // targetRoot is the only absolute path of the machine that the output holds. It lives in meta on purpose.
+    meta: { tool: readToolName(), scannedAt: now.toISOString(), targetRoot: root },
     target: {
       name: path.basename(root) || "root",
       git: { isRepo: listing.fileListSource === "git", head: listing.commit },

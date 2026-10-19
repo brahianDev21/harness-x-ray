@@ -370,7 +370,9 @@ test("claude-config: hook commands that contain the target root or the home fold
   fs.writeFileSync(path.join(fixture.root, ".claude", "settings.json"), JSON.stringify(settings));
 
   const result = await scanOnly(fixture.root);
-  const text = toStableJson(result);
+  // meta.targetRoot is the one absolute path the output may hold, so the check looks at everything else.
+  const { meta: _meta, ...outsideMeta } = result;
+  const text = toStableJson(outsideMeta);
 
   for (const folder of [fixture.root, os.homedir()]) {
     for (const form of folderForms(folder)) {

@@ -140,6 +140,20 @@ test("scan: two runs on the same copy give the same JSON, except meta", async (t
   assert.equal(withoutMetaText(rawFirst), withoutMetaText(rawSecond));
 });
 
+test("scan: meta.targetRoot is the resolved path of the scanned folder, and the schema documents it", async (t) => {
+  const { target, base } = copyOfEmptyFixture(t);
+  const out = path.join(base, "out");
+  assert.equal((await runScan([target, "--out", out])).code, 0);
+
+  const data = JSON.parse(fs.readFileSync(path.join(out, "measurements.json"), "utf8"));
+  assert.equal(data.meta.targetRoot, fs.realpathSync.native(target));
+  assert.ok(path.isAbsolute(data.meta.targetRoot));
+
+  const schema = JSON.parse(fs.readFileSync(SCHEMA_FILE, "utf8"));
+  assert.ok(schema.properties.meta.required.includes("targetRoot"));
+  assert.equal(schema.properties.meta.properties.targetRoot.type, "string");
+});
+
 const INVALID_TARGETS = {
   "a missing folder": (base) => path.join(base, "missing"),
   "a file instead of a folder": (base) => path.join(base, "repo", "notes.txt"),
