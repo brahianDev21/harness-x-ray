@@ -13,6 +13,7 @@ import { scan } from "../scripts/lib/scanner.mjs";
 import { findGenericSecrets, findSpecificSecrets, secretFileKind } from "../scripts/lib/secret-patterns.mjs";
 import { secretsMeasure } from "../scripts/lib/secrets.mjs";
 import { makeFixture } from "./helpers/make-fixture.mjs";
+import { SECRET_FIXTURE_FILES } from "./helpers/secret-fixture-files.mjs";
 
 const execFileAsync = promisify(execFile);
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -68,9 +69,15 @@ function copyOf(t, name, files = {}, options = {}) {
   return fixture;
 }
 
-// The secrets fixture, versioned in the copy, with token-shaped values written on top. The seeded values sit in every place
-// that the measure reads: the memory of a skill, the env of the settings, the headers and args of .mcp.json, a hook command
-// and a permission rule.
+// A copy of the secrets fixture with its secret files added (they are not versioned, see the helper), and files written on
+// top of the copy.
+function copyOfSecrets(t, files = {}, options = {}) {
+  return copyOf(t, "secrets", { ...SECRET_FIXTURE_FILES, ...files }, options);
+}
+
+// The secrets fixture and its secret files, in a git copy, with token-shaped values written on top. The seeded values sit in
+// every place that the measure reads: the memory of a skill, the env of the settings, the headers and args of .mcp.json, a
+// hook command and a permission rule.
 function seededFixture(t, overrides = {}) {
   const files = {
     ".env": `${MARKER}=1\n`,
@@ -99,7 +106,7 @@ function seededFixture(t, overrides = {}) {
     ".claude/skills/deploy-notes/SKILL.md": `---\nname: deploy-notes\ndescription: Deploys with the token ${SLACK}\n---\n\n# Deploy notes\n\nSet the credentials in the environment.\n`,
     ...overrides,
   };
-  const fixture = makeFixture({ fromDir: SECRETS_FIXTURE, git: true, files });
+  const fixture = makeFixture({ fromDir: SECRETS_FIXTURE, git: true, files: { ...SECRET_FIXTURE_FILES, ...files } });
   t.after(fixture.cleanup);
   return fixture;
 }
@@ -190,7 +197,7 @@ test("secrets: the hook command and the permission rule are masked in the config
 });
 
 test("secrets: a secret file is listed by name, and .env.example is not", async (t) => {
-  const fixture = copyOf(t, "secrets", {}, { git: true });
+  const fixture = copyOfSecrets(t, {}, { git: true });
   const result = await scanSecrets(fixture.root);
 
   assert.deepEqual(
@@ -204,8 +211,8 @@ test("secrets: a secret file is listed by name, and .env.example is not", async 
 });
 
 test("secrets: fileListSource says whether the list is versioned (git) or read from disk (walk)", async (t) => {
-  const versioned = copyOf(t, "secrets", {}, { git: true });
-  const onDisk = copyOf(t, "secrets");
+  const versioned = copyOfSecrets(t, {}, { git: true });
+  const onDisk = copyOfSecrets(t);
 
   assert.equal((await scanSecrets(versioned.root)).security.secrets.fileListSource, "git");
   const walked = await scanSecrets(onDisk.root);
@@ -242,7 +249,7 @@ test("secrets: the project's deny rule for .env at the root is reported, and its
   });
   assert.deepEqual(guarded.security.secrets.readProtection.preToolUseReadHooks, [], "the guard hook covers Bash, not Read");
 
-  const plain = await scanSecrets(copyOf(t, "secrets").root);
+  const plain = await scanSecrets(copyOfSecrets(t).root);
   assert.deepEqual(plain.security.secrets.readProtection.envAtRoot, {
     decision: "default",
     rule: null,
@@ -253,7 +260,7 @@ test("secrets: the project's deny rule for .env at the root is reported, and its
 
 test("secrets: each PreToolUse hook that covers Read is listed, with whether it runs for .env", async (t) => {
   const hook = (matcher, command, extra = {}) => ({ matcher, hooks: [{ type: "command", command, ...extra }] });
-  const fixture = copyOf(t, "secrets", {
+  const fixture = copyOfSecrets(t, {
     ".claude/settings.json": json({
       hooks: {
         PreToolUse: [
@@ -312,12 +319,12 @@ test("secrets: literals give the file, the line, the kind and the location, with
 });
 
 test("secrets: references and placeholders are not reported, and the versioned fixture has no literal", async (t) => {
-  const fixture = copyOf(t, "secrets", {}, { git: true });
+  const fixture = copyOfSecrets(t, {}, { git: true });
   assert.deepEqual((await scanSecrets(fixture.root)).security.secrets.literals, []);
 });
 
 test("secrets: env of an MCP server and of the local settings file are read too", async (t) => {
-  const fixture = copyOf(t, "secrets", {
+  const fixture = copyOfSecrets(t, {
     ".mcp.json": json({ mcpServers: { tools: { command: "node", env: { GITHUB_TOKEN: GITHUB, PLAIN: "info" } } } }),
     ".claude/settings.local.json": json({ env: { REPORT_SECRET: GENERIC_ARG } }),
   });
@@ -330,7 +337,7 @@ test("secrets: env of an MCP server and of the local settings file are read too"
 });
 
 test("secrets: memory files at any depth and the rules are read; other markdown is not", async (t) => {
-  const fixture = copyOf(t, "secrets", {
+  const fixture = copyOfSecrets(t, {
     "CLAUDE.md": `# Notes\n\nDB_PASSWORD=${GENERIC_PASSWORD}\n`,
     "packages/app/AGENTS.md": `Use ${ANTHROPIC} for the model.\n`,
     ".claude/rules/security.md": `Slack: ${SLACK}\n`,
@@ -349,7 +356,7 @@ test("secrets: memory files at any depth and the rules are read; other markdown 
 });
 
 test("secrets: a placeholder in a memory file is not reported", async (t) => {
-  const fixture = copyOf(t, "secrets", {
+  const fixture = copyOfSecrets(t, {
     "CLAUDE.md": "API_KEY=${API_KEY}\nexport TOKEN=<your-token-here>\npassword: changeme\n",
   });
   assert.deepEqual((await scanSecrets(fixture.root)).security.secrets.literals, []);
@@ -362,12 +369,20 @@ test("secrets: the output is the same on every scan", async (t) => {
   assert.equal(first, second);
 });
 
-test("secrets: the versioned fixture holds no token-shaped text", () => {
-  for (const file of ALL_FIXTURE_FILES(SECRETS_FIXTURE)) {
-    const text = fs.readFileSync(file, "utf8");
-    assert.deepEqual(findSpecificSecrets(text), [], `${path.relative(SECRETS_FIXTURE, file)} has a token-shaped value`);
-    assert.deepEqual(findGenericSecrets(text), [], `${path.relative(SECRETS_FIXTURE, file)} has a generic secret`);
+test("secrets: the versioned fixture and the secret files of the helper hold no token-shaped text", () => {
+  const texts = ALL_FIXTURE_FILES(SECRETS_FIXTURE).map((file) => [path.relative(SECRETS_FIXTURE, file), fs.readFileSync(file, "utf8")]);
+  texts.push(...Object.entries(SECRET_FIXTURE_FILES));
+  for (const [name, text] of texts) {
+    assert.deepEqual(findSpecificSecrets(text), [], `${name} has a token-shaped value`);
+    assert.deepEqual(findGenericSecrets(text), [], `${name} has a generic secret`);
   }
+});
+
+test("secrets: the fixture folder holds no secret-named file; the secret files come from the helper", () => {
+  const named = ALL_FIXTURE_FILES(SECRETS_FIXTURE)
+    .map((file) => path.relative(SECRETS_FIXTURE, file))
+    .filter((rel) => secretFileKind(rel) !== null);
+  assert.deepEqual(named, [], "a secret-named file is on disk in the fixture folder");
 });
 
 test("secrets: the schema documents security.secrets and keeps the existing sections", () => {

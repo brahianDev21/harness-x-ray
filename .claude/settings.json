@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node scripts/scan.mjs *)",
+      "Bash(node scripts/render-report.mjs *)",
+      "Bash(npm test)"
+    ],
+    "ask": [
+      "WebFetch",
+      "WebSearch"
+    ]
+  },
+  "claudeMdExcludes": [
+    "**/test/fixtures/**"
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Grep|Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/scripts/hooks/guard-secret-reads.mjs"
+            ],
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}
