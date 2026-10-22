@@ -3,6 +3,7 @@
 - **Objetivo:** `repo`
 - **Commit:** ninguno
 - **Fecha del escaneo (UTC):** 2026-10-18
+- **Profundidad:** Estándar
 - **Ejes revisados:** Instrucciones, Contexto, Seguridad, Verificación, Estructura, Código
 - **Herramienta:** `harness-x-ray@0.0.0`
 - **Catálogo:** 16 reglas, SHA-256 `756b61ef038a`

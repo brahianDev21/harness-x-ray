@@ -33,12 +33,12 @@ async function runScan(args) {
   }
 }
 
-// A copy of a fixture (made from the description) scanned with the command line. Returns the copy and its measurements.
-// The caller calls cleanup().
-async function scanFixture(description) {
+// A copy of a fixture (made from the description) scanned with the command line. The extra arguments, such as --depth quick,
+// are added to the command line. Returns the copy and its measurements. The caller calls cleanup().
+async function scanFixture(description, args = []) {
   const fixture = makeFixture(description);
   const out = path.join(fixture.base, "out");
-  const result = await runScan([fixture.root, "--out", out]);
+  const result = await runScan([fixture.root, "--out", out, ...args]);
   if (result.code !== 0) {
     fixture.cleanup();
     throw new Error(`the scan failed: ${result.stderr}`);
@@ -324,6 +324,72 @@ describe("validator: findings.json against a real scan of the permissive fixture
     const findings = goodFindings(scanned.measurements);
     findings.findings[1].evidence = [];
     assert.equal(validate(findings, scanned.measurements, targetOf()).ok, true);
+  });
+});
+
+describe("validator: the depth of the scan", () => {
+  let scanned = null;
+  before(async () => {
+    scanned = await scanFixture({ fromDir: PERMISSIVE });
+  });
+  after(() => {
+    scanned?.cleanup();
+  });
+  const targetOf = () => scanned.measurements.meta.targetRoot;
+  // The measurements of the scan at another depth, or with no depth at all (a scan from before the field existed).
+  const atDepth = (depth) => {
+    const measurements = structuredClone(scanned.measurements);
+    if (depth === undefined) delete measurements.depth;
+    else measurements.depth = depth;
+    return measurements;
+  };
+  // The findings that a quick scan can cite: the measured ones only.
+  const measuredOnly = (findings) => ({ ...findings, findings: findings.findings.filter((item) => item.kind === "measured") });
+
+  test("a judgment finding is an error at quick depth, with the quick-judgment code and its field named", () => {
+    const result = validate(goodFindings(scanned.measurements), atDepth("quick"), targetOf());
+    assert.equal(result.ok, false, "a quick scan must not accept a judgment finding");
+    assert.deepEqual(result.errors.map((issue) => issue.finding), [2], "only the judgment finding fails");
+    const issue = expectIssue(result.errors, {
+      index: 2,
+      field: "findings[2].rule",
+      rule: "RUL-01",
+      message: /quick depth: judgment rules are not applied/,
+    });
+    assert.equal(issue.code, "quick-judgment");
+  });
+
+  test("positive control: the same judgment finding passes at standard depth and with no depth", () => {
+    for (const depth of ["standard", undefined]) {
+      const result = validate(goodFindings(scanned.measurements), atDepth(depth), targetOf());
+      assert.deepEqual(result.errors, [], `depth ${depth ?? "(none)"}`);
+      assert.equal(result.ok, true, `depth ${depth ?? "(none)"}`);
+    }
+  });
+
+  test("positive control: measured findings pass at quick depth", () => {
+    const result = validate(measuredOnly(goodFindings(scanned.measurements)), atDepth("quick"), targetOf());
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.ok, true);
+  });
+
+  test("an error that has no code has code null, and the quick check does not add one to it", () => {
+    const findings = goodFindings(scanned.measurements);
+    findings.findings[0].rule = "XYZ-01";
+    const result = validate(findings, atDepth("quick"), targetOf());
+    const issue = expectIssue(result.errors, { index: 0, field: "findings[0].rule", message: /not a rule of the catalog/ });
+    assert.equal(issue.code, null);
+  });
+
+  test("a real quick scan writes depth quick, and its judgment finding fails validation", async () => {
+    const quick = await scanFixture({ fromDir: PERMISSIVE }, ["--depth", "quick"]);
+    try {
+      assert.equal(quick.measurements.depth, "quick");
+      const result = validate(goodFindings(quick.measurements), quick.measurements, quick.measurements.meta.targetRoot);
+      expectIssue(result.errors, { index: 2, field: "findings[2].rule", rule: "RUL-01", message: /judgment rules are not applied/ });
+    } finally {
+      quick.cleanup();
+    }
   });
 });
 

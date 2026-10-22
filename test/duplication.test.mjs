@@ -7,8 +7,14 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
   CODE_EXTENSIONS,
+  DEEP_DUPLICATION_OPTIONS,
   MEASURE_ID,
+  MAX_FILE_BYTES,
+  MAX_FILE_BYTES_DEEP,
+  MAX_FILES_DEEP,
   MAX_GROUPS,
+  MAX_GROUPS_DEEP,
+  MAX_TOTAL_BYTES_DEEP,
   createDuplicationMeasure,
   duplicationMeasure,
   isTestPath,
@@ -802,4 +808,81 @@ test("generatedPatternOf uses the folder and file rules of the structure measure
   assert.equal(generatedPatternOf("src/dist"), null, "a file named like a folder is not inside one");
   assert.equal(generatedPatternOf("dist.js"), null);
   assert.equal(generatedPatternOf("src/index.mjs"), null);
+});
+
+// Distinct duplicated blocks: block n is ten lines that no other block has, and it sits in two files of its own. Each pair is
+// one group of two copies. So there are more groups than the standard cap of 20, and fewer than the deep cap of 50.
+function manyBlocksFiles(count = 25) {
+  const files = {};
+  for (let n = 0; n < count; n += 1) {
+    const block = Array.from({ length: 10 }, (_, line) => `const block${n}Line${line} = compute(${n}, ${line});`).join("\n");
+    const pair = String(n).padStart(2, "0");
+    files[`src/pair-${pair}-a.js`] = `${block}\n`;
+    files[`src/pair-${pair}-b.js`] = `${block}\n`;
+  }
+  return files;
+}
+
+test("depth: the deep options list every group that the standard cap cuts, and the first 20 are the same at both levels", async (t) => {
+  const fixture = freshFixture(t, { files: manyBlocksFiles() });
+
+  const standard = await scanDuplication(fixture.root, {});
+  const deep = await scanDuplication(fixture.root, DEEP_DUPLICATION_OPTIONS);
+
+  assert.equal(standard.section.groupCount, 25, "standard counts all 25 groups");
+  assert.equal(standard.section.groups.length, MAX_GROUPS, "and lists the 20 with the most redundant lines");
+  assert.equal(deep.section.groupCount, 25);
+  assert.equal(deep.section.groups.length, 25, "deep lists all of them");
+  assert.deepEqual(deep.section.groups.slice(0, MAX_GROUPS), standard.section.groups);
+  assert.equal(deep.section.duplicatedLinesPct, standard.section.duplicatedLinesPct, "the share does not depend on the cap");
+});
+
+test("depth: the deep caps are the constants of the module, raised over the standard ones, and the options are accepted", () => {
+  assert.deepEqual(DEEP_DUPLICATION_OPTIONS, {
+    maxGroups: 50,
+    maxFiles: 6000,
+    maxFileBytes: 512 * 1024,
+    maxTotalBytes: 96 * 1024 * 1024,
+  });
+  assert.equal(MAX_GROUPS_DEEP, 50);
+  assert.equal(MAX_FILES_DEEP, 6000);
+  assert.equal(MAX_FILE_BYTES_DEEP, 512 * 1024);
+  assert.equal(MAX_TOTAL_BYTES_DEEP, 96 * 1024 * 1024);
+  assert.ok(MAX_GROUPS_DEEP > MAX_GROUPS && MAX_FILE_BYTES_DEEP > MAX_FILE_BYTES);
+  assert.doesNotThrow(() => createDuplicationMeasure(DEEP_DUPLICATION_OPTIONS));
+});
+
+test("depth: a code file of about 300 KiB is skipped at standard and read at deep, and a small file is read at both", async (t) => {
+  // Each line is about 28 bytes, so the file is above the standard limit (256 KiB) and below the deep limit (512 KiB).
+  const big = `${Array.from({ length: 11_000 }, (_, n) => `const value${n} = ${n} * 2;`).join("\n")}\n`;
+  const size = Buffer.byteLength(big);
+  assert.ok(size > MAX_FILE_BYTES && size < MAX_FILE_BYTES_DEEP, `the file is ${size} bytes`);
+  const fixture = freshFixture(t, { files: { "src/big.js": big, "src/small.js": "const small = 1;\n" } });
+
+  const standard = await scanDuplication(fixture.root, {});
+  const deep = await scanDuplication(fixture.root, DEEP_DUPLICATION_OPTIONS);
+
+  assert.deepEqual(standard.warnings, [{ source: MEASURE_ID, path: "src/big.js", reason: "code-file-too-large" }]);
+  assert.equal(standard.section.filesScanned, 1, "standard reads only the small file");
+  assert.deepEqual(deep.warnings, [], "positive control: deep reads the big file without a warning");
+  assert.equal(deep.section.filesScanned, 2);
+});
+
+test("depth: the command line lists 20 groups at standard and all 25 at deep, and the cut shows as groupCount above the groups listed", async (t) => {
+  const fixture = freshFixture(t, { files: manyBlocksFiles() });
+  const standardOut = path.join(fixture.base, "standard");
+  const deepOut = path.join(fixture.base, "deep");
+
+  assert.equal((await runScan([fixture.root, "--out", standardOut])).code, 0);
+  assert.equal((await runScan([fixture.root, "--out", deepOut, "--depth", "deep"])).code, 0);
+
+  const standard = JSON.parse(fs.readFileSync(path.join(standardOut, "measurements.json"), "utf8"));
+  const deep = JSON.parse(fs.readFileSync(path.join(deepOut, "measurements.json"), "utf8"));
+  assert.equal(standard.depth, "standard");
+  assert.equal(deep.depth, "deep");
+  assert.equal(standard.code.duplication.groupCount, 25);
+  assert.equal(standard.code.duplication.groups.length, 20, "standard lists 20");
+  assert.equal(deep.code.duplication.groupCount, 25);
+  assert.equal(deep.code.duplication.groups.length, 25, "deep lists all of them");
+  assert.deepEqual(deep.code.duplication.groups.slice(0, 20), standard.code.duplication.groups);
 });

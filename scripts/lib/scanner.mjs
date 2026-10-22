@@ -11,6 +11,10 @@
 // items whose size is unknown. It sorts them, and it sets the total and the method. A measure never
 // sets the total.
 //
+// The core always writes depth, the level of the run (DEPTHS). The level changes what some measures do, but
+// the choice is made by the caller when it builds the measures (scan.mjs); the core only checks the value and
+// writes it. A run that gives no depth is standard.
+//
 // With a scope (see scope.mjs), ctx.scope holds it and the result gets a scope section: the scope folders, the inherited
 // folders and how many listed files lie inside and outside the scope. Without one, ctx.scope is null and the result has no
 // scope key. ctx.files always lists the whole target: each measure decides what the scope limits.
@@ -29,6 +33,10 @@ import { ESTIMATE_METHOD } from "./tokens.mjs";
 
 /** Layout version of measurements.json. Change it only when an existing field changes meaning. */
 export const SCHEMA_VERSION = 1;
+/** The depth levels of a run, in the order the CLI lists them. quick and standard make the same measures; deep adds some. */
+export const DEPTHS = Object.freeze(["quick", "standard", "deep"]);
+/** The depth of a run that gives none. */
+export const DEFAULT_DEPTH = "standard";
 
 // Warning sources that the core uses for the file system and for git. No measure may use them.
 const RESERVED_SOURCES = new Set(["fs", "git"]);
@@ -56,14 +64,17 @@ export const DERIVED_KEYS = Object.freeze(["candidates", "measuredFindings", "un
  *   meta.include records them. Without it, the output has no meta.include.
  * @param {string[]} [options.scope] The scope folders, as resolveScopeFolders (scope.mjs) returns them. When it is given,
  *   ctx.scope is set and the result has a scope section. Without it, ctx.scope is null and there is no scope section.
+ * @param {string} [options.depth] The depth of the run, one of DEPTHS. Written to the result as depth. Default DEFAULT_DEPTH.
  * @returns {Promise<object>} The measurements object, ready for toStableJson.
  * @throws {Error} If a measure fails, two measures set the same value, a measure sets a derived key, or derive
  *   returns something malformed.
+ * @throws {TypeError} If depth is not one of DEPTHS.
  */
-export async function scan({ root, measures = [], now = new Date(), derive, include, scope }) {
+export async function scan({ root, measures = [], now = new Date(), derive, include, scope, depth = DEFAULT_DEPTH }) {
   validateMeasures(measures);
   if (derive !== undefined && typeof derive !== "function") throw new TypeError("derive must be a function");
   if (include !== undefined) validateInclude(include);
+  if (!DEPTHS.includes(depth)) throw new TypeError(`depth must be one of ${DEPTHS.join(", ")}`);
   const scopeView = scope === undefined ? null : createScope(scope);
   const fsView = createTargetFs(root);
   const listing = await listFiles(root);
@@ -88,6 +99,7 @@ export async function scan({ root, measures = [], now = new Date(), derive, incl
 
   const result = {
     schemaVersion: SCHEMA_VERSION,
+    depth,
     // targetRoot is the only absolute path of the machine that the output holds. It lives in meta on purpose.
     meta: { tool: readToolName(), scannedAt: now.toISOString(), targetRoot: root },
     target: {

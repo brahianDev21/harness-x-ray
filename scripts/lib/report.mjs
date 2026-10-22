@@ -14,6 +14,8 @@
 // With a scope (measurements.scope), the header names the scope folders, and the limits say what was measured inside them,
 // what was read outside them and what was not analyzed. With a layer plan (context.byLayer), the context section has one row
 // per layer: what it loads on demand there, and its nested skills, which are not verified and are not in the total.
+// The header names the depth of the run; at quick it also says that the judgment rules were not applied. At deep, the
+// matrix has a row per command and location (deepMatrixBlocks) instead of the standard one.
 
 import { KINDS } from "./agent-harness.mjs";
 import { AXES, DEFAULT_LANGUAGE } from "./findings-validate.mjs";
@@ -46,6 +48,17 @@ const COMPONENT_LABELS = Object.freeze({
   memory: "component.memory",
 });
 const STATUS_LABELS = Object.freeze({ provisional: "status.provisional" });
+// The depths of a run (measurements.depth), with the label of each. A scan that gives no depth is standard, as before the
+// field existed.
+const DEPTH_LABELS = Object.freeze({ quick: "depth.quick", standard: "depth.standard", deep: "depth.deep" });
+/** The depth of a scan that gives none, as scanner.mjs DEFAULT_DEPTH. */
+export const DEFAULT_DEPTH = "standard";
+// The label of each location of the deep matrix (destructiveCoverage.matrixLocations), in the order the scan writes them.
+const LOCATION_LABELS = Object.freeze({
+  inside: "location.inside",
+  outside: "location.outside",
+  critical: "location.critical",
+});
 // The agent whose every kind is evaluated: its permissions, hooks, settings, subagents and context budget are measured.
 const CLAUDE_CODE = "claude-code";
 // A trigger whose name does not say the state it stands for: its label is shown in brackets after the name.
@@ -166,6 +179,9 @@ export function buildReportModel({ measurements, findings, catalog, labels }) {
   }
   const missing = missingField(measurements);
   if (missing !== null) throw new TypeError(`measurements.json has no ${missing}`);
+  if (!Object.hasOwn(DEPTH_LABELS, measurements.depth ?? DEFAULT_DEPTH)) {
+    throw new TypeError("measurements.json has a depth that is not quick, standard or deep");
+  }
 
   const language = findings.language ?? DEFAULT_LANGUAGE;
   const ctx = createContext({ measurements, catalog, labels, language });
@@ -417,6 +433,7 @@ function headerSection(ctx) {
     ...scopeFields(ctx),
     field(label("header.commit"), head === null ? label("value.none") : ctx.code(head)),
     field(label("header.scanDate"), ctx.text(utcDate(m.meta.scannedAt))),
+    field(label("header.depth"), depthRuns(ctx)),
     field(label("header.axes"), between(AXES.map((axis) => label(`axis.${axis}`)), label("list.separator"))),
     field(label("header.tool"), ctx.code(m.meta.tool)),
     field(
@@ -429,6 +446,14 @@ function headerSection(ctx) {
     { type: "fields", items: fields },
     ...agentBlocks(ctx),
   ];
+}
+
+// The depth of the run: its label, and at quick the note that the judgment rules were not applied. A scan that gives no
+// depth shows standard.
+function depthRuns(ctx) {
+  const { label, measurements: m } = ctx;
+  const level = label(DEPTH_LABELS[m.depth ?? DEFAULT_DEPTH]);
+  return m.depth === "quick" ? label("header.depthNoJudgment", { level }) : level;
 }
 
 // The scope of the run, as one header field, when the scan had one: its folders and the inherited folders, as code. Nothing
@@ -833,6 +858,7 @@ function matrixBlocks(ctx) {
   const coverage = m.security.destructiveCoverage;
   if (!Array.isArray(coverage.matrixModes)) return null;
   const modes = coverage.matrixModes;
+  if (Array.isArray(coverage.matrixLocations)) return deepMatrixBlocks(ctx, coverage, modes);
   const headers = [label("table.command"), ...modes.map((mode) => ctx.code(mode))];
   const rows = coverage.commands.map((command) => [
     ctx.code(command.id),
@@ -842,6 +868,34 @@ function matrixBlocks(ctx) {
     { type: "paragraph", runs: label("limits.matrix") },
     { type: "table", headers, rows },
     { type: "paragraph", runs: label("limits.matrixLegend") },
+  ];
+}
+
+// The deep matrix: one row per command and location, with the location's label after the command, and one column per mode.
+// It replaces the standard matrix, which shows each command only at its own location. Its legend says what the locations
+// are. A command without a value for a location or a mode shows the empty value, as the standard matrix does.
+function deepMatrixBlocks(ctx, coverage, modes) {
+  const { label } = ctx;
+  const locations = coverage.matrixLocations;
+  if (!locations.every((location) => Object.hasOwn(LOCATION_LABELS, location))) {
+    throw new TypeError("measurements.json has a matrix location that is not inside, outside or critical");
+  }
+  const headers = [label("table.command"), label("table.location"), ...modes.map((mode) => ctx.code(mode))];
+  const rows = coverage.commands.flatMap((command) =>
+    locations.map((location) => [
+      ctx.code(command.id),
+      label(LOCATION_LABELS[location]),
+      ...modes.map((mode) => {
+        const outcome = command.locations?.[location]?.[mode];
+        return outcome === undefined ? label("value.empty") : ctx.code(outcome);
+      }),
+    ]),
+  );
+  return [
+    { type: "paragraph", runs: label("limits.matrix") },
+    { type: "table", headers, rows },
+    { type: "paragraph", runs: label("limits.matrixLegend") },
+    { type: "paragraph", runs: label("limits.matrixLocations") },
   ];
 }
 

@@ -67,6 +67,20 @@ export const MAX_FILE_BYTES = 256 * 1024;
 export const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 // Provisional: a file with a line longer than this, in characters, is treated as minified and skipped.
 export const MINIFIED_LINE_CHARS = 1000;
+// The deep caps (--depth deep). They are raised so that more of a large repository is measured. They bound the files and
+// bytes that one scan reads; the memory use of a deep scan was not measured. windowLines and MINIFIED_LINE_CHARS are the
+// same in deep. Provisional, not calibrated on real repositories.
+export const MAX_GROUPS_DEEP = 50;
+export const MAX_FILES_DEEP = 6000;
+export const MAX_FILE_BYTES_DEEP = 512 * 1024;
+export const MAX_TOTAL_BYTES_DEEP = 96 * 1024 * 1024;
+/** The settings that --depth deep passes to createDuplicationMeasure. The other settings keep their defaults. */
+export const DEEP_DUPLICATION_OPTIONS = Object.freeze({
+  maxGroups: MAX_GROUPS_DEEP,
+  maxFiles: MAX_FILES_DEEP,
+  maxFileBytes: MAX_FILE_BYTES_DEEP,
+  maxTotalBytes: MAX_TOTAL_BYTES_DEEP,
+});
 // Provisional list of extensions (lowercase, with the dot) of source code. Data formats (JSON, YAML, TOML, XML, CSV),
 // Markdown and the markup and style languages are left out on purpose.
 export const CODE_EXTENSIONS = Object.freeze([

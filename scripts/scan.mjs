@@ -1,5 +1,5 @@
 // Command line entry point of the scanner: node scripts/scan.mjs <target> [--out <dir>] [--include-user-layer]
-// [--include-ancestors] [--scope <folder>]... [--layers <runDir>]
+// [--include-ancestors] [--scope <folder>]... [--layers <runDir>] [--depth quick|standard|deep]
 //
 // It checks the arguments and the target, runs the measures and writes measurements.json to the
 // output folder, then prints a short summary. The output folder must lie inside runs/ of
@@ -19,6 +19,12 @@
 // this target, the plan must pass its check, and each layer folder must still be a folder of the target reached without a link.
 // The scan then adds context.byLayer, the context that Claude Code loads in each layer (see lib/layer-context.mjs). The run
 // folder must lie inside runs/ or the system temp folder, as the output folder does. Any of these problems exits with 2.
+//
+// --depth quick|standard|deep sets the depth of the run, standard by default, and measurements.json records it as depth. quick
+// makes the same measures as standard. deep also raises the caps of the duplication measure (lib/duplication.mjs,
+// DEEP_DUPLICATION_OPTIONS) and writes the three-location permission matrix of the destructive-commands measure. Deep reads
+// nothing outside the target that standard does not read: the two opt-in flags stay the only way to read ~/.claude and the
+// parent folders. A value that is not one of the three exits with 2, and so does a --depth given more than once.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -26,8 +32,8 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { agentInventoryMeasure } from "./lib/agent-inventory.mjs";
 import { claudeConfigMeasure } from "./lib/claude-config.mjs";
-import { destructiveCommandsMeasure } from "./lib/destructive-commands.mjs";
-import { duplicationMeasure } from "./lib/duplication.mjs";
+import { createDestructiveCommandsMeasure, destructiveCommandsMeasure } from "./lib/destructive-commands.mjs";
+import { DEEP_DUPLICATION_OPTIONS, createDuplicationMeasure, duplicationMeasure } from "./lib/duplication.mjs";
 import { writeStableJson } from "./lib/json-out.mjs";
 import { createLayerContextMeasure, layerFolderProblem } from "./lib/layer-context.mjs";
 import { LAYERS_FILE, PLAN_FILE, loadLayerPlan } from "./lib/layer-plan.mjs";
@@ -35,7 +41,7 @@ import { countByAxis, deriveMeasuredOutput } from "./lib/measured-findings.mjs";
 import { createMemoryMeasure, memoryMeasure } from "./lib/memory.mjs";
 import { referencesMeasure } from "./lib/references.mjs";
 import { checkRunDir, checkRunFile } from "./lib/run-dir.mjs";
-import { scan } from "./lib/scanner.mjs";
+import { DEFAULT_DEPTH, DEPTHS, scan } from "./lib/scanner.mjs";
 import { ScopeError, resolveScopeFolders } from "./lib/scope.mjs";
 import { secretsMeasure } from "./lib/secrets.mjs";
 import { structureMeasure } from "./lib/structure.mjs";
@@ -45,16 +51,20 @@ import { verificationMeasure } from "./lib/verification.mjs";
 
 const HARNESS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const USAGE =
-  "usage: node scripts/scan.mjs <target> [--out <dir>] [--include-user-layer] [--include-ancestors] [--scope <folder>]... [--layers <runDir>]";
+  "usage: node scripts/scan.mjs <target> [--out <dir>] [--include-user-layer] [--include-ancestors] [--scope <folder>]... [--layers <runDir>] [--depth quick|standard|deep]";
+// The message of a --depth value that is missing or not one of the depth levels. It names the three values.
+const DEPTH_MESSAGE = `the --depth value must be ${DEPTHS.slice(0, -1).join(", ")} or ${DEPTHS.at(-1)}`;
 
 // The measures, in the order they run, for the given flags. Each measure adds its import and one line here. The references,
 // verification and structure measures read the memory texts, so they run after the memory measure. The user layer runs right
 // after the project configuration, because the permission measures read the rules it adds to ctx.outside. The agent-harness
 // measure runs right after the memory measure: it reads the files of the other agents, and it needs neither the memory texts
 // nor the output of the measures that follow it. The layer-context measure runs after the agent-harness measure, and only with
-// a layer plan: it reads the memory files and rules that the memory measure has already read.
-function measuresFor({ userLayer, ancestors, layers }) {
+// a layer plan: it reads the memory files and rules that the memory measure has already read. The depth changes only the
+// duplication and destructive-commands measures: deep gives them the settings or the matrix locations of its own.
+function measuresFor({ userLayer, ancestors, layers, depth }) {
   const memory = ancestors ? createMemoryMeasure({ includeAncestors: true }) : memoryMeasure;
+  const deep = depth === "deep";
   return [
     claudeConfigMeasure,
     ...(userLayer ? [createUserLayerMeasure()] : []),
@@ -63,10 +73,10 @@ function measuresFor({ userLayer, ancestors, layers }) {
     ...(layers === undefined ? [] : [createLayerContextMeasure({ layers })]),
     referencesMeasure,
     verificationMeasure,
-    destructiveCommandsMeasure,
+    deep ? createDestructiveCommandsMeasure({ deep: true }) : destructiveCommandsMeasure,
     secretsMeasure,
     structureMeasure,
-    duplicationMeasure,
+    deep ? createDuplicationMeasure(DEEP_DUPLICATION_OPTIONS) : duplicationMeasure,
   ];
 }
 
@@ -74,7 +84,7 @@ process.exitCode = await main(process.argv.slice(2));
 
 async function main(argv) {
   try {
-    const { target: input, out, userLayer, ancestors, scopes, layers: layersInput } = parseCommandLine(argv);
+    const { target: input, out, userLayer, ancestors, scopes, layers: layersInput, depth } = parseCommandLine(argv);
     const target = resolveTarget(input, HARNESS_ROOT);
     const scope = scopes.length === 0 ? undefined : scopeFoldersOf(target.root, scopes);
     const layers = layersInput === undefined ? undefined : layerPlanOf(target.root, layersInput);
@@ -90,10 +100,11 @@ async function main(argv) {
     const include = userLayer || ancestors ? { userLayer, ancestors } : undefined;
     const measurements = await scan({
       root: target.root,
-      measures: measuresFor({ userLayer, ancestors, layers }),
+      measures: measuresFor({ userLayer, ancestors, layers, depth }),
       derive: deriveMeasuredOutput,
       include,
       scope,
+      depth,
     });
     // Second check, right before mkdir: the scan takes time, and a link put into runs/ meanwhile must be
     // refused before mkdir could create folders behind it. A link swapped in after this check can still
@@ -134,9 +145,14 @@ function parseCommandLine(argv) {
         "include-ancestors": { type: "boolean" },
         scope: { type: "string", multiple: true },
         layers: { type: "string" },
+        depth: { type: "string", multiple: true },
       },
     });
   } catch (error) {
+    // parseArgs says "argument missing" (or "ambiguous") for a --depth without a value; that case names the depth values too.
+    if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && error.message.includes("'--depth")) {
+      throw new UsageError(DEPTH_MESSAGE);
+    }
     throw new UsageError(error.message);
   }
   const { values, positionals } = parsed;
@@ -144,6 +160,11 @@ function parseCommandLine(argv) {
   if (positionals.length > 1) throw new UsageError("expected one target folder");
   if (values.out === "") throw new UsageError("the --out folder must not be empty");
   if (values.layers === "") throw new UsageError("the --layers folder must not be empty");
+  // --depth can be given once. parseArgs keeps every value of a repeated option, so a second one is refused here, not kept.
+  const depths = values.depth ?? [];
+  if (depths.length > 1) throw new UsageError("the --depth option was given more than once");
+  const depth = depths[0] ?? DEFAULT_DEPTH;
+  if (!DEPTHS.includes(depth)) throw new UsageError(`${DEPTH_MESSAGE}, not "${depth}"`);
   return {
     target: positionals[0],
     out: values.out,
@@ -151,6 +172,7 @@ function parseCommandLine(argv) {
     ancestors: values["include-ancestors"] === true,
     scopes: values.scope ?? [],
     layers: values.layers,
+    depth,
   };
 }
 

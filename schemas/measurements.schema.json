@@ -3,11 +3,15 @@
   "title": "measurements.json",
   "description": "Output of scripts/scan.mjs. Documentation only: nothing validates against it. This file lists the fields that every scan writes. Measures add their own sections (for example security or context), and each one extends this file. Three things come only from an opt-in flag and are absent without it: meta.include, the top-level userLayer (--include-user-layer), and the read fields of context.ancestors (--include-ancestors). Outside meta, no value holds an absolute path of the machine that ran the scan; paths are relative to the target and use forward slashes, and the user layer and the parent folders are shown with ~/.claude/ and ../ instead.",
   "type": "object",
-  "required": ["agentHarness", "candidates", "claudeConfig", "code", "context", "instructions", "inventory", "measuredFindings", "meta", "schemaVersion", "security", "structure", "target", "undeterminable", "verification", "warnings"],
+  "required": ["agentHarness", "candidates", "claudeConfig", "code", "context", "depth", "instructions", "inventory", "measuredFindings", "meta", "schemaVersion", "security", "structure", "target", "undeterminable", "verification", "warnings"],
   "properties": {
     "schemaVersion": {
       "const": 1,
       "description": "Layout version of this file."
+    },
+    "depth": {
+      "enum": ["quick", "standard", "deep"],
+      "description": "The depth of the run, from --depth (standard by default). quick makes the same measures as standard. deep raises the duplication caps (code.duplication) and adds the three-location matrix (destructiveCoverage.matrixLocations and commands[].locations). Always written by this version. Readers treat a measurements.json from an earlier scan, which has no depth, as standard."
     },
     "meta": {
       "type": "object",
@@ -780,6 +784,17 @@
                   },
                   "reason": { "type": "string", "description": "Fixed code from permissions.mjs." },
                   "preToolUseHook": { "enum": ["runs", "none", "undeterminable"], "description": "Whether at least one PreToolUse hook runs for the command." },
+                  "locations": {
+                    "type": "object",
+                    "description": "Deep only (depth deep, matrixLocations): the outcome of the command at each location, keyed by location and then by mode. Each location is a matrix as modes is, with the command's flags replaced by the location's: inside is insideProject true and criticalPath false, outside is both false, critical is insideProject false and criticalPath true. Not written at quick or standard.",
+                    "required": ["inside", "outside", "critical"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "inside": { "$ref": "#/properties/security/properties/destructiveCoverage/properties/commands/items/properties/modes" },
+                      "outside": { "$ref": "#/properties/security/properties/destructiveCoverage/properties/commands/items/properties/modes" },
+                      "critical": { "$ref": "#/properties/security/properties/destructiveCoverage/properties/commands/items/properties/modes" }
+                    }
+                  },
                   "modes": {
                     "type": "object",
                     "description": "The outcome of the command in a session started in each mode of matrixModes (permissions.mjs evaluateInSessionMode). The session mode is not the project defaultMode, and hooks are not taken into account. A deny rule blocks in every mode, as the cited docs state. An ask or allow rule decides in every mode too, which is not verified for auto and bypassPermissions. Without a rule, a compound command without parts or a read-only command is undeterminable in every mode, and each other command follows its mode as its key says. classifier means a model classifier decides, so no result is invented.",
@@ -819,6 +834,12 @@
                   }
                 }
               }
+            },
+            "matrixLocations": {
+              "type": "array",
+              "description": "Deep only: the locations of the deep matrix, in fixed order: inside, outside, critical (destructive-commands.mjs LOCATIONS). Not written at quick or standard.",
+              "uniqueItems": true,
+              "items": { "enum": ["inside", "outside", "critical"] }
             },
             "matrixModes": {
               "type": "array",

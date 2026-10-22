@@ -11,7 +11,8 @@ import { isPlainObject } from "./json-out.mjs";
 import { createLabeller, loadLabels } from "./report-labels.mjs";
 
 const LANGUAGES = Object.freeze(["en", "es"]);
-const DEPTHS = Object.freeze(["quick", "standard", "deep"]);
+/** The depths the page draws, in its order: the same list as intake-server.mjs and scanner.mjs DEPTHS. */
+export const DEPTHS = Object.freeze(["quick", "standard", "deep"]);
 // The axes in the order of the form. Each one has a label axis.<name>.
 const AXES = Object.freeze(["instructions", "context", "security", "verification", "structure", "code"]);
 // The form action: one leading slash (a second one would name another host), then letters, digits and . _ ~ / ? = -.

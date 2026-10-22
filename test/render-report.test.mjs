@@ -402,20 +402,39 @@ describe("evidence outside the target", () => {
   });
 });
 
-describe("permission matrix", () => {
-  // The matrix table as the report writes it: a header with the Command label and the modes as code, a divider, and one
-  // row per command. The cells are read from the measurements, so the test does not copy any outcome by hand.
-  function matrixTableOf(measurements, labels) {
-    const { commands, matrixModes: modes } = measurements.security.destructiveCoverage;
-    const headers = [labels["table.command"], ...modes.map((mode) => `\`${mode}\``)];
-    const rows = commands.map((command) => [`\`${command.id}\``, ...modes.map((mode) => `\`${command.modes[mode]}\``)]);
-    return [
-      `| ${headers.join(" | ")} |`,
-      `| ${headers.map(() => "---").join(" | ")} |`,
-      ...rows.map((row) => `| ${row.join(" | ")} |`),
-    ].join("\n");
-  }
+// The matrix table as the report writes it: a header with the Command label and the modes as code, a divider, and one
+// row per command. The cells are read from the measurements, so the test does not copy any outcome by hand.
+function matrixTableOf(measurements, labels) {
+  const { commands, matrixModes: modes } = measurements.security.destructiveCoverage;
+  const headers = [labels["table.command"], ...modes.map((mode) => `\`${mode}\``)];
+  const rows = commands.map((command) => [`\`${command.id}\``, ...modes.map((mode) => `\`${command.modes[mode]}\``)]);
+  return [
+    `| ${headers.join(" | ")} |`,
+    `| ${headers.map(() => "---").join(" | ")} |`,
+    ...rows.map((row) => `| ${row.join(" | ")} |`),
+  ].join("\n");
+}
 
+// The deep matrix table: a row per command and location, with the location's label after the command, read from the
+// measurements in the same way.
+function deepMatrixTableOf(measurements, labels) {
+  const { commands, matrixModes: modes, matrixLocations: locations } = measurements.security.destructiveCoverage;
+  const headers = [labels["table.command"], labels["table.location"], ...modes.map((mode) => `\`${mode}\``)];
+  const rows = commands.flatMap((command) =>
+    locations.map((location) => [
+      `\`${command.id}\``,
+      labels[`location.${location}`],
+      ...modes.map((mode) => `\`${command.locations[location][mode]}\``),
+    ]),
+  );
+  return [
+    `| ${headers.join(" | ")} |`,
+    `| ${headers.map(() => "---").join(" | ")} |`,
+    ...rows.map((row) => `| ${row.join(" | ")} |`),
+  ].join("\n");
+}
+
+describe("permission matrix", () => {
   test("the limits section shows the matrix, one row per command and one column per mode, with its legend", async () => {
     const dir = makeCase({ findings: readGoldenFindings("findings.en.json") });
     const result = await runRender([dir]);
@@ -489,6 +508,130 @@ describe("permission matrix", () => {
     // Positive control: the next command, which has a value for every mode, keeps its own cells.
     const secondRow = `| \`${second.id}\` | ${modes.map((mode) => `\`${second.modes[mode]}\``).join(" | ")} |`;
     assert.ok(report.includes(secondRow), "the complete row of the next command is missing");
+  });
+});
+
+describe("depth levels", () => {
+  // Real scans of the same fixture at quick and at deep. The standard run is the run of the file, as in the golden reports.
+  let quickRun = null;
+  let deepRun = null;
+  before(async () => {
+    quickRun = await makeRun({ depth: "quick" });
+    deepRun = await makeRun({ depth: "deep" });
+  });
+  after(() => {
+    quickRun?.cleanup();
+    deepRun?.cleanup();
+  });
+
+  const labelsEn = loadLabels(HARNESS_ROOT, "en");
+  const labelsEs = loadLabels(HARNESS_ROOT, "es");
+  // The golden findings of a file, without the judgment findings: a quick run cannot cite them.
+  const measuredFindings = (name) => {
+    const findings = readGoldenFindings(name);
+    return { ...findings, findings: findings.findings.filter((item) => item.kind === "measured") };
+  };
+  // The value of the Depth field: the label of the level, and at quick the note that the judgment rules are not applied.
+  const depthValue = (labels, depth) =>
+    depth === "quick" ? labels["header.depthNoJudgment"].replace("{level}", labels["depth.quick"]) : labels[`depth.${depth}`];
+
+  test("the header shows the depth of the run in the Markdown and the HTML report, for quick, standard and deep", async () => {
+    const cases = [
+      { depth: "quick", measurements: quickRun.measurements, findings: measuredFindings("findings.en.json") },
+      { depth: "standard", measurements: run.measurements, findings: readGoldenFindings("findings.en.json") },
+      { depth: "deep", measurements: deepRun.measurements, findings: readGoldenFindings("findings.en.json") },
+    ];
+    for (const { depth, measurements, findings } of cases) {
+      const dir = makeCase({ findings, measurements });
+      const result = await runRender([dir]);
+      assert.equal(result.code, 0, `${depth}: ${result.stderr}`);
+      const value = depthValue(labelsEn, depth);
+      assert.ok(reportOf(dir).includes(`- **${labelsEn["header.depth"]}:** ${value}\n`), `${depth}: the Markdown header`);
+      assert.ok(htmlOf(dir).includes(`<dt>${labelsEn["header.depth"]}</dt><dd>${value}</dd>`), `${depth}: the HTML header`);
+    }
+  });
+
+  test("the Spanish quick report says the depth and the note in Spanish, in both files", async () => {
+    const dir = makeCase({ findings: measuredFindings("findings.es.json"), measurements: quickRun.measurements });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(reportOf(dir).includes("- **Profundidad:** Rápida (reglas de juicio no aplicadas)\n"), "the Spanish Markdown header");
+    assert.ok(htmlOf(dir).includes("<dt>Profundidad</dt><dd>Rápida (reglas de juicio no aplicadas)</dd>"), "the Spanish HTML header");
+  });
+
+  test("positive control: standard has no note, and a scan that gives no depth is the standard golden report", async () => {
+    const standard = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    assert.equal((await runRender([standard])).code, 0);
+    assert.equal(reportOf(standard).includes("judgment rules not applied"), false, "the standard report has the quick note");
+
+    const older = structuredClone(run.measurements);
+    delete older.depth;
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements: older });
+    assert.equal((await runRender([dir])).code, 0);
+    assert.equal(reportOf(dir), readGolden("report.en.md"), "a scan with no depth differs from the standard golden Markdown");
+    assert.equal(htmlOf(dir), readGolden("report.en.html"), "a scan with no depth differs from the standard golden HTML");
+  });
+
+  test("a quick report with a judgment finding fails validation with the quick-depth error, and writes no report", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements: quickRun.measurements });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /error: findings\[\d+\] \(RUL-\d+\), field findings\[\d+\]\.rule: quick depth: judgment rules are not applied/);
+    assert.equal(reportOf(dir), null);
+    assert.equal(htmlOf(dir), null);
+  });
+
+  test("a quick report shows the standard matrix, with no location rows (positive control of the deep matrix)", async () => {
+    const dir = makeCase({ findings: measuredFindings("findings.en.json"), measurements: quickRun.measurements });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.ok(report.includes(matrixTableOf(quickRun.measurements, labelsEn)), "the standard matrix is missing");
+    assert.equal(report.includes(labelsEn["limits.matrixLocations"]), false, "the location legend is shown at quick");
+  });
+
+  test("deep renders the full matrix, one row per command and location, with the location labels and the legend", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements: deepRun.measurements });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.ok(report.includes(deepMatrixTableOf(deepRun.measurements, labelsEn)), "the deep matrix is missing or differs");
+    assert.ok(report.includes(labelsEn["limits.matrixLocations"]), "the legend of the locations is missing");
+    assert.equal(report.includes(matrixTableOf(deepRun.measurements, labelsEn)), false, "the standard matrix is shown as well");
+    assert.ok(htmlOf(dir).includes(`<th scope="col">${labelsEn["table.location"]}</th>`), "the HTML table has no Location column");
+  });
+
+  test("a Spanish deep report shows the Spanish location rows and legend, and the Spanish depth", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.es.json"), measurements: deepRun.measurements });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.ok(report.includes(deepMatrixTableOf(deepRun.measurements, labelsEs)), "the Spanish deep matrix is missing");
+    assert.ok(report.includes(labelsEs["limits.matrixLocations"]), "the Spanish legend is missing");
+    assert.ok(report.includes("- **Profundidad:** Profunda\n"), "the Spanish depth of the header");
+  });
+
+  test("positive control: standard shows each command at its own location only, with no location column, row or legend", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.equal(report.includes(`| ${labelsEn["table.location"]} |`), false, "a Location column");
+    assert.equal(report.includes(`| ${labelsEn["location.critical"]} |`), false, "a location row");
+    assert.equal(report.includes(labelsEn["limits.matrixLocations"]), false, "the location legend");
+  });
+
+  test("a depth that is not quick, standard or deep is a TypeError in the model (positive control: the golden depth builds)", () => {
+    const catalog = readCatalog(HARNESS_ROOT, loadRules(HARNESS_ROOT));
+    const labels = loadLabels(HARNESS_ROOT, "en");
+    const findings = readGoldenFindings("findings.en.json");
+    const fast = structuredClone(run.measurements);
+    fast.depth = "fast";
+    assert.throws(
+      () => buildReportModel({ measurements: fast, findings, catalog, labels }),
+      /a depth that is not quick, standard or deep/,
+    );
+    assert.ok(buildReportModel({ measurements: run.measurements, findings, catalog, labels }).sections.header.length > 0);
   });
 });
 
