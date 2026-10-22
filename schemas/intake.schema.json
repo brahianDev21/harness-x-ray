@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "intake.json",
+  "description": "The answers of the intake form, written to the run folder by scripts/intake.mjs when the person sends a valid form. Documentation only: scripts/lib/intake-server.mjs (validateIntake) is the check, and it reports every problem it finds with a JSON pointer. Unknown fields are errors everywhere (additionalProperties is false). The axes are written in the fixed order of the form (instructions, context, security, verification, structure, code), and the layers of a scope are written in the order of layer-plan.json. Beyond this schema the validator checks the layer and axis values against the plan.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "depth", "scope", "axes", "language", "outsideAccess"],
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "The version of this format. Must be 1."
+    },
+    "depth": {
+      "enum": ["quick", "standard", "deep"],
+      "description": "The depth chosen in the form."
+    },
+    "scope": {
+      "description": "Which layers the scan covers: every layer, or the chosen ones.",
+      "oneOf": [{ "$ref": "#/$defs/scopeAll" }, { "$ref": "#/$defs/scopeLayers" }]
+    },
+    "axes": {
+      "type": "array",
+      "minItems": 0,
+      "uniqueItems": true,
+      "items": { "enum": ["instructions", "context", "security", "verification", "structure", "code"] },
+      "description": "The axes chosen in the form, in the fixed order of the form. Empty when none was chosen, which means no priority."
+    },
+    "language": {
+      "enum": ["en", "es"],
+      "description": "The language of the form and of its pages."
+    },
+    "outsideAccess": {
+      "$ref": "#/$defs/outsideAccess"
+    }
+  },
+  "$defs": {
+    "scopeAll": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "const": "all", "description": "Every layer of the plan." }
+      }
+    },
+    "scopeLayers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "layers"],
+      "properties": {
+        "mode": { "const": "layers", "description": "The chosen layers only." },
+        "layers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "The names of the chosen layers, in the order of layer-plan.json.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "\\S"
+          }
+        }
+      }
+    },
+    "outsideAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["userLayer", "ancestors"],
+      "properties": {
+        "userLayer": { "type": "boolean", "description": "Whether the person allowed the user layer (~/.claude)." },
+        "ancestors": { "type": "boolean", "description": "Whether the person allowed the memory files of the parent folders." }
+      }
+    }
+  }
+}
