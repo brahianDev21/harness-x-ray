@@ -3,8 +3,9 @@
 // no command runs and no hook runs. The target is read through loadClaudeConfig, the parser of the claude-config measure,
 // and through ctx, never directly.
 //
-// Output: security.destructiveCoverage = { mode, commands, preToolUseHooks, subagents }. The rules are applied by
-// permissions.mjs (evaluate), so every outcome names the rule or the mode that decides it.
+// Output: security.destructiveCoverage = { mode, commands, preToolUseHooks, subagents, matrixModes }. The rules are applied
+// by permissions.mjs (evaluate, and evaluateInSessionMode for each command's modes), so every outcome names the rule or
+// the mode that decides it.
 //
 // The two cmd commands of the data run as the PowerShell tool runs "cmd /c ...", the form that the docs show for them.
 // Their shell is "cmd" and their tool is "PowerShell".
@@ -13,7 +14,7 @@ import fs from "node:fs";
 import { loadClaudeConfig } from "./claude-config.mjs";
 import { UNDETERMINABLE, coveredTools, hookRunState } from "./hook-matcher.mjs";
 import { isPlainObject } from "./json-out.mjs";
-import { evaluate } from "./permissions.mjs";
+import { MATRIX_MODES, evaluate, evaluateInSessionMode } from "./permissions.mjs";
 
 export { hookFilterState } from "./hook-matcher.mjs";
 
@@ -135,6 +136,7 @@ function collectDestructiveCoverage(ctx) {
         commands: commands.map((command) => commandResult(command, rules, mode, hooks)),
         preToolUseHooks: hooks.map(hookOutput),
         subagents: subagentsOf(config.subagents, rules, commands, mainMode),
+        matrixModes: [...MATRIX_MODES],
       },
     },
   };
@@ -150,7 +152,18 @@ function commandResult(command, rules, mode, hooks) {
     decidedBy: verdict.decidedBy,
     reason: verdict.reason,
     preToolUseHook: hookStateOf(hooks, call),
+    modes: modeOutcomes(command, rules),
   };
+}
+
+// The outcome of the command in a session started in each mode of the matrix (see evaluateInSessionMode), keyed by mode
+// in the order of MATRIX_MODES. The session mode is not the project defaultMode, and no hook is taken into account.
+function modeOutcomes(command, rules) {
+  const call = callOf(command);
+  const options = { insideProject: command.insideProject, criticalPath: command.criticalPath };
+  return Object.fromEntries(
+    MATRIX_MODES.map((mode) => [mode, evaluateInSessionMode(rules, call, { ...options, mode }).outcome]),
+  );
 }
 
 // The call that permissions.mjs simulates. parts is given only for a compound command.

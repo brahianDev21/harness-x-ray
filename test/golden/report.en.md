@@ -5,7 +5,7 @@
 - **Scan date (UTC):** 2026-10-18
 - **Axes reviewed:** Instructions, Context, Security, Verification, Structure, Code
 - **Tool:** `harness-x-ray@0.0.0`
-- **Catalog:** 16 rules, SHA-256 `59b3922be7bc`
+- **Catalog:** 16 rules, SHA-256 `47bd793f7516`
 
 ---
 
@@ -106,7 +106,7 @@ Measured at `/security/permissions/allow/0`: object with 2 keys
 | `.claude/settings.json:3` | `"allow": ["Bash(git *)"]` |
 | `.claude/settings.json:4` | `"defaultMode": "acceptEdits"` |
 
-Measured at `/security/destructiveCoverage/commands/0`: object with 12 keys
+Measured at `/security/destructiveCoverage/commands/0`: object with 13 keys
 
 | Trigger | Count | Impact | Value | Threshold |
 | --- | --- | --- | --- | --- |
@@ -116,6 +116,7 @@ Measured at `/security/destructiveCoverage/commands/0`: object with 12 keys
 
 - [Configure permissions](https://code.claude.com/docs/en/permissions), official documentation
 - [Choose a permission mode](https://code.claude.com/docs/en/permission-modes), official documentation
+- [Choose a permission mode: boundaries you state in conversation](https://code.claude.com/docs/en/permission-modes#boundaries-you-state-in-conversation), official documentation
 - [Choose a permission mode: critical paths](https://code.claude.com/docs/en/permission-modes#critical-paths), official documentation
 - [Hooks reference](https://code.claude.com/docs/en/hooks), official documentation
 - [Security](https://code.claude.com/docs/en/security), official documentation
@@ -250,7 +251,30 @@ Tokens are estimated, never counted. Method: chars/4.
 
 The thresholds are provisional: each value is an assumption that calibration has not confirmed.
 
-SEC-02 assumed the permission mode: the project's `defaultMode`, or `default` when the project sets none. The scan used `acceptEdits`. Since Claude Code v2.1.283, interactive sessions start in `auto` mode, so a real session may behave differently.
+The SEC-02 triggers assume the project's `defaultMode`, or `default` when the project sets none. The scan used `acceptEdits`. A session may start in another mode (not verified against the documentation). The matrix shows each mode.
+
+Outcome of each destructive command for a session started in each mode. It is context, not a trigger: the SEC-02 findings do not use it.
+
+| Command | `default` | `acceptEdits` | `auto` | `bypassPermissions` |
+| --- | --- | --- | --- | --- |
+| `rm-recursive-force` | `asks` | `passes` | `classifier` | `passes` |
+| `git-push-force-long` | `passes` | `passes` | `passes` | `passes` |
+| `git-push-force-short` | `passes` | `passes` | `passes` | `passes` |
+| `git-reset-hard` | `passes` | `passes` | `passes` | `passes` |
+| `git-clean-force` | `passes` | `passes` | `passes` | `passes` |
+| `git-checkout-discard` | `passes` | `passes` | `passes` | `passes` |
+| `git-restore-discard` | `passes` | `passes` | `passes` | `passes` |
+| `git-branch-force-delete` | `passes` | `passes` | `passes` | `passes` |
+| `curl-pipe-shell` | `asks` | `asks` | `classifier` | `passes` |
+| `wget-pipe-bash` | `asks` | `asks` | `classifier` | `passes` |
+| `chmod-recursive-777` | `asks` | `asks` | `classifier` | `passes` |
+| `npm-publish` | `asks` | `asks` | `classifier` | `passes` |
+| `docker-system-prune` | `asks` | `asks` | `classifier` | `passes` |
+| `remove-item-recurse-force` | `asks` | `passes` | `classifier` | `passes` |
+| `cmd-rd-recurse-quiet` | `asks` | `asks` | `classifier` | `passes` |
+| `cmd-del-recurse-quiet` | `asks` | `asks` | `classifier` | `passes` |
+
+`auto` = decided by a model classifier, not simulated; rules deciding before the mode is not verified for `auto` and `bypassPermissions` (only deny is stated to apply in every mode); hooks are not used; `dontAsk` and `plan` are not shown.
 
 Skipped or unreadable items:
 
@@ -296,7 +320,7 @@ No case was left undecided.
 | Finding | Rule | Reference | Value |
 | --- | --- | --- | --- |
 | `mf-1` | SEC-01 | `/security/permissions/allow/0` | object with 2 keys |
-| `mf-2` | SEC-02 | `/security/destructiveCoverage/commands/0` | object with 12 keys |
+| `mf-2` | SEC-02 | `/security/destructiveCoverage/commands/0` | object with 13 keys |
 | `mf-3` | SEC-03 | `/security/secrets/readProtection/envAtRoot/decision` | `default` |
 
 ### Headline values

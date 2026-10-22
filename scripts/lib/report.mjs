@@ -555,6 +555,8 @@ function renderLimits(ctx) {
   blocks.push(t("limits.thresholds", { status: statusText(ctx) }));
   const mode = usedMode(m);
   blocks.push(t("limits.sec02", { mode: ctx.code(mode ?? t("mode.default")) }));
+  const matrix = renderMatrix(ctx);
+  if (matrix !== null) blocks.push(matrix);
   if (m.warnings.length === 0) {
     blocks.push(t("limits.noWarnings"));
   } else {
@@ -577,6 +579,22 @@ function renderLimits(ctx) {
     blocks.push(t("limits.undeterminable"), table([t("table.rule"), t("table.reference"), t("table.reason")], rows));
   }
   return blocks.join("\n\n");
+}
+
+// The SEC-02 permission matrix, as context: one row per command, one column per session mode in the order the scan
+// wrote them. Nothing is rendered when the scan has no matrixModes (a measurements.json of an older scan). A command
+// without a value for a mode shows the empty value, never an invented outcome.
+function renderMatrix(ctx) {
+  const { t, measurements: m } = ctx;
+  const coverage = m.security.destructiveCoverage;
+  if (!Array.isArray(coverage.matrixModes)) return null;
+  const modes = coverage.matrixModes;
+  const headers = [t("table.command"), ...modes.map((mode) => ctx.tableCode(mode))];
+  const rows = coverage.commands.map((command) => [
+    ctx.tableCode(command.id),
+    ...modes.map((mode) => (command.modes?.[mode] === undefined ? t("value.empty") : ctx.tableCode(command.modes[mode]))),
+  ]);
+  return [t("limits.matrix"), table(headers, rows), t("limits.matrixLegend")].join("\n\n");
 }
 
 // Sources ----------------------------------------------------------------------------------------------

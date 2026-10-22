@@ -15,9 +15,12 @@ const PARAMETER_RULE = /^\s*run_in_background\s*:/;
 const IGNORED_PARAMETER_RULE = /^\s*command\s*:/;
 // Built-in read-only commands, which run without a prompt in every mode (docs: read-only commands).
 const READ_ONLY = new Set(["ls", "cat", "echo", "pwd", "head", "tail", "grep", "find", "wc", "which", "diff", "stat", "du", "cd"]);
-// Bash commands that acceptEdits approves inside the project (docs: acceptEdits mode).
+// Bash commands that acceptEdits approves inside the project (docs: acceptEdits mode: mkdir, touch, rm, rmdir, mv, cp
+// and sed inside the working directory).
 const ACCEPT_EDITS_BASH = new Set(["mkdir", "touch", "rm", "rmdir", "mv", "cp", "sed"]);
-// PowerShell commands that acceptEdits approves inside the project, with their aliases (docs: acceptEdits mode).
+// PowerShell commands that the matrix treats as approved by acceptEdits inside the project, with their aliases. NOT
+// VERIFIED: the cited acceptEdits note names none of them (it names only the Bash commands above), so they are pending
+// verification: set-content, add-content, clear-content and remove-item.
 const ACCEPT_EDITS_POWERSHELL = new Set(["set-content", "add-content", "clear-content", "remove-item"]);
 // Standard PowerShell aliases, lowercase. Matching canonicalizes them, so a rule or call that uses one is not settled.
 const POWERSHELL_ALIASES = new Set([
@@ -29,6 +32,13 @@ const POWERSHELL_ALIASES = new Set([
 const REMOVAL_COMMANDS = new Set(["rm", "rmdir"]);
 // Modes that Claude Code ignores when a project settings file sets them (docs: permission modes).
 const IGNORED_MODES = new Set(["auto", "bypassPermissions"]);
+// The session modes of the permission matrix, in the order they are reported. The cited notes say what acceptEdits
+// approves (mkdir, touch, rm, rmdir, mv, cp and sed inside the working directory), that deny applies in every mode,
+// that auto is decided by a model classifier, and that project settings ignore auto and bypassPermissions. What
+// bypassPermissions passes without a rule (the critical-path gate for removals) is a repo choice, not note content.
+// dontAsk is left out: no note names what it approves. plan is left out too: that its outcome depends on the session
+// is a repo choice, not note content. The matrix does not simulate hooks.
+export const MATRIX_MODES = Object.freeze(["default", "acceptEdits", "auto", "bypassPermissions"]);
 const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
 const KIND_OF_TOOL = new Map([
   ["Bash", "bash"],
@@ -451,6 +461,43 @@ export function evaluate(rules, call, options) {
   return criticalGate(mode, opts, decided, outcome);
 }
 
+/**
+ * The outcome of one call in a session started in one permission mode (docs: permission modes), one of MATRIX_MODES.
+ * Unlike evaluate, the mode is the session's own, so auto and bypassPermissions are not ignored. A deny rule blocks in
+ * every mode, as the cited docs state. An ask rule asks, and an allow rule passes (with the critical-path gate of
+ * evaluate), in every mode too; for auto and bypassPermissions that is NOT VERIFIED against the docs. Without a rule, a
+ * compound command without parts or a read-only command is undeterminable. Otherwise default asks, acceptEdits follows
+ * acceptEditsOutcome, auto gives classifier (a model decides, so no result is invented), and bypassPermissions passes
+ * unless the command removes files and its criticalPath is true or unknown. Hooks are not used.
+ * @param {object} rules The same rules as decide.
+ * @param {{ tool: string, command?: string, parts?: string[] }} call
+ * @param {{ mode: string, insideProject?: boolean, criticalPath?: boolean }} options mode is the session mode. The other
+ *   fields mean what they mean in evaluate.
+ * @returns {{ outcome: "blocked" | "asks" | "passes" | "classifier" | "undeterminable", decidedBy: object | null, reason: string, decision: string }}
+ */
+export function evaluateInSessionMode(rules, call, options) {
+  const opts = options ?? {};
+  const mode = opts.mode;
+  if (!SHELL_TOOLS.has(call?.tool)) return verdict("undeterminable", null, "not-a-shell-call", "undeterminable");
+  if (!MATRIX_MODES.includes(mode)) return verdict("undeterminable", null, "unknown-mode", "undeterminable");
+  const decided = decide(rules, call);
+  if (decided.decision === "deny") return verdict("blocked", ruleBy(decided), decided.reason, decided.decision);
+  // NOT VERIFIED for auto and bypassPermissions: the cited docs state only that deny applies in every mode. The ask
+  // outcome here, and the allow outcome below, apply in every mode as a repo choice.
+  if (decided.decision === "ask") return verdict("asks", ruleBy(decided), decided.reason, decided.decision);
+  if (decided.decision === "undeterminable") {
+    return verdict("undeterminable", ruleBy(decided), decided.reason, decided.decision);
+  }
+  const units = unitsOf(call);
+  // NOT VERIFIED for auto and bypassPermissions, as the ask outcome above is.
+  const outcome =
+    decided.decision === "allow"
+      ? verdict("passes", ruleBy(decided), decided.reason, decided.decision)
+      : sessionDefaultOutcome(call, units, mode, opts, decided);
+  if (outcome.outcome !== "passes" || !removesFiles(call, units)) return outcome;
+  return criticalGate(mode, opts, decided, outcome);
+}
+
 // A removal of a critical path never passes on its own (docs: critical paths). Only a removal that would pass needs
 // the criticalPath answer: true asks (blocked in dontAsk), unknown is undeterminable, and false lets it pass.
 function criticalGate(mode, options, decided, passed) {
@@ -463,10 +510,7 @@ function criticalGate(mode, options, decided, passed) {
 // command, which runs without a prompt (docs: read-only commands). Otherwise the mode decides.
 function defaultOutcome(call, units, mode, options, decided) {
   if (units === null) return verdict("undeterminable", null, "compound-command", decided.decision);
-  const powershell = call.tool === "PowerShell";
-  if (units.every((unit) => READ_ONLY.has(commandName(unit, powershell)))) {
-    return verdict("undeterminable", null, "read-only-command", decided.decision);
-  }
+  if (isReadOnly(call, units)) return verdict("undeterminable", null, "read-only-command", decided.decision);
   if (mode === null || mode === "default" || mode === "manual") {
     return verdict("asks", modeBy("default"), "default-mode", decided.decision);
   }
@@ -475,6 +519,30 @@ function defaultOutcome(call, units, mode, options, decided) {
   if (mode === "acceptEdits") return acceptEditsOutcome(call, units, options, decided);
   if (mode === "plan") return verdict("undeterminable", modeBy(mode), "plan-mode-depends-on-session", decided.decision);
   return verdict("undeterminable", modeBy(mode), "unknown-mode", decided.decision);
+}
+
+// Whether every simple command of the call is a built-in read-only command (docs: read-only commands).
+function isReadOnly(call, units) {
+  const powershell = call.tool === "PowerShell";
+  return units.every((unit) => READ_ONLY.has(commandName(unit, powershell)));
+}
+
+// The outcome of a session mode when no rule decided. It has the same compound and read-only checks as defaultOutcome.
+// bypassPermissions passes a command, except a removal (rm or rmdir) whose criticalPath is true or unknown, which is
+// undeterminable. The cited docs say nothing about how bypassPermissions treats critical paths, so that gate is a repo
+// choice, not note content.
+function sessionDefaultOutcome(call, units, mode, options, decided) {
+  if (units === null) return verdict("undeterminable", null, "compound-command", decided.decision);
+  if (isReadOnly(call, units)) return verdict("undeterminable", null, "read-only-command", decided.decision);
+  if (mode === "default") return verdict("asks", modeBy("default"), "default-mode", decided.decision);
+  if (mode === "acceptEdits") return acceptEditsOutcome(call, units, options, decided);
+  if (mode === "auto") return verdict("classifier", modeBy("auto"), "classifier-decides", decided.decision);
+  // Only a removal is gated. A command that removes no file passes whatever its criticalPath is.
+  if (!removesFiles(call, units) || options.criticalPath === false) {
+    return verdict("passes", modeBy(mode), "bypass-mode", decided.decision);
+  }
+  const reason = options.criticalPath === true ? "bypass-critical-path" : "critical-path-unknown";
+  return verdict("undeterminable", modeBy(mode), reason, decided.decision);
 }
 
 // acceptEdits approves the common file commands inside the project (docs: acceptEdits mode). A command that could be

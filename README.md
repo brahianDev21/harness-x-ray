@@ -31,7 +31,7 @@ The findings are grouped in six axes: instructions, context, security, verificat
 
 - The scan reads the target's project files only. It does not read the user layer (memory and settings in the user's Claude folder) or the parent folders of the target.
 - Tokens are estimated from characters, never counted.
-- The destructive-command checks assume the project's `defaultMode`, or `default` when the project sets none. A real session may start in another mode.
+- The destructive-command checks assume the project's `defaultMode`, or `default` when the project sets none. A real session may start in another mode, which is not verified against the documentation. The report's limits section shows each command's outcome in each mode (the matrix, as context).
 - The thresholds in `scripts/lib/thresholds.mjs` are provisional and not yet calibrated.
 - The scanner and the renderer write only inside `runs/` or the system temp folder, checked on real paths. Any other folder is refused with exit code 2, and nothing is written.
 

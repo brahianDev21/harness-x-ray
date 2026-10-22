@@ -151,6 +151,96 @@ describe("trigger notes", () => {
   });
 });
 
+describe("permission matrix", () => {
+  // The matrix table as the report writes it: a header with the Command label and the modes as code, a divider, and one
+  // row per command. The cells are read from the measurements, so the test does not copy any outcome by hand.
+  function matrixTableOf(measurements, labels) {
+    const { commands, matrixModes: modes } = measurements.security.destructiveCoverage;
+    const headers = [labels["table.command"], ...modes.map((mode) => `\`${mode}\``)];
+    const rows = commands.map((command) => [`\`${command.id}\``, ...modes.map((mode) => `\`${command.modes[mode]}\``)]);
+    return [
+      `| ${headers.join(" | ")} |`,
+      `| ${headers.map(() => "---").join(" | ")} |`,
+      ...rows.map((row) => `| ${row.join(" | ")} |`),
+    ].join("\n");
+  }
+
+  test("the limits section shows the matrix, one row per command and one column per mode, with its legend", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    const labels = loadLabels(HARNESS_ROOT, "en");
+    const table = matrixTableOf(run.measurements, labels);
+    assert.ok(report.includes(table), "the matrix table is missing or differs from the measurements");
+    assert.ok(report.includes(labels["limits.matrixLegend"]), "the legend is missing");
+    const at = report.indexOf(table);
+    assert.ok(at > report.indexOf("## Limits of this scan") && at < report.indexOf("## Sources"), "the matrix is not in the limits section");
+  });
+
+  test("the SEC-02 limit does not state the auto start as fact, and says the start mode is not verified", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    assert.equal((await runRender([dir])).code, 0);
+    const report = reportOf(dir);
+    assert.equal(report.includes("v2.1.283"), false, "the version claim is still in the report");
+    assert.ok(report.includes("(not verified against the documentation)"), "the unverified note is missing");
+  });
+
+  test("the columns follow matrixModes in the order the scan wrote them (positive control: the reversed table differs)", async () => {
+    const measurements = structuredClone(run.measurements);
+    measurements.security.destructiveCoverage.matrixModes.reverse();
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const labels = loadLabels(HARNESS_ROOT, "en");
+    assert.ok(reportOf(dir).includes(matrixTableOf(measurements, labels)), "the reversed matrix is missing");
+    assert.notEqual(matrixTableOf(measurements, labels), matrixTableOf(run.measurements, labels));
+  });
+
+  test("a Spanish report shows the same table with the Spanish header and legend", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.es.json") });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const labels = loadLabels(HARNESS_ROOT, "es");
+    const report = reportOf(dir);
+    assert.ok(report.includes(matrixTableOf(run.measurements, labels)), "the Spanish matrix table is missing");
+    assert.ok(report.includes(labels["limits.matrixLegend"]), "the Spanish legend is missing");
+  });
+
+  test("a scan without matrixModes shows no matrix, and the rest of the limits section stays (positive control)", async () => {
+    const measurements = structuredClone(run.measurements);
+    delete measurements.security.destructiveCoverage.matrixModes;
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const labels = loadLabels(HARNESS_ROOT, "en");
+    const report = reportOf(dir);
+    assert.equal(report.includes(labels["limits.matrix"]), false, "the matrix lead-in is shown");
+    assert.equal(report.includes(labels["limits.matrixLegend"]), false, "the legend is shown");
+    assert.ok(report.includes(labels["limits.noUndeterminable"]), "the rest of the limits section is missing");
+  });
+
+  test("a command without a value for one mode shows the empty value, never an invented outcome", async () => {
+    const measurements = structuredClone(run.measurements);
+    const { commands, matrixModes: modes } = measurements.security.destructiveCoverage;
+    const labels = loadLabels(HARNESS_ROOT, "en");
+    const [first, second] = commands;
+    const expected = `| \`${first.id}\` | ${modes
+      .map((mode) => (mode === "auto" ? labels["value.empty"] : `\`${first.modes[mode]}\``))
+      .join(" | ")} |`;
+    delete first.modes.auto;
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.ok(report.includes(expected), "the row with the missing value is wrong");
+    assert.equal(report.includes("undefined"), false, "an undefined value reached the report");
+    // Positive control: the next command, which has a value for every mode, keeps its own cells.
+    const secondRow = `| \`${second.id}\` | ${modes.map((mode) => `\`${second.modes[mode]}\``).join(" | ")} |`;
+    assert.ok(report.includes(secondRow), "the complete row of the next command is missing");
+  });
+});
+
 describe("privacy", () => {
   test("a path of the target that the agent writes is shown as <target>", async () => {
     const findings = readGoldenFindings("findings.en.json");

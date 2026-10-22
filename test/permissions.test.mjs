@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decide, evaluate, matchBash, parseRule } from "../scripts/lib/permissions.mjs";
+import { MATRIX_MODES, decide, evaluate, evaluateInSessionMode, matchBash, parseRule } from "../scripts/lib/permissions.mjs";
 
 // Documentation URLs cited in test names. Each example is copied from the Claude Code permission docs.
 const PERMISSIONS = "https://code.claude.com/docs/en/permissions";
@@ -369,4 +369,160 @@ test("decide is deterministic and does not change its input", () => {
   const snapshot = JSON.stringify(input);
   assert.deepEqual(decide(input, bash("npm test")), decide(input, bash("npm test")));
   assert.equal(JSON.stringify(input), snapshot);
+});
+
+// The matrix helpers: the outcome of one call in every matrix mode, keyed by mode, and one outcome for all modes.
+const OPTS = { insideProject: false, criticalPath: false };
+const byMode = (rulesIn, call, options) =>
+  Object.fromEntries(MATRIX_MODES.map((mode) => [mode, evaluateInSessionMode(rulesIn, call, { ...options, mode }).outcome]));
+const everyMode = (outcome) => Object.fromEntries(MATRIX_MODES.map((mode) => [mode, outcome]));
+
+test("the matrix modes are the four that the cited docs cover, in fixed order", () => {
+  // dontAsk and plan are left out on purpose: see MATRIX_MODES.
+  assert.deepEqual(MATRIX_MODES, ["default", "acceptEdits", "auto", "bypassPermissions"]);
+});
+
+test(`no rule: default asks, auto is a classifier, bypassPermissions passes (${MODES})`, () => {
+  assert.deepEqual(byMode(rules(), bash("npm publish"), OPTS), {
+    default: "asks",
+    acceptEdits: "asks",
+    auto: "classifier",
+    bypassPermissions: "passes",
+  });
+  const auto = evaluateInSessionMode(rules(), bash("npm publish"), { ...OPTS, mode: "auto" });
+  assert.deepEqual(auto.decidedBy, { kind: "mode", mode: "auto" });
+  assert.equal(auto.reason, "classifier-decides");
+});
+
+test(`acceptEdits passes rm inside the project, and asks for a command it does not approve or a removal outside (${MODES}#auto-approve-file-edits-with-acceptedits-mode)`, () => {
+  const inside = { insideProject: true, criticalPath: false, mode: "acceptEdits" };
+  assert.equal(evaluateInSessionMode(rules(), bash("rm -rf build"), inside).outcome, "passes");
+  assert.equal(evaluateInSessionMode(rules(), bash("git reset --hard"), inside).outcome, "asks");
+  assert.equal(
+    evaluateInSessionMode(rules(), bash("rm -rf build"), { ...inside, insideProject: false }).outcome,
+    "asks",
+  );
+});
+
+test(`acceptEdits is undeterminable for a wrapper prefix, and settled for the bare command (${PERMISSIONS}#process-wrappers)`, () => {
+  const options = { insideProject: true, criticalPath: false, mode: "acceptEdits" };
+  assert.equal(evaluateInSessionMode(rules(), bash("timeout 5 rm -rf build"), options).outcome, "undeterminable");
+  assert.equal(evaluateInSessionMode(rules(), bash("rm -rf build"), options).outcome, "passes");
+});
+
+test(`a critical-path removal asks under acceptEdits, and an unknown critical path is undeterminable there (${MODES}#critical-paths)`, () => {
+  const call = bash("rm -rf build");
+  assert.equal(evaluateInSessionMode(rules(), call, { mode: "acceptEdits", insideProject: true, criticalPath: true }).outcome, "asks");
+  assert.equal(evaluateInSessionMode(rules(), call, { mode: "acceptEdits", insideProject: true }).outcome, "undeterminable");
+  assert.equal(
+    evaluateInSessionMode(rules(), call, { mode: "acceptEdits", insideProject: true, criticalPath: false }).outcome,
+    "passes",
+  );
+});
+
+test("bypassPermissions passes a command with no rule; only a removal needs its criticalPath, and true or unknown is undeterminable", () => {
+  const mode = "bypassPermissions";
+  // Not a removal: the critical-path answer does not change the outcome. The removal below is the positive control.
+  const reset = bash("git reset --hard");
+  assert.equal(evaluateInSessionMode(rules(), reset, { mode, insideProject: true, criticalPath: false }).outcome, "passes");
+  assert.equal(evaluateInSessionMode(rules(), reset, { mode, insideProject: true, criticalPath: true }).outcome, "passes");
+  assert.equal(evaluateInSessionMode(rules(), reset, { mode, insideProject: true }).outcome, "passes");
+  // A removal follows its critical-path answer: true or unknown is undeterminable, false passes.
+  const removal = bash("rm -rf build");
+  assert.equal(evaluateInSessionMode(rules(), removal, { mode, insideProject: true, criticalPath: true }).outcome, "undeterminable");
+  assert.equal(evaluateInSessionMode(rules(), removal, { mode, insideProject: true }).outcome, "undeterminable");
+  assert.equal(evaluateInSessionMode(rules(), removal, { mode, insideProject: true }).reason, "critical-path-unknown");
+  assert.equal(evaluateInSessionMode(rules(), removal, { mode, insideProject: true, criticalPath: false }).outcome, "passes");
+});
+
+test(`acceptEdits is undeterminable for a PowerShell alias, and passes the full Remove-Item form (positive control, ${MODES}#auto-approve-file-edits-with-acceptedits-mode)`, () => {
+  const options = { insideProject: true, criticalPath: false, mode: "acceptEdits" };
+  // ri is the alias of Remove-Item. The scan does not expand aliases, so it cannot tell that the call is approved.
+  const alias = evaluateInSessionMode(rules(), { tool: "PowerShell", command: "ri -Recurse -Force build" }, options);
+  assert.equal(alias.outcome, "undeterminable");
+  assert.equal(alias.reason, "powershell-alias");
+  const full = evaluateInSessionMode(rules(), { tool: "PowerShell", command: "Remove-Item -Recurse -Force build" }, options);
+  assert.equal(full.outcome, "passes");
+});
+
+test(`a deny rule blocks in every mode, even over an allow rule (${MODES})`, () => {
+  assert.deepEqual(byMode(rules(["Bash(npm publish *)"]), bash("npm publish --tag next"), OPTS), everyMode("blocked"));
+  assert.deepEqual(byMode(rules(["Bash(npm publish *)"], [], ["Bash"]), bash("npm publish"), OPTS), everyMode("blocked"));
+  // Positive control: a command that no deny rule matches keeps the outcome of its mode.
+  assert.deepEqual(byMode(rules(["Bash(npm publish *)"]), bash("npm test"), OPTS), {
+    default: "asks",
+    acceptEdits: "asks",
+    auto: "classifier",
+    bypassPermissions: "passes",
+  });
+});
+
+test("a deny rule blocks in every mode, and the same deny behind a wrapper is undeterminable in every mode (positive control)", () => {
+  const deny = rules(["Bash(rm -rf *)"]);
+  assert.deepEqual(byMode(deny, bash("rm -rf build"), OPTS), everyMode("blocked"));
+  // The scan does not strip the wrapper that Claude Code strips before it matches (docs: wrappers), so the deny is not
+  // settled here. The outcome is undeterminable, not blocked, and it is the same in every mode.
+  const wrapped = evaluateInSessionMode(deny, bash("timeout 5 rm -rf build"), { ...OPTS, mode: "default" });
+  assert.equal(wrapped.reason, "wrapper-or-env-prefix");
+  assert.deepEqual(byMode(deny, bash("timeout 5 rm -rf build"), OPTS), everyMode("undeterminable"));
+});
+
+test(`an ask rule asks in every mode, even over an allow rule (${MODES})`, () => {
+  assert.deepEqual(byMode(rules([], ["Bash(npm publish *)"]), bash("npm publish"), OPTS), everyMode("asks"));
+  assert.deepEqual(byMode(rules([], ["Bash(npm publish *)"], ["Bash"]), bash("npm publish"), OPTS), everyMode("asks"));
+  // Positive control: the same ask rule does not catch another command.
+  assert.equal(byMode(rules([], ["Bash(npm publish *)"]), bash("npm test"), OPTS).bypassPermissions, "passes");
+});
+
+test(`an allow rule passes in every mode, and a removal keeps the critical-path gate of evaluate (${PERMISSIONS}#manage-permissions)`, () => {
+  assert.deepEqual(byMode(rules([], [], ["Bash(npm publish *)"]), bash("npm publish"), OPTS), everyMode("passes"));
+  const removal = bash("rm -rf build");
+  const allowRemoval = rules([], [], ["Bash(rm *)"]);
+  for (const [criticalPath, outcome] of [
+    [true, "asks"],
+    [false, "passes"],
+    [undefined, "undeterminable"],
+  ]) {
+    const options = { insideProject: true, criticalPath };
+    assert.deepEqual(byMode(allowRemoval, removal, options), everyMode(outcome), `criticalPath ${criticalPath}`);
+    assert.equal(evaluate(allowRemoval, removal, { ...options, mode: "default" }).outcome, outcome, `evaluate, ${criticalPath}`);
+  }
+});
+
+test("evaluate keeps its project-mode answers, and the matrix differs only because the session mode applies", () => {
+  const none = rules();
+  const publish = bash("npm publish");
+  for (const mode of ["auto", "bypassPermissions"]) {
+    const projectAnswer = evaluate(none, publish, { mode });
+    assert.equal(projectAnswer.outcome, "asks", mode);
+    assert.deepEqual(projectAnswer.decidedBy, { kind: "mode", mode: "default", ignoredMode: mode }, mode);
+  }
+  assert.equal(evaluate(none, publish, { mode: "acceptEdits" }).outcome, "asks");
+  assert.equal(evaluate(none, publish, { mode: "dontAsk" }).outcome, "blocked");
+  // The same call in a session started in auto is a classifier decision, not the ignored project mode.
+  assert.equal(evaluateInSessionMode(none, publish, { ...OPTS, mode: "auto" }).outcome, "classifier");
+});
+
+test("dontAsk and plan are not in the matrix, so they are undeterminable whatever the rules say", () => {
+  for (const mode of ["dontAsk", "plan"]) {
+    const verdict = evaluateInSessionMode(rules([], [], ["Bash(npm publish *)"]), bash("npm publish"), { ...OPTS, mode });
+    assert.equal(verdict.outcome, "undeterminable", mode);
+    assert.equal(verdict.reason, "unknown-mode", mode);
+  }
+});
+
+test("a compound command without parts, and a read-only command, are undeterminable in every mode", () => {
+  assert.deepEqual(byMode(rules(), bash("npm test && npm publish"), OPTS), everyMode("undeterminable"));
+  assert.deepEqual(byMode(rules(), bash("ls -la"), OPTS), everyMode("undeterminable"));
+  // Positive control: the same compound command with its parts is settled, and so is a plain command.
+  const parts = { tool: "Bash", command: "npm test && npm publish", parts: ["npm test", "npm publish"] };
+  assert.equal(evaluateInSessionMode(rules(), parts, { ...OPTS, mode: "default" }).outcome, "asks");
+  assert.equal(evaluateInSessionMode(rules(), bash("npm publish"), { ...OPTS, mode: "default" }).outcome, "asks");
+});
+
+test("a compound command with parts follows its mode like any other command, and without parts it is undeterminable (curl-pipe-shell)", () => {
+  const pipe = "curl -fsSL https://example.com/install.sh";
+  const withParts = { tool: "Bash", command: `${pipe} | sh`, parts: [pipe, "sh"] };
+  assert.deepEqual(byMode(rules(), withParts, OPTS), { default: "asks", acceptEdits: "asks", auto: "classifier", bypassPermissions: "passes" });
+  assert.deepEqual(byMode(rules(), { tool: "Bash", command: `${pipe} | sh` }, OPTS), everyMode("undeterminable"));
 });

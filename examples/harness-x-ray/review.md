@@ -7,7 +7,7 @@ This review records the scan of this repository's own harness. The report itself
 - The scanner refuses a target inside this repository, so the scan ran on a copy of the branch in the system temp folder. The copy was made into a git repository.
 - The `xray-scan` skill ran `scripts/scan.mjs` on the copy. The agent wrote `findings.json`, and `scripts/render-report.mjs` checked it against the rule catalog, the scan and the target. The check passed on the first run. The report is in English.
 - Two problems that preview scans found were fixed before this scan: the secrets test fixture versioned a dotenv file and a PEM file with fake values (SEC-03, high), and CLAUDE.md had a broken inline-code reference (RUL-04, medium). The secret files are now built in the system temp folder at test time.
-- The report's own limits apply. The user layer and the parent folders of the target were not read. The scan assumed the `default` permission mode, but since Claude Code v2.1.283 interactive sessions start in `auto` mode, so a real session may behave differently.
+- The report's own limits apply. The user layer and the parent folders of the target were not read. The scan assumed the `default` permission mode. A real session may start in another mode, which is not verified against the documentation; the report's limits section shows the SEC-02 outcome of each command in each mode (the matrix).
 
 ## Results
 

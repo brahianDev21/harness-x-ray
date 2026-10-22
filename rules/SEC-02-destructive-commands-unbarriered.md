@@ -5,7 +5,7 @@ axis: security
 kind: measured
 measuredSupport: []
 defaultImpact: high
-sources: [cc-docs-permissions, cc-docs-permission-modes, cc-docs-permission-modes-critical-paths, cc-docs-hooks, cc-docs-security, cc-docs-sandboxing, owasp-llm-excessive-agency, atlas-safe-agent-execution, atlas-security]
+sources: [cc-docs-permissions, cc-docs-permission-modes, cc-docs-permission-modes-classifier-boundaries, cc-docs-permission-modes-critical-paths, cc-docs-hooks, cc-docs-security, cc-docs-sandboxing, owasp-llm-excessive-agency, atlas-safe-agent-execution, atlas-security]
 evidence: official-docs
 since: mvp
 status: draft
@@ -23,11 +23,11 @@ A static scan is not a security audit. It simulates the rules and the modes; it 
 
 Destructive commands are hard or impossible to undo. A force push rewrites shared history, `git reset --hard` and `git clean` discard uncommitted work, and `npm publish` releases a package. Whether the project is safe then depends on a barrier, and the rule asks which barrier exists.
 
-The permission modes page lists the commands that the classifier of `auto` mode blocks by default, including force push, `git reset --hard`, `git checkout -- .`, `git clean -fd` and `curl | bash`. The page describes no such list for the other modes. The built-in protection that holds even in modes that skip other prompts is the critical-path rule: an allow rule or an allow hook never approves `rm` or `rmdir` on the filesystem root, the home directory or the working directory, and a matching deny rule still blocks them. A removal inside a project folder such as `build` is not a critical path.
+The cited permission-mode notes do not list the commands that the classifier of `auto` mode blocks, so this rule names none. They say that a deny rule is the hard guarantee, and that it applies in every mode, including `bypassPermissions`. The built-in protection that holds even in modes that skip other prompts is the critical-path rule: an allow rule or an allow hook never approves `rm` or `rmdir` on the filesystem root, the home directory or the working directory, and a matching deny rule still blocks them. A removal inside a project folder such as `build` is not a critical path.
 
 Rules compare text. The permissions page says a deny or ask rule covers the invocation Claude usually writes, not the program, so another form of the same command can pass.
 
-Auto mode is the built-in starting mode for interactive terminal and VS Code sessions in Claude Code v2.1.283 or later, and a person can change it. The scanner does not see the mode that a person has chosen, so its outcomes assume the project's `defaultMode`, or `default` when the project sets none.
+The cited notes do not say which mode a session starts in, and a person can change the mode. The scanner does not see the mode that a person has chosen, so its outcomes assume the project's `defaultMode`, or `default` when the project sets none. A session may start in another mode; that is not verified against the documentation. The matrix in "How it is detected" shows the outcome of each command in each mode, as context.
 
 ## How it is detected
 
@@ -39,6 +39,14 @@ Fields the scanner reads:
 - `security.destructiveCoverage.commands[].builtInProtection` and `criticalPath`, copied from the data file. The data marks `rm` with `critical-path-removal`, the PowerShell removal with `remove-item-system-paths`, and the cmd removals with `cmd-system-path-removal`. The scanner simulates the critical-path rule for `rm` and `rmdir` only, and applies it when `criticalPath` is `true`. The PowerShell and cmd marks describe protection of system paths, which the examples do not target, so they do not change an outcome here.
 - `security.destructiveCoverage.subagents[].results[]`: the `outcome` of each shell command a subagent can run.
 - `security.destructiveCoverage.preToolUseHooks[]`: `failsOpen`, `onFailure` and `tools` for each PreToolUse hook that covers Bash or PowerShell. `tools` is the list of the shell tools that the matcher covers, or `undeterminable`.
+
+The matrix is context, not a trigger: no row of the table below reads it, and it does not change `outcome`.
+
+- `security.destructiveCoverage.commands[].modes`: the outcome of the command in a session started in each mode. The keys are `default`, `acceptEdits`, `auto` and `bypassPermissions`. `measurements.json` writes them sorted, because `writeStableJson` sorts object keys; only the report uses the order of `security.destructiveCoverage.matrixModes`. Each value is `passes`, `asks`, `blocked`, `classifier` or `undeterminable`. `dontAsk` and `plan` are not in the matrix, and hooks are not used in it.
+- A deny rule gives `blocked` in every mode, as the cited notes state, `bypassPermissions` included. An ask rule gives `asks`, and an allow rule gives `passes`, with the critical-path gate. The matrix applies both in every mode, but for `auto` and `bypassPermissions` that is not verified against the documentation. Without a rule, `default` gives `asks`, `acceptEdits` gives its own result (`passes` or `asks`, and `undeterminable` for a command the scan cannot settle), `auto` gives `classifier`, and `bypassPermissions` gives `passes`, except that a removal (`rm` or `rmdir`) gives `undeterminable` unless its `criticalPath` is `false`. A compound command without `parts`, or a read-only command, with no rule is `undeterminable` in every mode. A compound command with `parts` (for example `curl ... | sh`) follows its mode like any other command. The PowerShell cmdlets that the matrix also approves under `acceptEdits` (`Set-Content`, `Add-Content`, `Clear-Content`, `Remove-Item`) are not in the cited note and are pending verification.
+- `classifier` means that a model classifier decides. The scan does not simulate that decision and writes no result for it.
+
+If a session starts in `auto`, a model classifier decides the commands that `default` would ask for (`classifier` in `commands[].modes.auto`), and the scan does not simulate it. The medium row below would then describe a barrier that the session may not use. The row keeps assuming `default` until the starting mode is verified, and the report says that the mode was assumed.
 
 Triggers:
 
@@ -103,7 +111,7 @@ A hook that only logs the call, or that exits with code 0 in every case, does no
 
 ## When not to apply
 
-- The person runs in `auto` mode. The classifier reviews the commands and blocks several of them by default, and the scanner does not see that. The finding still describes the project settings, and the report says that the mode was assumed.
+- The person runs in `auto` mode. A model classifier decides the commands that the default mode would ask for. The scanner does not simulate it, and the matrix shows `classifier` for them. The finding still describes the project settings, and the report says that the mode was assumed.
 - The outcome is `undeterminable`, for example because of a wrapper, an alias, a quote character or a compound command the scanner cannot split. The rule does not guess; it lists the outcome and its reason.
 - A command that is not in the scanner's list. The list has examples, so a command missing from it is not measured.
 - A command with an `ask` or `deny` rule that covers it. The project has a control for it. A hook that runs and fails closed does not end the check: that case is the low row, and the finding says what the hook covers.
