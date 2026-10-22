@@ -23,13 +23,32 @@
   ],
   "measuredFindings": [
     {
+      "axis": "context",
+      "evidence": [
+        {
+          "file": ".claude/skills/long-description/SKILL.md"
+        }
+      ],
+      "id": "mf-1",
+      "impact": "medium",
+      "measurementRef": "/claudeConfig/skills/1/descriptionChars",
+      "rule": "CTX-04",
+      "triggers": [
+        {
+          "impact": "medium",
+          "measurementRef": "/claudeConfig/skills/1/descriptionChars",
+          "trigger": "skill-description-truncated"
+        }
+      ]
+    },
+    {
       "axis": "security",
       "evidence": [
         {
           "file": ".claude/settings.json"
         }
       ],
-      "id": "mf-1",
+      "id": "mf-2",
       "impact": "medium",
       "measurementRef": "/security/destructiveCoverage/commands/13",
       "rule": "SEC-02",
@@ -72,7 +91,7 @@
           "line": 14
         }
       ],
-      "id": "mf-2",
+      "id": "mf-3",
       "impact": "high",
       "measurementRef": "/security/secrets/literals/0",
       "rule": "SEC-03",

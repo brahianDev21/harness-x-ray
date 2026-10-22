@@ -74,6 +74,7 @@ With `--layers <runDir>`, the run folder holds the layer plan of a `map.mjs` run
 - With `--include-user-layer`, the user's `defaultMode` is recorded but not applied, and the user's hooks are counted but not evaluated.
 - The `@imports` in the user's files, in the parent folders and in the CLAUDE.md and AGENTS.md files that a scope reads below the root are not followed.
 - Tokens are estimated from characters, never counted.
+- CTX-04 judges the descriptions of the Claude Code skills that the listing shows at the start of every session, and their number. Commands and subagents are measured (`descriptionChars` in `claudeConfig`), but give no finding: no note says what of them loads at the start. Its two thresholds are provisional.
 - The search for instructions aimed at agents is a list of patterns, not an understanding of the text: it misses an instruction written in other words or in another language, and it flags legitimate lines that the agent then dismisses. It reads Markdown and instruction files only. Whether Claude Code removes HTML comments or invisible characters from a memory file before it loads it is not verified by a note.
 - The destructive-command checks assume the project's `defaultMode`, or `default` when the project sets none. A real session may start in another mode, which is not verified against the documentation. The report's limits section shows each command's outcome in each mode (the matrix, as context).
 - The thresholds in `scripts/lib/thresholds.mjs` are provisional and not yet calibrated.

@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createAgentInventoryMeasure } from "../scripts/lib/agent-inventory.mjs";
 import { isPlainObject } from "../scripts/lib/json-out.mjs";
+import { claudeConfigMeasure } from "../scripts/lib/claude-config.mjs";
 import { createMemoryMeasure } from "../scripts/lib/memory.mjs";
 import {
   EMITTERS,
@@ -118,7 +119,7 @@ function findingsOf(m, rule) {
 // ---------------------------------------------------------------------------------------------------
 // The table and the exports
 
-test("thresholds: the six keys the rules cite, all provisional, frozen, and re-exported unchanged", () => {
+test("thresholds: the eight keys the rules cite, all provisional, frozen, and re-exported unchanged", () => {
   assert.deepEqual(Object.keys(THRESHOLDS).sort(), [
     "alwaysLoadedTokensHigh",
     "alwaysLoadedTokensMedium",
@@ -126,11 +127,15 @@ test("thresholds: the six keys the rules cite, all provisional, frozen, and re-e
     "duplicationPctMedium",
     "largeFileBytes",
     "memoryFileMaxLines",
+    "skillCountMax",
+    "skillDescriptionMaxChars",
   ]);
   assert.deepEqual(THRESHOLDS, {
     memoryFileMaxLines: 200,
     alwaysLoadedTokensMedium: 3000,
     alwaysLoadedTokensHigh: 6000,
+    skillDescriptionMaxChars: 1024,
+    skillCountMax: 30,
     largeFileBytes: 262144,
     duplicationPctMedium: 5,
     duplicationPctHigh: 15,
@@ -147,9 +152,9 @@ test("thresholds.mjs has no imports, so any module can import it without a cycle
   assert.doesNotMatch(source, /\bfrom\s+["']/);
 });
 
-test("EMITTERS: frozen, one emitter per measured MVP rule, in axis order", () => {
+test("EMITTERS: frozen, one emitter per measured rule, in axis order", () => {
   assert.ok(Object.isFrozen(EMITTERS));
-  assert.deepEqual(Object.keys(EMITTERS), ["RUL-04", "CTX-01", "CTX-07", "SEC-01", "SEC-02", "SEC-03", "STR-02", "COD-01"]);
+  assert.deepEqual(Object.keys(EMITTERS), ["RUL-04", "CTX-01", "CTX-04", "CTX-07", "SEC-01", "SEC-02", "SEC-03", "STR-02", "COD-01"]);
   for (const emitter of Object.values(EMITTERS)) assert.equal(typeof emitter, "function");
 });
 
@@ -304,6 +309,111 @@ test("CTX-01: ancestor files never count, because the scan has no lines or token
 test("CTX-01: a file with null lines (not read) gives no line trigger", () => {
   const m = measured({ inventory: [{ path: "CLAUDE.md", kind: "memory", loadMode: "always", lines: null, estTokens: null, bytes: 9 }] });
   assert.deepEqual(summaryOf(m, "CTX-01"), []);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// CTX-04
+
+// A skill item as claude-config writes it.
+function skill(name, descriptionChars, changes = {}) {
+  return {
+    path: `.claude/skills/${name}/SKILL.md`,
+    name,
+    descriptionChars,
+    overLimit: descriptionChars > 1536,
+    disableModelInvocation: false,
+    estTokens: Math.ceil(descriptionChars / 4),
+    loadMode: "always",
+    frontmatterError: null,
+    scope: "root",
+    ...changes,
+  };
+}
+const withSkills = (skills, extra = {}) => measured({ claudeConfig: { hooks: [], skills, ...extra } });
+
+test("CTX-04: a description of 1,024 characters is no finding; 1,025 is low; past the 1,536 cut is medium", () => {
+  assert.deepEqual(summaryOf(withSkills([skill("a", 1024)]), "CTX-04"), [], "positive control at the threshold");
+  // 1,536 characters is the last length that the listing shows whole: long, not cut.
+  assert.deepEqual(summaryOf(withSkills([skill("b", 1536)]), "CTX-04")[0].triggers, [
+    ["skill-description-long", "low", "/claudeConfig/skills/0/descriptionChars"],
+  ]);
+  assert.deepEqual(summaryOf(withSkills([skill("a", 1025), skill("b", 1537), skill("c", 200)]), "CTX-04"), [
+    {
+      id: "mf-1",
+      impact: "medium",
+      ref: "/claudeConfig/skills/1/descriptionChars",
+      triggers: [
+        ["skill-description-truncated", "medium", "/claudeConfig/skills/1/descriptionChars"],
+        ["skill-description-long", "low", "/claudeConfig/skills/0/descriptionChars"],
+      ],
+    },
+  ]);
+  const [finding] = findingsOf(withSkills([skill("a", 1025)]), "CTX-04");
+  assert.deepEqual(finding.triggers[0].threshold, { key: "skillDescriptionMaxChars", value: 1024 });
+  assert.deepEqual(finding.evidence, [{ file: ".claude/skills/a/SKILL.md" }]);
+  assert.equal(finding.axis, "context");
+});
+
+test("CTX-04: more than skillCountMax listed skills is low, with the count; nested and not-loaded skills do not count", () => {
+  const many = (count) => Array.from({ length: count }, (_, index) => skill(`s${index}`, 100));
+  assert.deepEqual(summaryOf(withSkills(many(30)), "CTX-04"), [], "positive control: 30 skills");
+  const [finding] = findingsOf(withSkills(many(31)), "CTX-04");
+  assert.deepEqual(finding.triggers, [
+    {
+      trigger: "skill-count-high",
+      impact: "low",
+      measurementRef: "/claudeConfig/skills",
+      threshold: { key: "skillCountMax", value: 30 },
+      detail: { count: 31 },
+    },
+  ]);
+  assert.equal(finding.evidence.length, 31, "the count trigger names every listed skill");
+  const others = [
+    ...many(30),
+    skill("nested", 2000, { path: "apps/web/.claude/skills/nested/SKILL.md", scope: "nested", loadMode: "on-demand" }),
+    skill("manual", 2000, { loadMode: "not-loaded", disableModelInvocation: true }),
+  ];
+  assert.deepEqual(summaryOf(withSkills(others), "CTX-04"), []);
+});
+
+test("CTX-04: commands and subagents are measured but give no finding; a root skill with an unreadable frontmatter is undeterminable", () => {
+  const command = { path: ".claude/commands/run.md", name: "run", descriptionChars: 3000, overLimit: true, loadMode: "always" };
+  const subagent = { path: ".claude/agents/r.md", name: "r", descriptionChars: 3000, overLimit: true, loadMode: "always" };
+  const broken = skill("broken", null, { descriptionChars: null, overLimit: null, estTokens: null, loadMode: null, frontmatterError: "broken" });
+  const nestedBroken = { ...broken, path: "a/.claude/skills/x/SKILL.md", scope: "nested" };
+  const m = withSkills([broken, nestedBroken], { commands: [command], subagents: [subagent] });
+  assert.deepEqual(summaryOf(m, "CTX-04"), []);
+  assert.deepEqual(undeterminableOf(m, "CTX-04"), [
+    {
+      rule: "CTX-04",
+      measurementRef: "/claudeConfig/skills/0",
+      reason: "the frontmatter of the skill could not be read, so the length of its description is not known",
+    },
+  ]);
+});
+
+// The acceptance case, on skills written to a temp folder and read by the claude-config measure.
+async function skillScan(t, descriptions) {
+  const files = Object.fromEntries(
+    descriptions.map((description, index) => [`.claude/skills/s${index}/SKILL.md`, `---\nname: s${index}\ndescription: ${description}\n---\nBody.\n`]),
+  );
+  const fixture = makeFixture({ files });
+  t.after(fixture.cleanup);
+  return scan({ root: fixture.root, measures: [claudeConfigMeasure], derive: deriveMeasuredOutput, now: FIXED_NOW });
+}
+
+test("CTX-04 acceptance: skills with long descriptions give the finding, and skills with short ones do not", async (t) => {
+  const long = await skillScan(t, ["Deploys. ".repeat(130), `Formats. ${"x".repeat(1600)}`, "Short."]);
+  const [finding] = long.measuredFindings.filter((item) => item.rule === "CTX-04");
+  assert.equal(finding.impact, "medium");
+  assert.deepEqual(finding.triggers.map((item) => [item.trigger, item.measurementRef]), [
+    ["skill-description-truncated", "/claudeConfig/skills/1/descriptionChars"],
+    ["skill-description-long", "/claudeConfig/skills/0/descriptionChars"],
+  ]);
+  assert.deepEqual(finding.evidence, [{ file: ".claude/skills/s0/SKILL.md" }, { file: ".claude/skills/s1/SKILL.md" }]);
+
+  const short = await skillScan(t, ["Deploys the app to staging.", "Formats the code."]);
+  assert.deepEqual(short.measuredFindings.filter((item) => item.rule === "CTX-04"), []);
 });
 
 // ---------------------------------------------------------------------------------------------------

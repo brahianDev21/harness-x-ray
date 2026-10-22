@@ -67,5 +67,5 @@ Changes from the initial hypothesis:
 - **RUL-02 coverage.** Whether the scanner counts a partly covered line as flagged is a question for the rule. This file expects a flag on the parts the tools check.
 - **RUL-04 existence.** `src/` was not listed below the top level. The layer folders and `src/controllers/http.ts` are named by the README and I expect them to exist, so they are not expected as findings.
 - **COD-01 level.** Whether the controllers repeat enough text to matter is unknown. `jscpd` is configured in the folder, but nothing runs it automatically. The rule's impact comes from the number, not from whether the tool is configured.
-- **`.agents/skills/`.** These are not Claude Code skills, so they are not always-loaded and do not count for CTX-04, which is out of scope for this version. The convention lists them as detected and not evaluated.
+- **`.agents/skills/`.** These are not Claude Code skills, so they are not always-loaded and do not count for CTX-04, which since v0.2 (V02-19) measures the descriptions of Claude Code skills only. The convention lists them as detected and not evaluated.
 - **Status of the unloaded controls.** The `not-verified` status depends on the convention being unknown in `agentHarness.agents`. If the registry verifies it later, the status and the SEC-04 and SEC-05 wording change with it.

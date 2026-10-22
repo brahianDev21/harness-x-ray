@@ -18,6 +18,15 @@ export const THRESHOLDS = Object.freeze({
   alwaysLoadedTokensMedium: 3000,
   // CTX-01. X, the high level of the always-loaded budget, in estimated tokens. X = 2 x Y, a choice of the rule.
   alwaysLoadedTokensHigh: 6000,
+  // CTX-04. A skill whose listed description (description and when_to_use) is longer than this many characters is long. The
+  // skill listing cuts a description at 1,536 characters (docs: skills), which a description past the cut always triggers;
+  // 1,024 is two thirds of that cut, so a long description is flagged while it still has room before it. At chars/4, 1,024
+  // characters are about 256 estimated tokens that load in every session for one skill. An assumption.
+  skillDescriptionMaxChars: 1024,
+  // CTX-04. More skills in the listing than this is a high count. Derivation: Y (alwaysLoadedTokensMedium, 3,000 tokens)
+  // divided by 100 estimated tokens per listing entry (an assumed description of about 400 characters) = 30, the count at
+  // which the listing alone would reach Y. An assumption.
+  skillCountMax: 30,
   // STR-02. A versioned file above this many bytes counts as large. The Read tool refuses a whole-file read above
   // 256 KB, so such a file cannot be read in one call. The value is taken from that limit.
   largeFileBytes: 262144,
