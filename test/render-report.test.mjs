@@ -5,11 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { writeStableJson } from "../scripts/lib/json-out.mjs";
-import { MARKERS, fillTemplate, missingField, renderReport } from "../scripts/lib/report.mjs";
+import { MARKERS, buildReportModel, fillTemplate, missingField, renderMarkdown, renderReport } from "../scripts/lib/report.mjs";
 import { readCatalog } from "../scripts/lib/report-catalog.mjs";
 import { formatNumber } from "../scripts/lib/report-markdown.mjs";
 import { loadLabels } from "../scripts/lib/report-labels.mjs";
-import { loadRules } from "../scripts/lib/findings-validate.mjs";
+import { AXES, loadRules } from "../scripts/lib/findings-validate.mjs";
 import {
   APPENDED_LINE,
   HARNESS_ROOT,
@@ -21,6 +21,7 @@ import {
 import { symlinkSupport } from "./helpers/make-fixture.mjs";
 
 const REPORT = "report.md";
+const HTML = "report.html";
 const support = symlinkSupport();
 const symlinkSkip = support.supported ? false : support.reason;
 
@@ -34,13 +35,18 @@ after(() => run?.cleanup());
 
 // An older report, with bytes that a rewrite would change: CRLF, non-ASCII and Markdown characters.
 const OLD_REPORT = Buffer.from("# An older report\r\n\r\nécrit | `code` — kept\r\n", "utf8");
+// An older page, with the same kind of bytes, for the same checks on report.html.
+const OLD_HTML = Buffer.from("<!doctype html>\r\n<p>écrit — kept</p>\r\n", "utf8");
 
-// A run folder with the scan's measurements, the given findings, and optionally an older report.md.
+// A run folder with the scan's measurements, the given findings, and optionally older reports.
 function makeCase({ findings, measurements = run.measurements, oldReport = false }) {
   const dir = fs.mkdtempSync(path.join(run.fixture.base, "case-"));
   writeStableJson(path.join(dir, "measurements.json"), measurements);
   fs.writeFileSync(path.join(dir, "findings.json"), `${JSON.stringify(findings, null, 2)}\n`);
-  if (oldReport) fs.writeFileSync(path.join(dir, REPORT), OLD_REPORT);
+  if (oldReport) {
+    fs.writeFileSync(path.join(dir, REPORT), OLD_REPORT);
+    fs.writeFileSync(path.join(dir, HTML), OLD_HTML);
+  }
   return dir;
 }
 
@@ -49,10 +55,36 @@ function reportOf(dir) {
   return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
 }
 
-// The bytes of report.md, or null when there is no file.
-function bytesOf(dir) {
-  const file = path.join(dir, REPORT);
+function htmlOf(dir) {
+  const file = path.join(dir, HTML);
+  return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
+}
+
+// The bytes of a report file of the run folder (report.md by default), or null when there is no file.
+function bytesOf(dir, name = REPORT) {
+  const file = path.join(dir, name);
   return fs.existsSync(file) ? fs.readFileSync(file) : null;
+}
+
+// The number tokens of a text, in order. A token is a digit run with the group and decimal separators inside it, so "1,234" is
+// one number and "1.234" another. It starts and ends with a digit, so a sentence-final period is not part of it. A space is
+// no separator here: the HTML has one between two table cells, where the Markdown has a pipe.
+const numbersOf = (text) => text.match(/\d(?:[\d.,]*\d)?/g) ?? [];
+
+// The five entities that escapeHtml writes, and any numeric character reference, decoded in one pass.
+function decodeEntities(text) {
+  const named = { amp: "&", lt: "<", gt: ">", quot: '"' };
+  return text.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot);/gi, (entity, body) => {
+    if (body[0] !== "#") return named[body.toLowerCase()];
+    const hex = body[1] === "x" || body[1] === "X";
+    return String.fromCodePoint(hex ? Number.parseInt(body.slice(2), 16) : Number(body.slice(1)));
+  });
+}
+
+// The text a reader sees in an HTML page: the head is dropped (its meta values and its style are not visible), then each tag
+// becomes a space, since a cell or a list item ends where its tag is, then the references are decoded.
+function visibleText(html) {
+  return decodeEntities(html.replace(/<head>[\s\S]*?<\/head>/, "").replace(/<[^>]*>/g, " "));
 }
 
 // Paths of this machine that a report must never show: the target, the temp folder above it and the home folder.
@@ -66,34 +98,38 @@ function absolutePathsIn(text) {
 }
 
 describe("golden reports", () => {
-  test("without language, the report is in English and matches the golden English report", async () => {
+  test("without language, the reports are in English and match the golden English Markdown and HTML", async () => {
     const dir = makeCase({ findings: readGoldenFindings("findings.en.json") });
     const result = await runRender([dir]);
     assert.equal(result.code, 0, result.stderr);
     assert.equal(reportOf(dir), readGolden("report.en.md"));
+    assert.equal(htmlOf(dir), readGolden("report.en.html"));
   });
 
-  test("language en written explicitly gives the same bytes as the English golden report", async () => {
+  test("language en written explicitly gives the same bytes as the English golden reports", async () => {
     const findings = { language: "en", ...readGoldenFindings("findings.en.json") };
     const dir = makeCase({ findings });
     const result = await runRender([dir]);
     assert.equal(result.code, 0, result.stderr);
     assert.equal(reportOf(dir), readGolden("report.en.md"));
+    assert.equal(htmlOf(dir), readGolden("report.en.html"));
   });
 
-  test("language es gives the golden Spanish report", async () => {
+  test("language es gives the golden Spanish Markdown and HTML", async () => {
     const dir = makeCase({ findings: readGoldenFindings("findings.es.json") });
     const result = await runRender([dir]);
     assert.equal(result.code, 0, result.stderr);
     assert.equal(reportOf(dir), readGolden("report.es.md"));
+    assert.equal(htmlOf(dir), readGolden("report.es.html"));
   });
 
-  test("two renders of the same input give identical bytes", async () => {
+  test("two renders of the same input give identical bytes in both files", async () => {
     const first = makeCase({ findings: readGoldenFindings("findings.en.json") });
     const second = makeCase({ findings: readGoldenFindings("findings.en.json") });
     assert.equal((await runRender([first])).code, 0);
     assert.equal((await runRender([second])).code, 0);
     assert.equal(reportOf(first), reportOf(second));
+    assert.equal(htmlOf(first), htmlOf(second));
   });
 
   test("the quote with a pipe and a backtick stays one readable code span", () => {
@@ -102,9 +138,25 @@ describe("golden reports", () => {
   });
 
   test("the golden reports hold no absolute path of this machine", () => {
-    for (const name of ["report.en.md", "report.es.md"]) {
+    for (const name of ["report.en.md", "report.es.md", "report.en.html", "report.es.html"]) {
       assert.deepEqual(absolutePathsIn(readGolden(name)), [], name);
     }
+  });
+
+  // The HTML shows the same numbers as the Markdown, in the same order. The Markdown link targets are left out of its count:
+  // they are the addresses of the sources, and in the HTML an address sits in an href attribute, which is not visible text.
+  test("the golden HTML shows the same numbers as the golden Markdown, in the same order (en and es)", () => {
+    for (const language of ["en", "es"]) {
+      const markdown = numbersOf(readGolden(`report.${language}.md`).replace(/\]\([^)]*\)/g, ""));
+      const html = numbersOf(visibleText(readGolden(`report.${language}.html`)));
+      assert.ok(markdown.length > 0, `positive control: the ${language} Markdown has numbers`);
+      assert.deepEqual(html, markdown, language);
+    }
+  });
+
+  test("the number tokens keep their separators, and a sentence-final period is not one (positive control of the extractor)", () => {
+    assert.deepEqual(numbersOf("1,234 and 1.234"), ["1,234", "1.234"]);
+    assert.deepEqual(numbersOf("Checked on 2026-10-18."), ["2026", "10", "18"]);
   });
 });
 
@@ -350,20 +402,39 @@ describe("evidence outside the target", () => {
   });
 });
 
-describe("permission matrix", () => {
-  // The matrix table as the report writes it: a header with the Command label and the modes as code, a divider, and one
-  // row per command. The cells are read from the measurements, so the test does not copy any outcome by hand.
-  function matrixTableOf(measurements, labels) {
-    const { commands, matrixModes: modes } = measurements.security.destructiveCoverage;
-    const headers = [labels["table.command"], ...modes.map((mode) => `\`${mode}\``)];
-    const rows = commands.map((command) => [`\`${command.id}\``, ...modes.map((mode) => `\`${command.modes[mode]}\``)]);
-    return [
-      `| ${headers.join(" | ")} |`,
-      `| ${headers.map(() => "---").join(" | ")} |`,
-      ...rows.map((row) => `| ${row.join(" | ")} |`),
-    ].join("\n");
-  }
+// The matrix table as the report writes it: a header with the Command label and the modes as code, a divider, and one
+// row per command. The cells are read from the measurements, so the test does not copy any outcome by hand.
+function matrixTableOf(measurements, labels) {
+  const { commands, matrixModes: modes } = measurements.security.destructiveCoverage;
+  const headers = [labels["table.command"], ...modes.map((mode) => `\`${mode}\``)];
+  const rows = commands.map((command) => [`\`${command.id}\``, ...modes.map((mode) => `\`${command.modes[mode]}\``)]);
+  return [
+    `| ${headers.join(" | ")} |`,
+    `| ${headers.map(() => "---").join(" | ")} |`,
+    ...rows.map((row) => `| ${row.join(" | ")} |`),
+  ].join("\n");
+}
 
+// The deep matrix table: a row per command and location, with the location's label after the command, read from the
+// measurements in the same way.
+function deepMatrixTableOf(measurements, labels) {
+  const { commands, matrixModes: modes, matrixLocations: locations } = measurements.security.destructiveCoverage;
+  const headers = [labels["table.command"], labels["table.location"], ...modes.map((mode) => `\`${mode}\``)];
+  const rows = commands.flatMap((command) =>
+    locations.map((location) => [
+      `\`${command.id}\``,
+      labels[`location.${location}`],
+      ...modes.map((mode) => `\`${command.locations[location][mode]}\``),
+    ]),
+  );
+  return [
+    `| ${headers.join(" | ")} |`,
+    `| ${headers.map(() => "---").join(" | ")} |`,
+    ...rows.map((row) => `| ${row.join(" | ")} |`),
+  ].join("\n");
+}
+
+describe("permission matrix", () => {
   test("the limits section shows the matrix, one row per command and one column per mode, with its legend", async () => {
     const dir = makeCase({ findings: readGoldenFindings("findings.en.json") });
     const result = await runRender([dir]);
@@ -440,6 +511,130 @@ describe("permission matrix", () => {
   });
 });
 
+describe("depth levels", () => {
+  // Real scans of the same fixture at quick and at deep. The standard run is the run of the file, as in the golden reports.
+  let quickRun = null;
+  let deepRun = null;
+  before(async () => {
+    quickRun = await makeRun({ depth: "quick" });
+    deepRun = await makeRun({ depth: "deep" });
+  });
+  after(() => {
+    quickRun?.cleanup();
+    deepRun?.cleanup();
+  });
+
+  const labelsEn = loadLabels(HARNESS_ROOT, "en");
+  const labelsEs = loadLabels(HARNESS_ROOT, "es");
+  // The golden findings of a file, without the judgment findings: a quick run cannot cite them.
+  const measuredFindings = (name) => {
+    const findings = readGoldenFindings(name);
+    return { ...findings, findings: findings.findings.filter((item) => item.kind === "measured") };
+  };
+  // The value of the Depth field: the label of the level, and at quick the note that the judgment rules are not applied.
+  const depthValue = (labels, depth) =>
+    depth === "quick" ? labels["header.depthNoJudgment"].replace("{level}", labels["depth.quick"]) : labels[`depth.${depth}`];
+
+  test("the header shows the depth of the run in the Markdown and the HTML report, for quick, standard and deep", async () => {
+    const cases = [
+      { depth: "quick", measurements: quickRun.measurements, findings: measuredFindings("findings.en.json") },
+      { depth: "standard", measurements: run.measurements, findings: readGoldenFindings("findings.en.json") },
+      { depth: "deep", measurements: deepRun.measurements, findings: readGoldenFindings("findings.en.json") },
+    ];
+    for (const { depth, measurements, findings } of cases) {
+      const dir = makeCase({ findings, measurements });
+      const result = await runRender([dir]);
+      assert.equal(result.code, 0, `${depth}: ${result.stderr}`);
+      const value = depthValue(labelsEn, depth);
+      assert.ok(reportOf(dir).includes(`- **${labelsEn["header.depth"]}:** ${value}\n`), `${depth}: the Markdown header`);
+      assert.ok(htmlOf(dir).includes(`<dt>${labelsEn["header.depth"]}</dt><dd>${value}</dd>`), `${depth}: the HTML header`);
+    }
+  });
+
+  test("the Spanish quick report says the depth and the note in Spanish, in both files", async () => {
+    const dir = makeCase({ findings: measuredFindings("findings.es.json"), measurements: quickRun.measurements });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(reportOf(dir).includes("- **Profundidad:** Rápida (reglas de juicio no aplicadas)\n"), "the Spanish Markdown header");
+    assert.ok(htmlOf(dir).includes("<dt>Profundidad</dt><dd>Rápida (reglas de juicio no aplicadas)</dd>"), "the Spanish HTML header");
+  });
+
+  test("positive control: standard has no note, and a scan that gives no depth is the standard golden report", async () => {
+    const standard = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    assert.equal((await runRender([standard])).code, 0);
+    assert.equal(reportOf(standard).includes("judgment rules not applied"), false, "the standard report has the quick note");
+
+    const older = structuredClone(run.measurements);
+    delete older.depth;
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements: older });
+    assert.equal((await runRender([dir])).code, 0);
+    assert.equal(reportOf(dir), readGolden("report.en.md"), "a scan with no depth differs from the standard golden Markdown");
+    assert.equal(htmlOf(dir), readGolden("report.en.html"), "a scan with no depth differs from the standard golden HTML");
+  });
+
+  test("a quick report with a judgment finding fails validation with the quick-depth error, and writes no report", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements: quickRun.measurements });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /error: findings\[\d+\] \(RUL-\d+\), field findings\[\d+\]\.rule: quick depth: judgment rules are not applied/);
+    assert.equal(reportOf(dir), null);
+    assert.equal(htmlOf(dir), null);
+  });
+
+  test("a quick report shows the standard matrix, with no location rows (positive control of the deep matrix)", async () => {
+    const dir = makeCase({ findings: measuredFindings("findings.en.json"), measurements: quickRun.measurements });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.ok(report.includes(matrixTableOf(quickRun.measurements, labelsEn)), "the standard matrix is missing");
+    assert.equal(report.includes(labelsEn["limits.matrixLocations"]), false, "the location legend is shown at quick");
+  });
+
+  test("deep renders the full matrix, one row per command and location, with the location labels and the legend", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements: deepRun.measurements });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.ok(report.includes(deepMatrixTableOf(deepRun.measurements, labelsEn)), "the deep matrix is missing or differs");
+    assert.ok(report.includes(labelsEn["limits.matrixLocations"]), "the legend of the locations is missing");
+    assert.equal(report.includes(matrixTableOf(deepRun.measurements, labelsEn)), false, "the standard matrix is shown as well");
+    assert.ok(htmlOf(dir).includes(`<th scope="col">${labelsEn["table.location"]}</th>`), "the HTML table has no Location column");
+  });
+
+  test("a Spanish deep report shows the Spanish location rows and legend, and the Spanish depth", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.es.json"), measurements: deepRun.measurements });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.ok(report.includes(deepMatrixTableOf(deepRun.measurements, labelsEs)), "the Spanish deep matrix is missing");
+    assert.ok(report.includes(labelsEs["limits.matrixLocations"]), "the Spanish legend is missing");
+    assert.ok(report.includes("- **Profundidad:** Profunda\n"), "the Spanish depth of the header");
+  });
+
+  test("positive control: standard shows each command at its own location only, with no location column, row or legend", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.equal(report.includes(`| ${labelsEn["table.location"]} |`), false, "a Location column");
+    assert.equal(report.includes(`| ${labelsEn["location.critical"]} |`), false, "a location row");
+    assert.equal(report.includes(labelsEn["limits.matrixLocations"]), false, "the location legend");
+  });
+
+  test("a depth that is not quick, standard or deep is a TypeError in the model (positive control: the golden depth builds)", () => {
+    const catalog = readCatalog(HARNESS_ROOT, loadRules(HARNESS_ROOT));
+    const labels = loadLabels(HARNESS_ROOT, "en");
+    const findings = readGoldenFindings("findings.en.json");
+    const fast = structuredClone(run.measurements);
+    fast.depth = "fast";
+    assert.throws(
+      () => buildReportModel({ measurements: fast, findings, catalog, labels }),
+      /a depth that is not quick, standard or deep/,
+    );
+    assert.ok(buildReportModel({ measurements: run.measurements, findings, catalog, labels }).sections.header.length > 0);
+  });
+});
+
 describe("privacy", () => {
   test("a path of the target that the agent writes is shown as <target>", async () => {
     const findings = readGoldenFindings("findings.en.json");
@@ -452,12 +647,13 @@ describe("privacy", () => {
     assert.deepEqual(absolutePathsIn(report), []);
   });
 
-  test("the report has no absolute path even when the agent quotes one", async () => {
+  test("the report has no absolute path even when the agent quotes one, in either file", async () => {
     const findings = readGoldenFindings("findings.en.json");
     findings.findings[0].recommendation = `Move the folder ${os.homedir()} out of the allow list.`;
     const dir = makeCase({ findings });
     assert.equal((await runRender([dir])).code, 0);
     assert.deepEqual(absolutePathsIn(reportOf(dir)), []);
+    assert.deepEqual(absolutePathsIn(htmlOf(dir)), []);
   });
 });
 
@@ -543,16 +739,17 @@ describe("warnings and errors", () => {
     assert.equal(reportOf(dir), null);
   });
 
-  test("a failed validation writes nothing and leaves an older report.md byte for byte as it was", async () => {
+  test("a failed validation writes neither report and leaves older report.md and report.html byte for byte as they were", async () => {
     const findings = readGoldenFindings("findings.en.json");
     findings.findings[0].rule = "XXX-99";
     const dir = makeCase({ findings, oldReport: true });
     const result = await runRender([dir]);
     assert.equal(result.code, 1);
     assert.deepEqual(bytesOf(dir), OLD_REPORT);
+    assert.deepEqual(bytesOf(dir, HTML), OLD_HTML);
   });
 
-  test("a failed validation writes nothing when no report existed before", async () => {
+  test("a failed validation writes neither report when no report existed before", async () => {
     const findings = readGoldenFindings("findings.en.json");
     findings.language = "fr";
     const dir = makeCase({ findings });
@@ -561,15 +758,16 @@ describe("warnings and errors", () => {
     assert.deepEqual(fs.readdirSync(dir).sort(), ["findings.json", "measurements.json"]);
   });
 
-  test("an unexpected error after the inputs are read leaves an older report.md byte for byte as it was", async () => {
+  test("an unexpected error after the inputs are read leaves older report.md and report.html byte for byte as they were", async () => {
     // The validator does not check measurementRef, so the failure comes from the renderer (or, while the template is
-    // missing, from reading it). Either way the run exits 1 and must not touch report.md.
+    // missing, from reading it). Either way the run exits 1 and must not touch either report.
     const measurements = structuredClone(run.measurements);
     measurements.measuredFindings[0].measurementRef = "/security/nothing/here";
     const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements, oldReport: true });
     const result = await runRender([dir]);
     assert.equal(result.code, 1, result.stderr);
     assert.deepEqual(bytesOf(dir), OLD_REPORT);
+    assert.deepEqual(bytesOf(dir, HTML), OLD_HTML);
   });
 
   test("an unexpected error after the inputs are read writes no report when none existed before", async () => {
@@ -579,6 +777,7 @@ describe("warnings and errors", () => {
     const result = await runRender([dir]);
     assert.equal(result.code, 1, result.stderr);
     assert.equal(bytesOf(dir), null);
+    assert.equal(bytesOf(dir, HTML), null);
   });
 
   test("usage errors exit 2 and name the usage", async () => {
@@ -869,6 +1068,7 @@ describe("run folders", () => {
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(reportOf(dir), readGolden("report.en.md"));
+    assert.equal(htmlOf(dir), readGolden("report.en.html"));
   });
 
   test("a run folder inside runs/ that is a link to a folder outside exits 2 and writes nothing", { skip: symlinkSkip }, async (t) => {
@@ -900,5 +1100,147 @@ describe("run folders", () => {
     // Positive control: the same run folder without the link renders.
     const plain = makeCase({ findings: readGoldenFindings("findings.en.json") });
     assert.equal((await runRender([plain])).code, 0);
+  });
+});
+
+describe("report files", () => {
+  test("a successful run writes report.md and report.html, and names both on the console", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    const result = await runRender([dir]);
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.notEqual(reportOf(dir), null);
+    assert.notEqual(htmlOf(dir), null);
+    const lines = result.stdout.split("\n");
+    assert.ok(lines.includes(`report: ${path.join(dir, REPORT)}`), result.stdout);
+    assert.ok(lines.includes(`html: ${path.join(dir, HTML)}`), result.stdout);
+  });
+
+  test("a report.html that is a folder exits 2, writes no report.md, and the folder is left alone", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    const folder = path.join(dir, HTML);
+    fs.mkdirSync(folder);
+    fs.writeFileSync(path.join(folder, "kept.txt"), "kept\n");
+
+    const result = await runRender([dir]);
+
+    assert.equal(result.code, 2, result.stderr);
+    assert.match(result.stderr, /not a regular file/);
+    assert.equal(reportOf(dir), null);
+    assert.deepEqual(fs.readdirSync(folder), ["kept.txt"]);
+    assert.equal(fs.readFileSync(path.join(folder, "kept.txt"), "utf8"), "kept\n");
+
+    // Positive control: the same run folder without the folder renders both files.
+    const plain = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    assert.equal((await runRender([plain])).code, 0);
+    assert.notEqual(reportOf(plain), null);
+    assert.notEqual(htmlOf(plain), null);
+  });
+
+  test("a report.html that is a link exits 2, writes no report.md either, and the file it points to is left alone", { skip: symlinkSkip }, async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    const target = path.join(run.fixture.base, "kept.html");
+    fs.writeFileSync(target, "kept\n");
+    fs.symlinkSync(target, path.join(dir, HTML), "file");
+
+    const result = await runRender([dir]);
+
+    assert.equal(result.code, 2, result.stderr);
+    assert.match(result.stderr, /not a regular file/);
+    assert.equal(reportOf(dir), null);
+    assert.equal(fs.readFileSync(target, "utf8"), "kept\n");
+
+    // Positive control: the same run folder without the link renders both files.
+    const plain = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    assert.equal((await runRender([plain])).code, 0);
+    assert.notEqual(reportOf(plain), null);
+    assert.notEqual(htmlOf(plain), null);
+  });
+});
+
+describe("report model", () => {
+  // The model of the golden run: the same inputs as the golden English report.
+  function goldenModel() {
+    const catalog = readCatalog(HARNESS_ROOT, loadRules(HARNESS_ROOT));
+    const labels = loadLabels(HARNESS_ROOT, "en");
+    return buildReportModel({
+      measurements: run.measurements,
+      findings: readGoldenFindings("findings.en.json"),
+      catalog,
+      labels,
+    });
+  }
+
+  // Every node of the model that has a type (runs, blocks and findings), at any depth.
+  function typedNodes(value, found = []) {
+    if (Array.isArray(value)) value.forEach((item) => typedNodes(item, found));
+    else if (value !== null && typeof value === "object") {
+      if (typeof value.type === "string") found.push(value);
+      Object.values(value).forEach((item) => typedNodes(item, found));
+    }
+    return found;
+  }
+
+  // Every string of the model, at any depth.
+  function stringsIn(value, found = []) {
+    if (typeof value === "string") found.push(value);
+    else if (Array.isArray(value)) value.forEach((item) => stringsIn(item, found));
+    else if (value !== null && typeof value === "object") Object.values(value).forEach((item) => stringsIn(item, found));
+    return found;
+  }
+
+  test("the model round-trips through JSON unchanged", () => {
+    const model = goldenModel();
+    assert.deepEqual(JSON.parse(JSON.stringify(model)), model);
+  });
+
+  test("the model holds the appended line with its raw pipe, and no backslash escape", () => {
+    const model = goldenModel();
+    const holding = typedNodes(model.sections).filter((node) => node.type === "code" && node.text === APPENDED_LINE);
+    assert.equal(holding.length, 1, "the appended line is one code run");
+    assert.ok(
+      stringsIn(model).every((text) => !text.includes("\\|")),
+      "no string of the model holds an escaped pipe",
+    );
+  });
+
+  test("positive control: the Markdown view of that model escapes the pipe, and is the golden English report", () => {
+    const template = fs.readFileSync(path.join(HARNESS_ROOT, "templates", "report.md"), "utf8");
+    const markdown = renderMarkdown(goldenModel(), template);
+    assert.ok(markdown.includes(`\`\`Never run \`rm -rf \\| git reset --hard\` without asking first.\`\``), APPENDED_LINE);
+    assert.equal(markdown, readGolden("report.en.md"));
+  });
+
+  test("the code marks of a label are code runs, so no label run holds a backtick (positive control: the setting is code)", () => {
+    const nodes = typedNodes(goldenModel().sections);
+    assert.ok(
+      nodes.filter((node) => node.type === "label").every((node) => !node.text.includes("`")),
+      "a label run holds a backtick",
+    );
+    assert.ok(nodes.some((node) => node.type === "code" && node.text === "defaultMode"));
+  });
+
+  test("each finding block carries its rule, its axis and its impact", () => {
+    const findings = typedNodes(goldenModel().sections).filter((node) => node.type === "finding");
+    assert.ok(findings.length > 0);
+    for (const finding of findings) {
+      assert.match(finding.ruleId, /^[A-Z]{2,4}-\d{2}$/);
+      assert.ok(AXES.includes(finding.axis), finding.axis);
+      assert.ok(["high", "medium", "low"].includes(finding.impact), finding.impact);
+    }
+    assert.ok(findings.some((finding) => finding.ruleId === "SEC-01" && finding.impact === "high"));
+  });
+
+  test("renderReport returns the model that buildReportModel builds, and the Markdown of it", () => {
+    const template = fs.readFileSync(path.join(HARNESS_ROOT, "templates", "report.md"), "utf8");
+    const result = renderReport({
+      measurements: run.measurements,
+      findings: readGoldenFindings("findings.en.json"),
+      catalog: readCatalog(HARNESS_ROOT, loadRules(HARNESS_ROOT)),
+      labels: loadLabels(HARNESS_ROOT, "en"),
+      template,
+    });
+    assert.deepEqual(result.model, goldenModel());
+    assert.equal(result.markdown, renderMarkdown(result.model, template));
   });
 });

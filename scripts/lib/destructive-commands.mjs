@@ -7,6 +7,10 @@
 // by permissions.mjs (evaluate, and evaluateInSessionMode for each command's modes), so every outcome names the rule or
 // the mode that decides it.
 //
+// The standard matrix (commands[].modes) shows each command at the location its data entry gives. The deep matrix
+// (createDestructiveCommandsMeasure with deep) adds the three locations of LOCATIONS: each command also gets locations,
+// and destructiveCoverage gets matrixLocations. Quick and standard write neither key.
+//
 // The two cmd commands of the data run as the PowerShell tool runs "cmd /c ...", the form that the docs show for them.
 // Their shell is "cmd" and their tool is "PowerShell".
 
@@ -31,10 +35,29 @@ const OPTIONAL_FIELDS = ["parts"];
 const APPLIED_EFFECT = "applies";
 // Main-conversation modes that a subagent runs in, whatever its own permissionMode says (docs: sub-agents).
 const INHERITED_MODES = new Set(["acceptEdits", "bypassPermissions", "auto"]);
+// The locations of the deep matrix, in the order they are written: the flags that evaluateInSessionMode takes for each.
+const LOCATIONS = Object.freeze({
+  inside: Object.freeze({ insideProject: true, criticalPath: false }),
+  outside: Object.freeze({ insideProject: false, criticalPath: false }),
+  critical: Object.freeze({ insideProject: false, criticalPath: true }),
+});
 
 let commandsCache = null;
 
-export const destructiveCommandsMeasure = Object.freeze({ id: MEASURE_ID, collect: collectDestructiveCoverage });
+export const destructiveCommandsMeasure = createDestructiveCommandsMeasure();
+
+/**
+ * Builds the destructive-commands measure. The standard one (the default) writes the matrix of each command at the
+ * location its data entry gives. With deep, it also writes the three locations of LOCATIONS for each command, and
+ * matrixLocations. The two levels differ only in those keys.
+ * @param {object} [options]
+ * @param {boolean} [options.deep] Also write the matrix at the three locations. Default false.
+ * @returns {{ id: string, collect: (ctx: object) => object }}
+ */
+export function createDestructiveCommandsMeasure({ deep = false } = {}) {
+  if (typeof deep !== "boolean") throw new TypeError("createDestructiveCommandsMeasure: deep must be a boolean");
+  return Object.freeze({ id: MEASURE_ID, collect: (ctx) => collectDestructiveCoverage(ctx, deep) });
+}
 
 /**
  * The commands of data/destructive-commands.json, validated. The file is read and checked once per process.
@@ -120,7 +143,8 @@ export function toolsCoveredBy(matcher) {
 
 // Reads the parsed configuration and the data, and simulates every command with the project's rules. The rules include the
 // user layer's when it was read (decisionRules). The mode is the project's defaultMode only: the user's is not applied.
-function collectDestructiveCoverage(ctx) {
+// deep adds the locations of the matrix (see createDestructiveCommandsMeasure).
+function collectDestructiveCoverage(ctx, deep) {
   const config = loadClaudeConfig(ctx);
   const commands = loadDestructiveCommands();
   const rules = decisionRules(config.permissions, ctx.outside);
@@ -130,21 +154,20 @@ function collectDestructiveCoverage(ctx) {
   const mainMode = defaultMode !== null && defaultMode.effect === APPLIED_EFFECT ? modeName(defaultMode.value) : "default";
   const hooks = preToolUseEntries(config.hooks);
 
-  return {
-    security: {
-      destructiveCoverage: {
-        mode: defaultMode === null ? null : { ...defaultMode },
-        commands: commands.map((command) => commandResult(command, rules, mode, hooks)),
-        preToolUseHooks: hooks.map(hookOutput),
-        subagents: subagentsOf(config.subagents, rules, commands, mainMode),
-        matrixModes: [...MATRIX_MODES],
-      },
-    },
+  const destructiveCoverage = {
+    mode: defaultMode === null ? null : { ...defaultMode },
+    commands: commands.map((command) => commandResult(command, rules, mode, hooks, deep)),
+    preToolUseHooks: hooks.map(hookOutput),
+    subagents: subagentsOf(config.subagents, rules, commands, mainMode),
+    matrixModes: [...MATRIX_MODES],
   };
+  // Only the deep level names its locations, so a standard run writes the same keys as before.
+  if (deep) destructiveCoverage.matrixLocations = Object.keys(LOCATIONS);
+  return { security: { destructiveCoverage } };
 }
 
 // The outcome of one command with the project rules and mode, and whether a PreToolUse hook runs for it.
-function commandResult(command, rules, mode, hooks) {
+function commandResult(command, rules, mode, hooks, deep) {
   const call = callOf(command);
   const verdict = evaluate(rules, call, { mode, insideProject: command.insideProject, criticalPath: command.criticalPath });
   return {
@@ -154,17 +177,26 @@ function commandResult(command, rules, mode, hooks) {
     reason: verdict.reason,
     preToolUseHook: hookStateOf(hooks, call),
     modes: modeOutcomes(command, rules),
+    ...(deep ? { locations: locationOutcomes(command, rules) } : {}),
   };
 }
 
 // The outcome of the command in a session started in each mode of the matrix (see evaluateInSessionMode), keyed by mode
 // in the order of MATRIX_MODES. The session mode is not the project defaultMode, and no hook is taken into account.
-function modeOutcomes(command, rules) {
+// location gives the flags of the place where the command runs: by default, the command's own entry in the data.
+function modeOutcomes(command, rules, location = command) {
   const call = callOf(command);
-  const options = { insideProject: command.insideProject, criticalPath: command.criticalPath };
+  const options = { insideProject: location.insideProject, criticalPath: location.criticalPath };
   return Object.fromEntries(
     MATRIX_MODES.map((mode) => [mode, evaluateInSessionMode(rules, call, { ...options, mode }).outcome]),
   );
+}
+
+// The deep matrix: the modes of the command at each location of LOCATIONS, keyed by location. The standard matrix shows
+// the command at the location its data entry gives. dontAsk and plan stay out of both matrices for the reason given in
+// permissions.mjs (MATRIX_MODES).
+function locationOutcomes(command, rules) {
+  return Object.fromEntries(Object.entries(LOCATIONS).map(([name, flags]) => [name, modeOutcomes(command, rules, flags)]));
 }
 
 // The call that permissions.mjs simulates. parts is given only for a compound command.

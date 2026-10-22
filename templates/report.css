@@ -1,0 +1,145 @@
+/* The rules of the report page, after the shared stylesheet of theme.css. They use the color tokens of theme.css only, so both
+   modes follow the system setting. The layout works at phone width: a table scrolls inside its wrapper, and no other element
+   is wider than the page. */
+
+main {
+  max-width: 60rem;
+}
+
+section {
+  margin: 0 0 var(--space-4);
+}
+
+h3 {
+  font-size: 1.0625rem;
+  margin: var(--space-4) 0 var(--space-2);
+}
+
+h4 {
+  font-size: 1rem;
+  margin: 0 0 var(--space-2);
+}
+
+a {
+  color: var(--color-accent);
+}
+
+/* A long word breaks at the edge of its line, so text never widens the page. A table cell keeps its longest word, so a wide
+   table scrolls in its wrapper instead. */
+body {
+  overflow-wrap: break-word;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.875em;
+}
+
+.fields dt {
+  font-weight: 600;
+}
+
+.fields dd {
+  margin: 0 0 var(--space-2);
+}
+
+.table-wrap {
+  overflow-x: auto;
+  margin: 0 0 var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+table {
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+th,
+td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  font-weight: 600;
+  background: var(--color-background);
+}
+
+article.finding {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
+.filters {
+  margin: 0 0 var(--space-4);
+}
+
+.filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+}
+
+.filter-title {
+  margin: 0 var(--space-2) 0 0;
+  font-weight: 600;
+}
+
+/* Each label is a chip: a square that is filled when its box is checked, and a filled chip. */
+.filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-muted);
+}
+
+.filters label::before {
+  content: "";
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 2px solid currentColor;
+  border-radius: 3px;
+}
+
+.filters input:checked + label {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-accent-text);
+}
+
+.filters input:checked + label::before {
+  background: currentColor;
+}
+
+.filters input:focus-visible + label {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* The filter boxes are hidden from sight, not from the keyboard or a screen reader: a clip keeps them in the focus order, where
+   display: none would remove them. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

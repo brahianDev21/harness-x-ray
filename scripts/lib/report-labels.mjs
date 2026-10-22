@@ -1,7 +1,8 @@
 // The fixed visible text of the report. Every label of a language is in templates/labels.<language>.json, as a flat
 // object of text values. A value may hold placeholders such as {count}; createLabeller fills them. The renderer reads
 // labels only through the function that createLabeller returns, so a missing key or a missing placeholder value is an
-// error, and a raw key or placeholder can never reach the report.
+// error, and a raw key or placeholder can never reach the report. The report builds its runs with createLabelParts,
+// which has the same checks.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -47,16 +48,38 @@ export function placeholdersOf(text) {
 }
 
 /**
+ * Creates parts(key, values): the text of a label split at its placeholders, as a list. A fixed text is a string, and a
+ * placeholder is its value exactly as it was given, so the caller decides what the value becomes. A missing key or
+ * value is an error.
+ * @param {Readonly<Record<string, string>>} labels
+ * @returns {(key: string, values?: Record<string, unknown>) => unknown[]}
+ */
+export function createLabelParts(labels) {
+  return function parts(key, values = {}) {
+    if (!Object.hasOwn(labels, key)) throw new Error(`the labels have no text for "${key}"`);
+    const text = labels[key];
+    const pieces = [];
+    let last = 0;
+    for (const match of text.matchAll(PLACEHOLDER)) {
+      const name = match[1];
+      if (!Object.hasOwn(values, name)) throw new Error(`the label "${key}" needs a value for {${name}}`);
+      if (match.index > last) pieces.push(text.slice(last, match.index));
+      pieces.push(values[name]);
+      last = match.index + match[0].length;
+    }
+    if (last < text.length) pieces.push(text.slice(last));
+    return pieces;
+  };
+}
+
+/**
  * Creates t(key, values): the text of a label with its placeholders filled.
  * @param {Readonly<Record<string, string>>} labels
  * @returns {(key: string, values?: Record<string, string>) => string}
  */
 export function createLabeller(labels) {
+  const parts = createLabelParts(labels);
   return function t(key, values = {}) {
-    if (!Object.hasOwn(labels, key)) throw new Error(`the labels have no text for "${key}"`);
-    return labels[key].replace(PLACEHOLDER, (whole, name) => {
-      if (!Object.hasOwn(values, name)) throw new Error(`the label "${key}" needs a value for {${name}}`);
-      return String(values[name]);
-    });
+    return parts(key, values).map(String).join("");
   };
 }

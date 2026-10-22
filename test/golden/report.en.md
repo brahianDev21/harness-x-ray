@@ -3,6 +3,7 @@
 - **Target:** `repo`
 - **Commit:** none
 - **Scan date (UTC):** 2026-10-18
+- **Depth:** Standard
 - **Axes reviewed:** Instructions, Context, Security, Verification, Structure, Code
 - **Tool:** `harness-x-ray@0.0.0`
 - **Catalog:** 16 rules, SHA-256 `756b61ef038a`

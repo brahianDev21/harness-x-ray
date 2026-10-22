@@ -23,9 +23,10 @@ export const APPENDED_LINE = "Never run `rm -rf | git reset --hard` without aski
 
 /**
  * Makes the run folder: a temp target, scanned, with measurements.json whose scannedAt is SCANNED_AT.
+ * @param {{ depth?: string }} [options] depth, when given, is the --depth of the scan: quick, standard or deep.
  * @returns {Promise<{ fixture: object, runDir: string, measurements: object, cleanup: () => void }>}
  */
-export async function makeRun() {
+export async function makeRun({ depth } = {}) {
   const fixture = makeFixture({ fromDir: PERMISSIVE });
   try {
     const file = path.join(fixture.root, ".claude", "agents", "edit-helper.md");
@@ -33,7 +34,8 @@ export async function makeRun() {
     fs.writeFileSync(file, `${text.endsWith("\n") ? text : `${text}\n`}${APPENDED_LINE}\n`);
 
     const runDir = path.join(fixture.base, "run");
-    await execFileAsync(process.execPath, [SCAN_SCRIPT, fixture.root, "--out", runDir], {
+    const depthArgs = depth === undefined ? [] : ["--depth", depth];
+    await execFileAsync(process.execPath, [SCAN_SCRIPT, fixture.root, "--out", runDir, ...depthArgs], {
       encoding: "utf8",
       windowsHide: true,
       timeout: 120_000,

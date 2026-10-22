@@ -8,9 +8,10 @@
 //
 // The target is read only for evidence, and only through safe-fs. Nothing is written, and nothing from the target runs.
 //
-// Every issue is { finding, rule, field, message }. finding is the index in findings[] (null for the file as a whole),
+// Every issue is { finding, rule, field, message, code }. finding is the index in findings[] (null for the file as a whole),
 // rule is the id of that finding when the catalog knows it (otherwise null), field is the path of the value to fix,
-// such as "findings[2].evidence[0].line", and message says what is wrong. formatIssue prints all of that in one line.
+// such as "findings[2].evidence[0].line", and message says what is wrong. code names the errors that a reader may look
+// up, such as quick-judgment; it is null for the others. formatIssue prints the first four in one line.
 //
 // Number heuristic (warnings only). The free text (summary, recommendation, testInFunction2) is searched for number
 // tokens. These are not checked: dates, rule ids such as SEC-02, measured finding and candidate ids such as mf-7 and
@@ -30,6 +31,9 @@
 //
 // Agents (errors). A finding may name the agents it applies to. Each must be an agent that the scan detected
 // (agentHarness.agents of measurements.json), named once. A scan without agentHarness detected none.
+//
+// Depth (errors). At the quick depth (measurements.depth), the judgment rules are not applied, so a finding of a judgment
+// rule of the catalog is an error, with the code quick-judgment. A scan that gives no depth is standard, and is not checked.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -80,6 +84,8 @@ export const REQUIRED_FINDING_FIELDS = Object.freeze([
 const RULE_FILE = /^[A-Z]{3}-\d{2}(?:-[a-z0-9]+(?:-[a-z0-9]+)*)?\.md$/;
 // A segment that Windows reads as the parent folder ("..", "... " and so on). The same rule as safe-fs.
 const PARENT_SEGMENT = /^[. ]*\.\.[. ]*$/;
+// The code of an error: a judgment finding in a quick scan, which does not apply the judgment rules.
+const QUICK_JUDGMENT = "quick-judgment";
 const AGENT_ID = new RegExp(AGENT_ID_PATTERN);
 const READ_PROBLEMS = Object.freeze({
   "outside-root": "is outside the target folder",
@@ -137,6 +143,8 @@ export function validateFindings({ findings, measurements, rules, targetRoot }) 
     numbers: numbersIn(measurements, new Set()),
     outside: outsideFilesOf(measurements),
     agents: agentIdsOf(measurements),
+    // A scan that gives no depth is standard, so only quick changes what is checked.
+    quick: measurements.depth === "quick",
     target: createTargetFs(targetRoot),
     reads: new Map(),
   };
@@ -258,6 +266,13 @@ function checkFinding(item, index, ctx) {
     } else if (entry !== undefined && item.kind !== entry.kind) {
       fail("kind", `must be "${entry.kind}", the kind of ${entry.id}, found "${item.kind}"`);
     }
+  }
+
+  // The quick depth does not apply the judgment rules, so a finding of one cannot be reported by a quick scan.
+  if (ctx.quick && entry !== undefined && entry.kind === "judgment") {
+    addIssue(ctx.errors, index, rule, `${at}.rule`,
+      `quick depth: judgment rules are not applied, so a finding of ${entry.id} cannot be reported; scan at standard or deep depth`,
+      QUICK_JUDGMENT);
   }
 
   checkMeasuredFields(item, { index, rule, fail, warn, ctx });
@@ -642,9 +657,9 @@ function measuredById(measurements) {
 
 // Helpers ------------------------------------------------------------------------------------------
 
-// Adds an issue to a list. The list is either errors or warnings; both have the same shape.
-function addIssue(list, finding, rule, field, message) {
-  list.push({ finding, rule, field, message });
+// Adds an issue to a list. The list is either errors or warnings; both have the same shape, and code is null unless given.
+function addIssue(list, finding, rule, field, message, code = null) {
+  list.push({ finding, rule, field, message, code });
 }
 
 // A value as it may appear in a message: short, and never a secret. A value that looks like one is hidden.

@@ -18,6 +18,8 @@ const TEMPLATE = path.join(HARNESS_ROOT, "templates", "report.md");
 const MARKER = /⟦[^⟧]*⟧/gu;
 
 let run;
+let quickRun;
+let deepRun;
 let rules;
 let catalog;
 let labelsEn;
@@ -31,6 +33,8 @@ function realTemplate() {
 
 before(async () => {
   run = await makeRun();
+  quickRun = await makeRun({ depth: "quick" });
+  deepRun = await makeRun({ depth: "deep" });
   rules = loadRules(HARNESS_ROOT);
   catalog = readCatalog(HARNESS_ROOT, rules);
   labelsEn = loadLabels(HARNESS_ROOT, "en");
@@ -38,7 +42,11 @@ before(async () => {
   scenarios = buildScenarios();
 });
 
-after(() => run?.cleanup());
+after(() => {
+  run?.cleanup();
+  quickRun?.cleanup();
+  deepRun?.cleanup();
+});
 
 describe("labels files", () => {
   test("English and Spanish have exactly the same keys", () => {
@@ -86,8 +94,11 @@ describe("label use", () => {
     for (const scenario of Object.values(scenarios)) {
       renderReport({ ...scenario, labels: recording(labelsEn, used), template });
     }
-    // The keys of the intake page (intake.*) are rendered by scripts/lib/intake-page.mjs, which its own test checks.
-    const unused = Object.keys(labelsEn).filter((key) => !key.startsWith("intake.") && !used.has(key));
+    // The keys of the intake page (intake.*) are rendered by scripts/lib/intake-page.mjs, which its own test checks. The keys
+    // of the HTML view (html.*) are read by scripts/lib/report-html.mjs, which test/report-html.test.mjs checks.
+    const unused = Object.keys(labelsEn).filter(
+      (key) => !key.startsWith("intake.") && !key.startsWith("html.") && !used.has(key),
+    );
     assert.deepEqual(unused, [], "label keys that no scenario renders");
   });
 
@@ -120,6 +131,8 @@ describe("pseudo-locale", () => {
 // The scenarios. golden is the English golden input. rich adds what the golden input does not reach: unknown static
 // items, a hook candidate, an undeterminable case, a threshold, values of each kind, a finding with a benchmark rule,
 // a rule with no source, and more measured findings than the appendix shows. empty has no finding and no measure.
+// quick and deep are real scans at those depths: quick holds the measured findings only, as its validation requires, and
+// deep has the matrix at three locations.
 function buildScenarios() {
   const golden = { measurements: cloneOf(run.measurements), findings: readGoldenFindings("findings.en.json"), catalog };
 
@@ -273,7 +286,28 @@ function buildScenarios() {
     },
   ];
   const layeredScenario = { measurements: layered, findings: readGoldenFindings("findings.en.json"), catalog };
-  return { golden, rich, empty, userLayer, ancestors, both, scoped: scopedScenario, layered: layeredScenario };
+
+  // The depth of the run: the quick scan's header says that the judgment rules were not applied, and the deep scan's matrix has
+  // a row per command and location. Each one is a real scan, so its findings name the measured findings of that scan.
+  const measuredOnly = (findings) => ({ ...findings, findings: findings.findings.filter((item) => item.kind === "measured") });
+  const quickScenario = {
+    measurements: quickRun.measurements,
+    findings: measuredOnly(readGoldenFindings("findings.en.json")),
+    catalog,
+  };
+  const deepScenario = { measurements: deepRun.measurements, findings: readGoldenFindings("findings.en.json"), catalog };
+  return {
+    golden,
+    rich,
+    empty,
+    userLayer,
+    ancestors,
+    both,
+    scoped: scopedScenario,
+    layered: layeredScenario,
+    quick: quickScenario,
+    deep: deepScenario,
+  };
 }
 
 // The agentHarness of a scan that detects every registry agent, sorted by id as the scan writes them. Claude Code has every

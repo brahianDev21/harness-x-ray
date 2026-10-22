@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { claudeConfigMeasure } from "../scripts/lib/claude-config.mjs";
 import {
+  createDestructiveCommandsMeasure,
   destructiveCommandsMeasure,
   hookFilterState,
   loadDestructiveCommands,
@@ -17,6 +18,7 @@ import { toStableJson } from "../scripts/lib/json-out.mjs";
 import { MATRIX_MODES } from "../scripts/lib/permissions.mjs";
 import { scan } from "../scripts/lib/scanner.mjs";
 import { makeFixture } from "./helpers/make-fixture.mjs";
+import { schemaProblems } from "./helpers/schema-check.mjs";
 
 const execFileAsync = promisify(execFile);
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -585,4 +587,83 @@ test("a user deny blocks a command that the project allows, and a project decisi
     source: "~/.claude/settings.json",
     layer: "user",
   });
+});
+
+// The measure at the deep level, with the claude-config measure, on a fixture (scan refuses a target inside this repository).
+async function deepCoverageOf(root) {
+  const measures = [claudeConfigMeasure, createDestructiveCommandsMeasure({ deep: true })];
+  const result = await scan({ root, measures, now: FIXED_NOW });
+  return result.security.destructiveCoverage;
+}
+
+const LOCATION_NAMES = ["inside", "outside", "critical"];
+
+test("deep: a removal passes outside the project under bypassPermissions, and is undeterminable at a critical path", async (t) => {
+  const rm = byId((await deepCoverageOf(emptyFixture(t).root)).commands).get("rm-recursive-force");
+
+  assert.equal(rm.locations.outside.bypassPermissions, "passes");
+  assert.equal(rm.locations.inside.bypassPermissions, "passes");
+  // The critical-path gate of bypassPermissions is the repository's modelling choice, not a documented fact: no note says what
+  // that mode does at a critical path. permissions.mjs (sessionDefaultOutcome) makes the removal undeterminable there, with the
+  // reason bypass-critical-path, and this test pins that choice.
+  assert.equal(rm.locations.critical.bypassPermissions, "undeterminable");
+});
+
+test("createDestructiveCommandsMeasure: deep must be a boolean, and true or false builds the measure (positive control)", () => {
+  for (const deep of ["yes", 1, null]) {
+    assert.throws(
+      () => createDestructiveCommandsMeasure({ deep }),
+      (error) => error instanceof TypeError && error.message === "createDestructiveCommandsMeasure: deep must be a boolean",
+      `deep ${String(deep)} is refused`,
+    );
+  }
+  for (const deep of [true, false]) {
+    assert.equal(createDestructiveCommandsMeasure({ deep }).id, destructiveCommandsMeasure.id, `positive control: deep ${deep} is accepted`);
+  }
+});
+
+test("deep: acceptEdits approves rm inside the project and asks outside it, so the two locations differ", async (t) => {
+  const rm = byId((await deepCoverageOf(emptyFixture(t).root)).commands).get("rm-recursive-force");
+
+  assert.equal(rm.locations.inside.acceptEdits, "passes", "rm is an acceptEdits command, and inside the project it passes");
+  assert.equal(rm.locations.outside.acceptEdits, "asks", "outside the project acceptEdits does not approve it");
+  assert.notEqual(rm.locations.inside.acceptEdits, rm.locations.outside.acceptEdits);
+  assert.equal(rm.locations.critical.acceptEdits, "asks");
+});
+
+test("deep: every command has the three locations with each matrix mode, and its standard matrix is its own location (positive control)", async (t) => {
+  const deep = await deepCoverageOf(emptyFixture(t).root);
+
+  assert.deepEqual(deep.matrixLocations, LOCATION_NAMES);
+  for (const command of deep.commands) {
+    assert.deepEqual(Object.keys(command.locations), LOCATION_NAMES, command.id);
+    for (const location of LOCATION_NAMES) {
+      assert.deepEqual(Object.keys(command.locations[location]), MATRIX_MODES, `${command.id} ${location}`);
+    }
+    // Every data entry has criticalPath false, so its own location is inside or outside.
+    const own = command.insideProject ? "inside" : "outside";
+    assert.deepEqual(command.modes, command.locations[own], `${command.id}: the standard matrix is the own location`);
+  }
+  // Standard has neither key, so its output is the same as before the deep level existed.
+  const standard = await coverageOf(emptyFixture(t).root);
+  assert.equal(Object.hasOwn(standard, "matrixLocations"), false);
+  for (const command of standard.commands) assert.equal(Object.hasOwn(command, "locations"), false, command.id);
+});
+
+test("the schema documents matrixLocations and locations as optional, and the deep output and the standard output both match it", async (t) => {
+  const schema = JSON.parse(fs.readFileSync(SCHEMA_FILE, "utf8"));
+  const documented = schema.properties.security.properties.destructiveCoverage;
+
+  assert.equal(documented.required.includes("matrixLocations"), false);
+  assert.deepEqual(documented.properties.matrixLocations.items.enum, LOCATION_NAMES);
+  const command = documented.properties.commands.items;
+  assert.equal(command.required.includes("locations"), false);
+  assert.deepEqual(command.properties.locations.required, LOCATION_NAMES);
+  // The location objects point at the modes object of the same command, so the two shapes cannot drift apart.
+  assert.deepEqual(command.properties.locations.properties.critical, { $ref: "#/properties/security/properties/destructiveCoverage/properties/commands/items/properties/modes" });
+
+  const deep = await deepCoverageOf(copyOf(t, "permissive").root);
+  const standard = await coverageOf(copyOf(t, "permissive").root);
+  assert.deepEqual(schemaProblems(documented, deep, "", schema), [], "the deep output matches the schema");
+  assert.deepEqual(schemaProblems(documented, standard, "", schema), [], "positive control: the standard output matches it too");
 });

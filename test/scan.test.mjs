@@ -7,9 +7,12 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { DEPTHS as INTAKE_PAGE_DEPTHS } from "../scripts/lib/intake-page.mjs";
+import { DEPTHS as INTAKE_DEPTHS } from "../scripts/lib/intake-server.mjs";
 import { toStableJson } from "../scripts/lib/json-out.mjs";
+import { DEFAULT_DEPTH as REPORT_DEFAULT_DEPTH } from "../scripts/lib/report.mjs";
 import { loadLabels } from "../scripts/lib/report-labels.mjs";
-import { scan } from "../scripts/lib/scanner.mjs";
+import { DEFAULT_DEPTH, DEPTHS, scan } from "../scripts/lib/scanner.mjs";
 import { defaultOutputDir, formatStamp, isInside } from "../scripts/lib/target.mjs";
 import { makeFixture, symlinkSupport } from "./helpers/make-fixture.mjs";
 import { runRender } from "./helpers/report-run.mjs";
@@ -35,6 +38,7 @@ const TOP_LEVEL_KEYS = [
   "claudeConfig",
   "code",
   "context",
+  "depth",
   "instructions",
   "inventory",
   "measuredFindings",
@@ -686,6 +690,21 @@ test("scan: meta.include is written only when include is given, and a malformed 
   );
 });
 
+test("scan: a depth that is not one of the depth levels is a TypeError, and each level is written as given (positive control)", async (t) => {
+  const fixture = gitFixture(t);
+  for (const depth of ["fast", "Deep", null]) {
+    await assert.rejects(
+      scan({ root: fixture.root, measures: [], now: FIXED_NOW, depth }),
+      (error) => error instanceof TypeError && error.message === "depth must be one of quick, standard, deep",
+      `depth ${String(depth)} is refused`,
+    );
+  }
+  for (const depth of DEPTHS) {
+    const result = await scan({ root: fixture.root, measures: [], now: FIXED_NOW, depth });
+    assert.equal(result.depth, depth, "positive control: each level is written as given");
+  }
+});
+
 test("scan: ctx.outside starts empty, and a measure that fills it is seen by the measures after it", async (t) => {
   const fixture = gitFixture(t);
   const seen = [];
@@ -816,7 +835,7 @@ test("scan: an unknown flag still exits 2, and the usage line names the opt-in f
   assert.equal(result.code, 2);
   assert.equal(
     result.stderr.trimEnd().split("\n").at(-1),
-    "usage: node scripts/scan.mjs <target> [--out <dir>] [--include-user-layer] [--include-ancestors] [--scope <folder>]... [--layers <runDir>]",
+    "usage: node scripts/scan.mjs <target> [--out <dir>] [--include-user-layer] [--include-ancestors] [--scope <folder>]... [--layers <runDir>] [--depth quick|standard|deep]",
   );
   assert.equal(fs.existsSync(out), false);
 });
@@ -825,6 +844,169 @@ test("scan: an unknown flag still exits 2, and the usage line names the opt-in f
 function readRunJson(dir, name) {
   return JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"));
 }
+
+// A copy of a versioned fixture in a temp folder. The scanner refuses a target inside this repository.
+function copyOfFixture(t, name) {
+  const fixture = makeFixture({ fromDir: path.join(TEST_DIR, "fixtures", name) });
+  t.after(fixture.cleanup);
+  return fixture;
+}
+
+// The measurements without the keys that may differ between two depths of one scan: depth itself and meta.
+function withoutDepthAndMeta(data) {
+  const { depth, meta, ...rest } = data;
+  return rest;
+}
+
+// The environment of the depth tests: a fake home folder in the fixture's temp folder, so no test reads the real HOME.
+function depthEnv(base) {
+  const home = path.join(base, "home");
+  fs.mkdirSync(home);
+  return envWithHome(home);
+}
+
+test("depth: standard is the default, quick and deep are written as given, and the schema lists the three levels", async (t) => {
+  const { target, base } = copyOfEmptyFixture(t);
+  const env = depthEnv(base);
+  const plain = path.join(base, "plain");
+  const quick = path.join(base, "quick");
+  const deep = path.join(base, "deep");
+
+  assert.equal((await runScan([target, "--out", plain], { env })).code, 0);
+  assert.equal((await runScan([target, "--out", quick, "--depth", "quick"], { env })).code, 0);
+  assert.equal((await runScan([target, "--out", deep, "--depth", "deep"], { env })).code, 0);
+
+  assert.equal(measurementsIn(plain).depth, "standard");
+  assert.equal(measurementsIn(quick).depth, "quick");
+  assert.equal(measurementsIn(deep).depth, "deep");
+  const schema = JSON.parse(fs.readFileSync(SCHEMA_FILE, "utf8"));
+  assert.deepEqual(schema.properties.depth.enum, ["quick", "standard", "deep"]);
+  assert.ok(schema.required.includes("depth"), "every scan writes depth, so the schema requires it");
+});
+
+test("depth: the schema enum, the default of the report, the depth labels and the intake lists all agree with DEPTHS", () => {
+  const schema = JSON.parse(fs.readFileSync(SCHEMA_FILE, "utf8"));
+  assert.deepEqual(schema.properties.depth.enum, [...DEPTHS]);
+  assert.equal(REPORT_DEFAULT_DEPTH, DEFAULT_DEPTH, "the report reads a scan without depth as the scanner's default");
+  for (const file of ["labels.en.json", "labels.es.json"]) {
+    const labels = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "templates", file), "utf8"));
+    for (const level of DEPTHS) assert.equal(typeof labels[`depth.${level}`], "string", `${file} has depth.${level}`);
+  }
+  assert.deepEqual([...INTAKE_DEPTHS], [...DEPTHS], "intake-server.mjs offers the depths of the scanner");
+  assert.deepEqual([...INTAKE_PAGE_DEPTHS], [...DEPTHS], "intake-page.mjs draws the depths of the scanner");
+});
+
+test("depth: a value that is missing or is not quick, standard or deep exits 2, names the three levels, and writes nothing", async (t) => {
+  const { target, base } = copyOfEmptyFixture(t);
+  const env = depthEnv(base);
+  const cases = [
+    [["--depth", "fast"], /the --depth value must be quick, standard or deep, not "fast"$/m],
+    [["--depth", "Deep"], /not "Deep"$/m],
+    [["--depth="], /the --depth value must be quick, standard or deep, not ""$/m],
+    [["--depth"], /^error: the --depth value must be quick, standard or deep$/m],
+  ];
+  for (const [index, [flags, pattern]] of cases.entries()) {
+    const out = path.join(base, `out-${index}`);
+
+    const result = await runScan([target, "--out", out, ...flags], { env });
+
+    assert.equal(result.code, 2, `${flags.join(" ")}: ${result.stderr}`);
+    assert.match(result.stderr, pattern, flags.join(" "));
+    assert.equal(result.stderr.trimEnd().split("\n").at(-1).startsWith("usage: node scripts/scan.mjs"), true);
+    assert.equal(fs.existsSync(out), false, "nothing is written");
+  }
+  // Positive control: the same command with a valid value exits 0.
+  const valid = await runScan([target, "--out", path.join(base, "valid"), "--depth", "standard"], { env });
+  assert.equal(valid.code, 0, valid.stderr);
+});
+
+test("depth: a --depth given more than once exits 2 and writes nothing, and a single --depth deep exits 0 (positive control)", async (t) => {
+  const { target, base } = copyOfEmptyFixture(t);
+  const env = depthEnv(base);
+  const cases = [
+    ["--depth", "quick", "--depth", "deep"],
+    ["--depth", "deep", "--depth", "deep"],
+    ["--depth", "fast", "--depth", "deep"],
+  ];
+  for (const [index, flags] of cases.entries()) {
+    const out = path.join(base, `repeat-${index}`);
+
+    const result = await runScan([target, "--out", out, ...flags], { env });
+
+    assert.equal(result.code, 2, `${flags.join(" ")}: ${result.stderr}`);
+    assert.match(result.stderr, /^error: the --depth option was given more than once$/m, flags.join(" "));
+    assert.equal(fs.existsSync(out), false, "nothing is written");
+  }
+  // --depth followed by another option has no value: parseArgs refuses it, and the message names the levels.
+  const noValue = path.join(base, "out-no-value");
+  const missing = await runScan([target, "--depth", "--out", noValue], { env });
+  assert.equal(missing.code, 2, missing.stderr);
+  assert.match(missing.stderr, /^error: the --depth value must be quick, standard or deep$/m);
+  assert.equal(fs.existsSync(noValue), false, "nothing is written");
+  // Positive control: a single --depth deep exits 0 and is written as deep.
+  const single = path.join(base, "out-single");
+  const valid = await runScan([target, "--out", single, "--depth", "deep"], { env });
+  assert.equal(valid.code, 0, valid.stderr);
+  assert.equal(measurementsIn(single).depth, "deep");
+});
+
+test("depth: quick makes the same measures as standard, so the two measurements differ only in depth and meta", async (t) => {
+  for (const name of ["permissive", "duplicated"]) {
+    const fixture = copyOfFixture(t, name);
+    const env = depthEnv(fixture.base);
+    const quick = path.join(fixture.base, "quick");
+    const standard = path.join(fixture.base, "standard");
+
+    assert.equal((await runScan([fixture.root, "--out", quick, "--depth", "quick"], { env })).code, 0);
+    assert.equal((await runScan([fixture.root, "--out", standard, "--depth", "standard"], { env })).code, 0);
+
+    const quickData = measurementsIn(quick);
+    const standardData = measurementsIn(standard);
+    assert.notEqual(quickData.depth, standardData.depth, `${name}: positive control, the depth differs`);
+    assert.deepEqual(withoutDepthAndMeta(quickData), withoutDepthAndMeta(standardData), name);
+    assert.ok(standardData.code.duplication.groups.length > 0 || standardData.inventory.length > 0, `${name}: has content to compare`);
+  }
+});
+
+test("depth: deep reads nothing from the fake home or the parent folders without the flags, and each flag reads its own (positive controls)", async (t) => {
+  const withClaude = userHomeCase(t);
+  // The target is <base>/repo, so the parent folder of the target is <base>, and it holds a memory file that --include-ancestors reads.
+  fs.writeFileSync(path.join(withClaude.base, "CLAUDE.md"), "# Parent memory\n\nPARENT-WITNESS-DEEP-7d3a\n");
+  const env = envWithHome(withClaude.home);
+  const out = path.join(withClaude.base, "out");
+
+  const result = await runScan([withClaude.target, "--out", out, "--depth", "deep"], { env });
+
+  assert.equal(result.code, 0, result.stderr);
+  const raw = fs.readFileSync(path.join(out, "measurements.json"), "utf8");
+  const data = JSON.parse(raw);
+  assert.equal(data.depth, "deep");
+  assert.equal(Object.hasOwn(data, "userLayer"), false);
+  assert.equal(Object.hasOwn(data.meta, "include"), false);
+  assert.equal(raw.includes(WITNESS), false, "the witness of the fake home is never read");
+  // context.ancestors lists the parent folders by existence and size. Without --include-ancestors no item is read.
+  assert.notEqual(data.context.ancestors.find((item) => item.path === "../CLAUDE.md"), undefined, "the parent CLAUDE.md is listed");
+  assert.equal(data.context.ancestors.some((item) => Object.hasOwn(item, "read")), false, "no parent folder is read");
+  assert.equal(rmOf(data).outcome, "asks", "without the user allow, the removal asks by default");
+
+  // Positive control: --include-ancestors reads the parent CLAUDE.md, so its item has read true and its counts. The text is counted, never kept.
+  const withAncestors = path.join(withClaude.base, "out-ancestors");
+  const ancestors = await runScan([withClaude.target, "--out", withAncestors, "--depth", "deep", "--include-ancestors"], { env });
+  assert.equal(ancestors.code, 0, ancestors.stderr);
+  const ancestorsRaw = fs.readFileSync(path.join(withAncestors, "measurements.json"), "utf8");
+  const readParent = JSON.parse(ancestorsRaw).context.ancestors.find((item) => item.path === "../CLAUDE.md");
+  assert.notEqual(readParent, undefined, "the parent CLAUDE.md is listed");
+  assert.equal(readParent.read, true, "positive control: the flag reads the parent CLAUDE.md");
+  assert.equal(readParent.lines, 3);
+  assert.equal(ancestorsRaw.includes("PARENT-WITNESS-DEEP-7d3a"), false, "the parent text is counted, never kept");
+
+  const withFlag = path.join(withClaude.base, "out-flag");
+  const flagged = await runScan([withClaude.target, "--out", withFlag, "--depth", "deep", "--include-user-layer"], { env });
+  assert.equal(flagged.code, 0, flagged.stderr);
+  const flaggedData = measurementsIn(withFlag);
+  assert.equal(flaggedData.userLayer.found, true, "positive control: the flag makes the user layer read");
+  assert.equal(rmOf(flaggedData).outcome, "passes");
+});
 
 // The end to end path of the user layer: the scan with the flag, a findings.json made from the measured finding that cites
 // the user's settings, and the report. The positive control is the same target and fake home without the flag.
