@@ -46,6 +46,13 @@
           "items": { "type": "string", "pattern": "^mf-[1-9][0-9]*$" },
           "description": "Only for kind judgment, optional. Ids of measuredFindings entries of measurements.json that support the judgment. Each must exist; the rule may differ from this finding's rule."
         },
+        "agents": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "description": "Optional. The agents that the finding applies to: ids of agents that the scan detected (agentHarness.agents of measurements.json, such as claude-code or cursor), each named once. The report shows them as Agents. Without this field, the report shows the agents of the measured finding, when it has any (the CTX-07 measure)."
+        },
         "evidence": {
           "type": "array",
           "description": "Where the finding is. Each file must exist in the target. Paths are relative to the target, with forward slashes; absolute paths, backslashes and .. segments are rejected. The list may be empty when the finding is an absence with no file to cite, as a measured finding can be.",

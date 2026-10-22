@@ -538,6 +538,177 @@ describe("the renderer function", () => {
   });
 });
 
+describe("agents", () => {
+  // The scan's measurements with three detected agents, listed by id as the scan writes them. Cursor's kinds come in the
+  // given order, which is not the order of KINDS, so its cells must be sorted by KINDS.
+  function withAgents(cursorKinds = ["mcp", "instructions", "hooks"]) {
+    const kindsByAgent = {
+      "agents-md": ["instructions"],
+      "claude-code": ["settings", "subagents"],
+      cursor: cursorKinds,
+    };
+    const measurements = structuredClone(run.measurements);
+    measurements.agentHarness = {
+      registry: "data/agent-harness.json",
+      agents: Object.entries(kindsByAgent).map(([id, kinds]) => ({
+        id,
+        name: id,
+        type: id === "agents-md" ? "convention" : "agent",
+        verified: true,
+        items: kinds.length,
+        budget: id === "claude-code" ? "/context/alwaysLoaded" : "unknownStatic",
+        unverifiedInBudget: [],
+      })),
+      items: Object.entries(kindsByAgent).flatMap(([agent, kinds]) =>
+        kinds.map((kind, index) => ({ path: `${agent}/${index}`, agent, entry: `${agent}-${index}`, kind })),
+      ),
+      files: [],
+      unknownStatic: [],
+    };
+    return measurements;
+  }
+
+  // The labels of the table, built from the language's labels so that no text of the test is fixed to one language. The rows are
+  // withAgents() in its default form: the agents-md, claude-code and cursor rows, in the order of agentHarness.agents.
+  const headerRow = (labels) =>
+    `| ${[labels["table.agent"], labels["table.evaluated"], labels["table.detectedOnly"]].join(" | ")} |`;
+  const agentTableOf = (labels) => {
+    const sep = labels["list.separator"];
+    const row = (cells) => `| ${cells.join(" | ")} |`;
+    return [
+      headerRow(labels),
+      row(["---", "---", "---"]),
+      row([labels["agent.agents-md"], labels["harnessKind.instructions"], labels["value.none"]]),
+      row([labels["agent.claude-code"], [labels["harnessKind.settings"], labels["harnessKind.subagents"]].join(sep), labels["value.none"]]),
+      row([labels["agent.cursor"], labels["harnessKind.instructions"], [labels["harnessKind.hooks"], labels["harnessKind.mcp"]].join(sep)]),
+    ].join("\n");
+  };
+
+  test("the header lists one row per detected agent, in order, with the kinds it evaluates and those it does not (en and es)", async () => {
+    for (const language of ["en", "es"]) {
+      const labels = loadLabels(HARNESS_ROOT, language);
+      const dir = makeCase({ findings: readGoldenFindings(`findings.${language}.json`), measurements: withAgents() });
+      const result = await runRender([dir]);
+      assert.equal(result.code, 0, result.stderr);
+      const title = `**${labels["header.agents"]}:**`;
+      assert.ok(reportOf(dir).includes(`${title}\n\n${agentTableOf(labels)}\n\n---`), `${language}: the agents table is not in the header`);
+    }
+  });
+
+  test("an agent with no instructions evaluates nothing and lists its kinds as not evaluated (positive control: Claude Code evaluates all of its kinds)", async () => {
+    const labels = loadLabels(HARNESS_ROOT, "en");
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements: withAgents(["hooks"]) });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    const cursorRow = `| ${labels["agent.cursor"]} | ${labels["value.none"]} | ${labels["harnessKind.hooks"]} |`;
+    const claudeRow = `| ${labels["agent.claude-code"]} | ${labels["harnessKind.settings"]}${labels["list.separator"]}${labels["harnessKind.subagents"]} | ${labels["value.none"]} |`;
+    assert.ok(report.includes(cursorRow), "the Cursor row is wrong");
+    assert.ok(report.includes(claudeRow), "the Claude Code row is wrong");
+  });
+
+  test("a scan that detected no agent says so in one field line, with no table (positive control: the golden header has the table)", async () => {
+    const labels = loadLabels(HARNESS_ROOT, "en");
+    const withoutSection = structuredClone(run.measurements);
+    delete withoutSection.agentHarness;
+    const emptyList = structuredClone(run.measurements);
+    emptyList.agentHarness.agents = [];
+    for (const measurements of [withoutSection, emptyList]) {
+      const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements });
+      const result = await runRender([dir]);
+      assert.equal(result.code, 0, result.stderr);
+      const report = reportOf(dir);
+      assert.ok(report.includes(`\n- **${labels["header.agents"]}:** ${labels["value.none"]}\n\n---`), "the one field line is missing");
+      assert.equal(report.includes(`| ${labels["table.agent"]} | `), false, "an empty table is shown");
+    }
+    assert.ok(readGolden("report.en.md").includes(headerRow(labels)), "positive control: the golden header has the table");
+  });
+
+  for (const language of ["en", "es"]) {
+    test(`a finding that names agents shows them as one Agents field, after its impact (${language})`, async () => {
+      const labels = loadLabels(HARNESS_ROOT, language);
+      const findings = readGoldenFindings(`findings.${language}.json`);
+      findings.findings[0].agents = ["claude-code", "cursor"];
+      const dir = makeCase({ findings, measurements: withAgents() });
+      const result = await runRender([dir]);
+      assert.equal(result.code, 0, result.stderr);
+      const names = `${labels["agent.claude-code"]}${labels["list.separator"]}${labels["agent.cursor"]}`;
+      // The first golden finding is SEC-01, whose measured impact is high.
+      const expected = [
+        `- **${labels["field.impact"]}:** ${labels["impact.high"]}`,
+        `- **${labels["field.agents"]}:** ${names}`,
+        `- **${labels["field.evidenceLevel"]}:**`,
+      ];
+      assert.ok(reportOf(dir).includes(expected.join("\n")), `the Agents field is not after the impact (${language})`);
+    });
+  }
+
+  test("a measured finding's agents show on the finding that cites it, and on its own when no agent finding cites it (positive control: an own list wins)", async () => {
+    const labels = loadLabels(HARNESS_ROOT, "en");
+    const measurements = withAgents();
+    const id = `mf-${measurements.measuredFindings.length + 1}`;
+    measurements.measuredFindings.push({
+      id,
+      rule: "CTX-07",
+      axis: "context",
+      impact: "medium",
+      measurementRef: "/agentHarness/agents/0/items",
+      evidence: [{ file: ".claude/settings.json" }],
+      triggers: [],
+      agents: ["agents-md"],
+    });
+    const field = `- **${labels["field.agents"]}:**`;
+    const shared = `${field} ${labels["agent.agents-md"]}`;
+
+    // Cited by a CTX-07 finding that names no agent: the measured finding's agents are shown.
+    const citing = readGoldenFindings("findings.en.json");
+    citing.findings.push({
+      rule: "CTX-07",
+      axis: "context",
+      kind: "measured",
+      measuredFindingId: id,
+      evidence: [{ file: ".claude/settings.json" }],
+      impact: "medium",
+      summary: "The shared convention file is not read by this agent.",
+      recommendation: "Keep the shared instructions in one file.",
+      testInFunction2: null,
+    });
+    const dirCited = makeCase({ findings: citing, measurements });
+    assert.equal((await runRender([dirCited])).code, 0);
+    assert.ok(reportOf(dirCited).includes(shared), "the measured agents are missing");
+    assert.equal(reportOf(dirCited).split(field).length - 1, 1, "only the CTX-07 finding names agents");
+
+    // Not cited: the measured finding is shown as not explained, with its agents.
+    const dirUncited = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements });
+    assert.equal((await runRender([dirUncited])).code, 0);
+    assert.ok(reportOf(dirUncited).includes(shared), "the uncited measured finding loses its agents");
+
+    // Its own list wins over the measured one.
+    citing.findings[citing.findings.length - 1].agents = ["cursor"];
+    const dirOwn = makeCase({ findings: citing, measurements });
+    assert.equal((await runRender([dirOwn])).code, 0);
+    assert.ok(reportOf(dirOwn).includes(`${field} ${labels["agent.cursor"]}`), "the own list is missing");
+    assert.equal(reportOf(dirOwn).includes(shared), false, "the measured list is shown beside the own list");
+  });
+
+  test("the golden reports have no Agents field, since no golden finding names agents (positive control)", () => {
+    for (const language of ["en", "es"]) {
+      const field = `- **${loadLabels(HARNESS_ROOT, language)["field.agents"]}:**`;
+      assert.equal(readGolden(`report.${language}.md`).includes(field), false, `${language}: the golden report has an Agents field`);
+    }
+  });
+
+  test("a finding that names an agent the scan did not detect fails validation and writes no report", async () => {
+    const findings = readGoldenFindings("findings.en.json");
+    findings.findings[0].agents = ["cursor"];
+    const dir = makeCase({ findings });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /error: findings\[0\] \(SEC-01\), field findings\[0\]\.agents\[0\]/);
+    assert.equal(reportOf(dir), null);
+  });
+});
+
 describe("run folders", () => {
   const RUNS_DIR = path.join(HARNESS_ROOT, "runs");
   const TEMPLATES_DIR = path.join(HARNESS_ROOT, "templates");

@@ -1,6 +1,7 @@
 // Measure "references": the paths and the commands that the memory files mention, and which of them
-// the target does not have. It reads the texts that the memory measure left in ctx.memory, and the root
-// package.json through ctx.readText, which it parses as data. It runs nothing and reads nothing else.
+// the target does not have. It reads the texts that the memory measure left in ctx.memory, the texts of the
+// other agents' instruction files that the agent-harness measure left in ctx.agentInstructions (checked the same
+// way), and the root package.json through ctx.readText, which it parses as data. It runs nothing and reads nothing else.
 //
 // Paths are looked for in inline code spans whose content is one token, and in relative Markdown links
 // and images. A token must contain "/" or end in a known extension. Commands (npm, pnpm, yarn and bun)
@@ -15,6 +16,7 @@
 // root package.json cannot be read or parsed.
 
 import path from "node:path";
+import { instructionTextsOf } from "./agent-inventory.mjs";
 import { codeSpans, markdownLines, maskCodeSpans, MASK } from "./markdown.mjs";
 import { packageScripts, readPackageJson } from "./package-json.mjs";
 import { scriptCallsInLine } from "./script-calls.mjs";
@@ -65,9 +67,10 @@ function collectReferences(ctx) {
   };
   const state = { ctx, scripts, report };
 
-  // Memory files in path order. Each one is checked by its own text; nothing is read again.
-  for (const file of [...ctx.memory.keys()].sort(compareText)) {
-    for (const line of markdownLines(ctx.memory.get(file).text)) {
+  // The memory texts and the texts of the other agents' instruction files, in path order. Each one is checked by its own text;
+  // nothing is read again.
+  for (const [file, text] of instructionTextsOf(ctx)) {
+    for (const line of markdownLines(text)) {
       const where = { file, line: line.number };
       for (const call of scriptCallsInLine(line)) {
         checkCommand(state, where, call);

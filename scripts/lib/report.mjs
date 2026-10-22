@@ -10,6 +10,7 @@
 // and is marked in its row; the limits say what the scan read beyond the target, from meta.include. The skipped items
 // outside the target (the user layer's warnings and the parent-folder files that were not read) are marked in the limits table.
 
+import { KINDS } from "./agent-harness.mjs";
 import { AXES, DEFAULT_LANGUAGE } from "./findings-validate.mjs";
 import { isPlainObject } from "./json-out.mjs";
 import { THRESHOLDS_STATUS } from "./measured-findings.mjs";
@@ -40,6 +41,8 @@ const COMPONENT_LABELS = Object.freeze({
   memory: "component.memory",
 });
 const STATUS_LABELS = Object.freeze({ provisional: "status.provisional" });
+// The agent whose every kind is evaluated: its permissions, hooks, settings, subagents and context budget are measured.
+const CLAUDE_CODE = "claude-code";
 // A trigger whose name does not say the state it stands for: its label is shown in brackets after the name.
 const TRIGGER_NOTES = Object.freeze({ "hook-not-verified": "trigger.hookNotVerified" });
 // The mark of an evidence entry that lies outside the target, by its layer.
@@ -348,7 +351,43 @@ function renderHeader(ctx) {
       t("header.catalogValue", { count: ctx.num(catalog.version.count), hash: ctx.code(catalog.version.sha256) }),
     ),
   ];
-  return [`# ${t("header.title")}`, lines.join("\n")].join("\n\n");
+  return [`# ${t("header.title")}`, lines.join("\n"), renderAgents(ctx)].join("\n\n");
+}
+
+// The agents that the scan detected, one row each, in the order of agentHarness.agents. Every kind of Claude Code is evaluated:
+// its permissions, hooks, settings, subagents and context budget are measured. Another agent gets only its instructions
+// evaluated, because the instruction rules (RUL-01 to RUL-04) read the instruction files of any agent. Its settings and hooks
+// are checked only for whether a known agent loads them (SEC-04, SEC-05), and its other kinds are shown as detected, content
+// not evaluated.
+function renderAgents(ctx) {
+  const { t, measurements: m } = ctx;
+  const agents = listOf(m.agentHarness?.agents);
+  if (agents.length === 0) return field(t("header.agents"), t("value.none"));
+  const items = listOf(m.agentHarness?.items);
+  const rows = agents.map((agent) => {
+    const kinds = kindsOf(items, agent.id);
+    const evaluated = agent.id === CLAUDE_CODE ? kinds : kinds.filter((kind) => kind === "instructions");
+    const notEvaluated = kinds.filter((kind) => !evaluated.includes(kind));
+    return [ctx.tableText(t(`agent.${agent.id}`)), kindList(ctx, evaluated), kindList(ctx, notEvaluated)];
+  });
+  const headers = [t("table.agent"), t("table.evaluated"), t("table.detectedOnly")];
+  return [`**${t("header.agents")}:**`, table(headers, rows)].join("\n\n");
+}
+
+// The distinct kinds of the items of one agent, in the order of KINDS.
+function kindsOf(items, agentId) {
+  const present = new Set(items.filter((item) => item.agent === agentId).map((item) => item.kind));
+  return KINDS.filter((kind) => present.has(kind));
+}
+
+// The labels of some kinds, comma-separated, or the empty value when there are none. For a table cell.
+function kindList(ctx, kinds) {
+  if (kinds.length === 0) return ctx.t("value.none");
+  return kinds.map((kind) => ctx.tableText(ctx.t(`harnessKind.${kind}`))).join(ctx.t("list.separator"));
+}
+
+function listOf(value) {
+  return Array.isArray(value) ? value : [];
 }
 
 // Summary by axis ----------------------------------------------------------------------------------
@@ -405,8 +444,10 @@ function renderFinding(ctx, entry) {
   const fields = [
     field(t("field.type"), typeText(ctx, entry)),
     field(t("field.impact"), impactText(ctx, entry)),
-    field(t("field.evidenceLevel"), t(`level.${rule.evidence}`)),
   ];
+  const agents = agentsText(ctx, entry);
+  if (agents !== null) fields.push(field(t("field.agents"), agents));
+  fields.push(field(t("field.evidenceLevel"), t(`level.${rule.evidence}`)));
   if (agent !== null) {
     fields.push(field(t("field.summary"), ctx.text(agent.summary)));
     fields.push(field(t("field.recommendation"), ctx.text(agent.recommendation)));
@@ -440,6 +481,15 @@ function impactText(ctx, entry) {
   const level = ctx.t(`impact.${entry.impact}`);
   if (entry.agent !== null && entry.agent.kind === "judgment") return ctx.t("impact.opinion", { impact: level });
   return level;
+}
+
+// The agents a finding applies to: its own list, else the list of its measured finding (the CTX-07 measure names the agents it
+// measures). Null when neither names any agent. Each id shows as its label.
+function agentsText(ctx, entry) {
+  const own = entry.agent === null ? undefined : entry.agent.agents;
+  const ids = Array.isArray(own) ? own : entry.measured?.agents;
+  if (!Array.isArray(ids) || ids.length === 0) return null;
+  return ids.map((id) => ctx.t(`agent.${id}`)).join(ctx.t("list.separator"));
 }
 
 function evidenceBlock(ctx, entry) {

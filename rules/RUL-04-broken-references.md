@@ -13,7 +13,7 @@ status: draft
 
 ## What it checks
 
-Instruction files that point to something the repository does not have:
+Instruction files, in `CLAUDE.md`, `AGENTS.md` or the root instruction file of another agent, that point to something the repository does not have:
 
 - a path to a file or folder that was renamed, moved or deleted (`src/lib/api-client.ts` after a rename);
 - a command or package script that is not defined (`npm run test:e2e` when `package.json` has no `test:e2e` script).
@@ -30,7 +30,7 @@ Claude Code's memory documentation describes a prompt audit that flags reference
 
 This is a measured rule. The threshold is not numeric: every entry is a finding.
 
-- Field: `instructions.brokenRefs[]`. Each entry has the file, the line, the exact text and the type of the reference.
+- Field: `instructions.brokenRefs[]`. Each entry has the file, the line, the exact text and the type of the reference. The root instruction files of the other agents are in the same list, with the same fields. The entry names its file, and `agentHarness.files[]` gives the agent of each file.
 - Threshold: at least one entry. No `THRESHOLDS` key applies.
 - Impact: high when the entry names a verification command (a test, lint, typecheck, check or verify command). Medium otherwise.
 
@@ -38,6 +38,8 @@ The scanner checks these references:
 
 - paths in inline code, in relative Markdown links and in `@path` imports;
 - commands (`npm run x`, `npm test`, `pnpm x`, `yarn x`, `bun run x`) in inline code and code blocks, against the `scripts` of the root `package.json`.
+
+The root instruction files of the other agents that the scan reads get the same checks. Subproject instruction files are listed and not read, so their references are not checked.
 
 It ignores URLs, globs, placeholders and absolute paths. Absolute paths are reported as external, not as broken.
 
@@ -59,6 +61,7 @@ Fixing or deleting a line removes text. Adding a script is a repository change, 
 - Files that are ignored by git and exist on the developer's machine, such as `.env` after copying `.env.example`.
 - Scripts defined in a workspace package (`packages/web/package.json`). The scanner reads only the root `package.json`, so a script that exists in a workspace is reported as missing.
 - A path shown inside sample output or an example the instructions explicitly label as illustrative.
+- A reference in a subproject instruction file. The scan lists that file without reading it.
 
 ## Examples
 
@@ -77,6 +80,20 @@ Bad, `CLAUDE.md`:
 ```
 
 The `test` script exists, so the reference resolves.
+
+### Applies: broken script in another agent's file (high)
+
+Bad, `.github/copilot-instructions.md`, the root instruction file of GitHub Copilot:
+
+```markdown
+- Before you report a change as done, run `npm run test:unit`.
+```
+
+`package.json` has a `test` script and no `test:unit` script. The command is a verification command, so the impact is high. Good:
+
+```markdown
+- Before you report a change as done, run `npm test`.
+```
 
 ### Applies: renamed path (medium)
 
@@ -97,7 +114,7 @@ The file was renamed to `src/lib/apiClient.ts`. Good:
 Good, `CLAUDE.md`:
 
 ```markdown
-- Name the branch `<type>/<ticket-id>-<short-description>`.
+- Name the branch `<type>/<issue-id>-<short-description>`.
 ```
 
 The angle brackets mark a placeholder, not a path.

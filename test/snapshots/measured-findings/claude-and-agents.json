@@ -37,6 +37,9 @@
   ],
   "measuredFindings": [
     {
+      "agents": [
+        "claude-code"
+      ],
       "axis": "context",
       "evidence": [
         {

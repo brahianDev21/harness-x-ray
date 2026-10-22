@@ -5,7 +5,13 @@
 - **Fecha del escaneo (UTC):** 2026-10-18
 - **Ejes revisados:** Instrucciones, Contexto, Seguridad, Verificación, Estructura, Código
 - **Herramienta:** `harness-x-ray@0.0.0`
-- **Catálogo:** 16 reglas, SHA-256 `8661dfdd6b0a`
+- **Catálogo:** 16 reglas, SHA-256 `3a85f7e2822e`
+
+**Agentes detectados:**
+
+| Agente | Evaluado | Detectado, contenido no evaluado |
+| --- | --- | --- |
+| Claude Code | configuración, subagentes | ninguno |
 
 ---
 

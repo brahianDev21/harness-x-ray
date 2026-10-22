@@ -6,6 +6,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { createAgentInventoryMeasure } from "../scripts/lib/agent-inventory.mjs";
+import { deriveMeasuredOutput } from "../scripts/lib/measured-findings.mjs";
 import { createMemoryMeasure } from "../scripts/lib/memory.mjs";
 import { referencesMeasure } from "../scripts/lib/references.mjs";
 import { scan } from "../scripts/lib/scanner.mjs";
@@ -488,4 +490,45 @@ test("two CLI runs on a copy of broken-refs give the same JSON, except meta", as
     false,
     "no absolute path of this machine outside meta",
   );
+});
+
+// The memory measure, the agent-inventory measure and the references measure, with the measured findings derived.
+function agentReferencesScan(fixture) {
+  return scan({
+    root: fixture.root,
+    measures: [
+      createMemoryMeasure({ ancestorLimit: fixture.base, home: path.join(fixture.base, "no-home") }),
+      createAgentInventoryMeasure(),
+      referencesMeasure,
+    ],
+    derive: deriveMeasuredOutput,
+    now: FIXED_NOW,
+  });
+}
+
+test("other agents' instruction files: a broken reference in .cursorrules and GEMINI.md is reported and gives a RUL-04 finding; a valid reference there is not (positive control)", async (t) => {
+  const fixture = freshFixture(t, {
+    files: {
+      "src/index.mjs": "export {};\n",
+      ".cursorrules": "Keep the entry in `src/index.mjs`.\nSee `docs/cursor-guide.md` for the rules.\n",
+      "GEMINI.md": "Read `docs/gemini-style.md` first.\nEntry: `src/index.mjs`.\n",
+    },
+  });
+  const result = await agentReferencesScan(fixture);
+
+  assert.deepEqual(result.instructions.brokenRefs, [
+    { file: ".cursorrules", line: 2, text: "docs/cursor-guide.md", kind: "path", reason: "not-found" },
+    { file: "GEMINI.md", line: 1, text: "docs/gemini-style.md", kind: "path", reason: "not-found" },
+  ]);
+  const findings = result.measuredFindings.filter((finding) => finding.rule === "RUL-04");
+  assert.deepEqual(
+    findings.map((finding) => [finding.measurementRef, finding.evidence]),
+    [
+      ["/instructions/brokenRefs/0", [{ file: ".cursorrules", line: 2 }]],
+      ["/instructions/brokenRefs/1", [{ file: "GEMINI.md", line: 1 }]],
+    ],
+  );
+  // Without the agent-inventory measure, nothing reads those files, so nothing is reported (the channel is what carries them).
+  const withoutAgents = await referencesScan(fixture);
+  assert.deepEqual(withoutAgents.instructions.brokenRefs, []);
 });

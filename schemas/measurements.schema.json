@@ -544,7 +544,7 @@
         "packageManager": {
           "type": "object",
           "description": "The package manager that the target declares, compared with its lockfiles and with the managers that the memory text names. Only file names are read; no lockfile is opened.",
-          "required": ["field", "fieldManager", "lockfiles", "mentions", "conflict"],
+          "required": ["field", "fieldManager", "lockfiles", "mentions", "byFile", "conflict"],
           "properties": {
             "field": { "type": ["string", "null"], "description": "The packageManager string of the root package.json, redacted; null when there is none." },
             "fieldManager": { "enum": ["npm", "pnpm", "yarn", "bun", null], "description": "The name before @ in field, when it is one of the four managers." },
@@ -573,7 +573,20 @@
                 }
               }
             },
-            "conflict": { "type": "boolean", "description": "True when the field, the lockfiles and the mentions name more than one manager in total." }
+            "byFile": {
+              "type": "array",
+              "description": "The files that name a manager, in memory and in the instruction files of the other agents (ctx.agentInstructions), sorted by file. managers are the managers the file names, sorted. agents are the agents that own the file in the agent inventory, [] when none does; for example AGENTS.md with pnpm and .cursorrules with npm show two agents that disagree. Only file names and manager names; no text.",
+              "items": {
+                "type": "object",
+                "required": ["file", "managers", "agents"],
+                "properties": {
+                  "file": { "type": "string" },
+                  "managers": { "type": "array", "minItems": 1, "items": { "enum": ["npm", "pnpm", "yarn", "bun"] } },
+                  "agents": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            },
+            "conflict": { "type": "boolean", "description": "True when the field, the lockfiles and the names of a manager in the memory texts and in the other agents' instruction texts (byFile) make more than one manager in total." }
           }
         }
       }
@@ -1225,24 +1238,33 @@
         "impact": { "enum": ["high", "medium", "low"] },
         "measurementRef": { "$ref": "#/$defs/measurementRef" },
         "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
-        "triggers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/trigger" } }
+        "triggers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/trigger" } },
+        "agents": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Only on a finding whose rule is about one agent: CTX-07 has [\"claude-code\"]. Absent on every other finding.",
+          "items": { "type": "string", "minLength": 1 }
+        }
       },
       "additionalProperties": false
     },
     "candidate": {
       "type": "object",
-      "description": "Something the agent must read for a judgment rule. kind selects the other fields: duplication-group has lines, redundantLines and copies (file, line, endLine; never code text); hook-script and memory-file have file; memory-file has loadMode (always, on-demand, not-loaded or null for a rule that could not be read).",
+      "description": "Something the agent must read for a judgment rule. kind selects the other fields: duplication-group has lines, redundantLines and copies (file, line, endLine; never code text); hook-script and memory-file have file; memory-file has loadMode (always, on-demand, not-loaded or null for a rule that could not be read); agent-instructions has file and agents (the agents whose instructions pair is in effect: not excluded and not not-loaded); unloaded-control has file, controlKind (settings or hooks, the first of the kinds the file has) and status: not-verified when some agent could not be checked, missing when every agent checked does not load the file.",
       "required": ["id", "kind", "rules", "measurementRef"],
       "properties": {
         "id": { "type": "string", "pattern": "^cand-[1-9][0-9]*$" },
-        "kind": { "enum": ["duplication-group", "hook-script", "memory-file"] },
+        "kind": { "enum": ["duplication-group", "hook-script", "memory-file", "agent-instructions", "unloaded-control"] },
         "rules": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^(RUL|CTX|SEC|VER|STR|COD)-[0-9]{2}$" } },
         "measurementRef": { "$ref": "#/$defs/measurementRef" },
         "file": { "type": "string" },
         "lines": { "type": "integer", "minimum": 1 },
         "redundantLines": { "type": "integer", "minimum": 0 },
         "copies": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
-        "loadMode": { "enum": ["always", "on-demand", "not-loaded", null] }
+        "loadMode": { "enum": ["always", "on-demand", "not-loaded", null] },
+        "agents": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "controlKind": { "enum": ["settings", "hooks"] },
+        "status": { "enum": ["not-verified", "missing"] }
       },
       "additionalProperties": false
     },

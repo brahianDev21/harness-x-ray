@@ -13,7 +13,7 @@ status: draft
 
 ## What it checks
 
-Lines in always-loaded instruction files that state a general practice any capable coding agent already follows, and say nothing specific to this repository. Typical lines: "write clean code", "use meaningful names", "handle errors properly", "keep functions small", "follow SOLID principles".
+Lines in always-loaded instruction files, in `CLAUDE.md`, `AGENTS.md` or the root instruction file of another coding agent, that state a general practice any capable coding agent already follows, and say nothing specific to this repository. Typical lines: "write clean code", "use meaningful names", "handle errors properly", "keep functions small", "follow SOLID principles".
 
 A line matches when deleting it would not change any decision the agent makes in this repository.
 
@@ -25,17 +25,21 @@ Claude Code's memory documentation says that more specific and concise instructi
 
 ## How it is detected
 
-This is a judgment rule. Read every always-loaded memory file: `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` when it loads, and the rules files under `.claude/rules/` that have no `paths` field. Flag a line only when all of these hold:
+This is a judgment rule. Read every always-loaded memory file: `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` when it loads, and the rules files under `.claude/rules/` that have no `paths` field.
+
+Read also the root instruction files of the other agents. The scan names each one as a candidate of kind `agent-instructions`, with its `file`, its `agents` (ids from `agentHarness.agents`) and a `measurementRef` to its `/agentHarness/files/<n>` entry. Read the whole file, as for a memory file. An agent that is not verified in `agentHarness.agents` may not load the file, so a finding on such a file is about its text. It does not say that the agent reads the file.
+
+Flag a line only when all of these hold:
 
 1. It states a general practice (naming, error handling, testing, structure, style) without naming a file, folder, command, library, service or decision of this repository.
 2. The repository does not enforce it with a tool. If a linter or hook enforces the line, the line belongs to RUL-02.
 3. Removing it would not change a choice the agent has to make here.
 
-Supporting data: `inventory[]` entries with `kind: "memory"` and `loadMode: "always"` give the file and its `estTokens`, so the report can show what the generic lines cost. This rule does not use a numeric threshold.
+Supporting data: `inventory[]` entries with `kind: "memory"` and `loadMode: "always"` give the file and its `estTokens`, so the report can show what the generic lines cost. For another agent's file, the `agentHarness.files[]` entry gives its `estTokens`. This rule does not use a numeric threshold.
 
 ## Recommendation
 
-Delete the line. The change is in the memory file, and it removes text, so it adds no cost to later sessions.
+Delete the line. The change is in the instruction file, whichever agent reads it, and it removes text, so it adds no cost to later sessions.
 
 If the practice must hold, use a control rather than a sentence. A lint rule or a hook that runs on edits enforces it on every change, which the agent cannot skip (see RUL-02).
 
@@ -45,6 +49,7 @@ Removing a line can change the agent's behavior. Treat the effect as a hypothesi
 
 - A phrase that sounds generic but names a local meaning. "Keep changes small" followed by "a pull request touches at most three modules" is specific.
 - A line the team has seen the agent ignore in this repository. The agent does not already follow it, so it is not redundant. Check the control options before keeping it as text.
+- A subproject instruction file. The scan lists it without reading it, so no line of it is judged here.
 - A line that a tool enforces. The finding belongs to RUL-02, not to this rule.
 
 ## Examples
@@ -73,6 +78,18 @@ Bad, in `CLAUDE.md`:
 ```
 
 The first line is specific and stays. The second is generic and is flagged.
+
+### Applies: generic lines in another agent's file
+
+Bad, `.cursorrules`, the root instruction file of Cursor:
+
+```text
+Write clean, readable code.
+Handle errors properly.
+Use the helpers in `src/lib/` before you write a new one.
+```
+
+The first two lines are generic and are flagged. The third names a folder and stays.
 
 ### Does not apply: a specific line that sounds like a general rule
 
