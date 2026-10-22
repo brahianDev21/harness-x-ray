@@ -3,7 +3,7 @@
   "title": "measurements.json",
   "description": "Output of scripts/scan.mjs. Documentation only: nothing validates against it. This file lists the fields that every scan writes. Measures add their own sections (for example security or context), and each one extends this file. Three things come only from an opt-in flag and are absent without it: meta.include, the top-level userLayer (--include-user-layer), and the read fields of context.ancestors (--include-ancestors). Outside meta, no value holds an absolute path of the machine that ran the scan; paths are relative to the target and use forward slashes, and the user layer and the parent folders are shown with ~/.claude/ and ../ instead.",
   "type": "object",
-  "required": ["candidates", "claudeConfig", "code", "context", "instructions", "inventory", "measuredFindings", "meta", "schemaVersion", "security", "structure", "target", "undeterminable", "verification", "warnings"],
+  "required": ["agentHarness", "candidates", "claudeConfig", "code", "context", "instructions", "inventory", "measuredFindings", "meta", "schemaVersion", "security", "structure", "target", "undeterminable", "verification", "warnings"],
   "properties": {
     "schemaVersion": {
       "const": 1,
@@ -136,11 +136,11 @@
           },
           "reason": {
             "type": "string",
-            "description": "Fixed code, such as outside-root, too-large, binary or unsupported-pattern (a claudeMdExcludes pattern that is not used; the pattern is never copied). The duplication measure writes code-file-too-large, code-file-minified and code-file-unreadable (its detail is the safe-fs reason) for a code file it skips, and code-files-cut or code-bytes-cut for the files that a cap cut."
+            "description": "Fixed code, such as outside-root, too-large, binary or unsupported-pattern (a claudeMdExcludes pattern that is not used; the pattern is never copied). The duplication measure writes code-file-too-large, code-file-minified and code-file-unreadable (its detail is the safe-fs reason) for a code file it skips, and code-files-cut or code-bytes-cut for the files that a cap cut. The agent-harness measure writes agent-files-cut for the listed files that the file cap left out, and agent-bytes-cut for the files that the total byte cap kept from being read."
           },
           "detail": {
             "type": "string",
-            "description": "Optional fixed code with more context, never a message from the system. The structure measure writes count=N with the entries it cut, and the duplication measure writes count=N with the files or bytes it cut."
+            "description": "Optional fixed code with more context, never a message from the system. The structure measure writes count=N with the entries it cut, the duplication measure writes count=N with the files or bytes it cut, and the agent-harness measure writes count=N with the files it left out or did not read for the byte cap."
           }
         },
         "additionalProperties": false
@@ -264,6 +264,95 @@
           "description": "Fixed codes of what the measure does not do with part of the user layer, in code order. default-mode-not-applied: the user defaultMode is recorded, not applied. hooks-not-evaluated: the user hooks are counted, not evaluated. imports-not-followed: the @imports of the user's files are not followed. layer-precedence-not-verified: how the user, project and local permission rules combine is not verified by a note; the scan takes their union, deny first, then ask, then allow. Empty when found is false.",
           "items": {
             "enum": ["default-mode-not-applied", "hooks-not-evaluated", "imports-not-followed", "layer-precedence-not-verified"]
+          }
+        }
+      }
+    },
+    "agentHarness": {
+      "type": "object",
+      "description": "Files that each agent reads, from the registry data/agent-harness.json (agent-harness measure). Items are one per (file, agent) pair: a file has one item for every agent whose registry entry owns it. The status of a pair is what this scan can tell. loads: the registry says the agent loads it, and no blocker was found. not-loaded: a blocker that is verified is present (blockedBy). excluded: claudeMdExcludes matches the file, so it is not loaded. unknown: the load model is not verified, or a blocker is not verified (blockedBy), or the file is nested and its model is neither always nor folder. A nested file is listed and never read. excludedBy is set on every Claude Code pair whose file claudeMdExcludes matches, whatever its status. budget of an agent: /context/alwaysLoaded for Claude Code, the shared budget, and unknownStatic for every other agent. Their context files are in unknownStatic here, not in the shared budget. budget as-before on an item marks a Claude Code entry whose load model is not verified and which the existing budget still counts.",
+      "required": ["agents", "files", "items", "registry", "unknownStatic"],
+      "additionalProperties": false,
+      "properties": {
+        "registry": {
+          "const": "data/agent-harness.json"
+        },
+        "agents": {
+          "type": "array",
+          "description": "Detected agents only: those with at least one pair. Sorted by id. verified is true when the registry verifies a load model of the agent. items counts its pairs. unverifiedInBudget lists the entries counted as-before, sorted.",
+          "items": {
+            "type": "object",
+            "required": ["budget", "id", "items", "name", "type", "unverifiedInBudget", "verified"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "type": { "enum": ["agent", "convention"] },
+              "verified": { "type": "boolean" },
+              "items": { "type": "integer", "minimum": 1 },
+              "budget": { "enum": ["/context/alwaysLoaded", "unknownStatic"] },
+              "unverifiedInBudget": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "items": {
+          "type": "array",
+          "description": "One item per (file, agent) pair of the listed files. At most 2000 files are listed (MAX_FILES), in path order; the rest are left out of files and items, and the agent-files-cut warning counts them. Sorted by path, then by agent.",
+          "items": {
+            "type": "object",
+            "required": ["agent", "entry", "kind", "loadModel", "nested", "path", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "path": { "type": "string", "description": "POSIX path relative to the target." },
+              "agent": { "type": "string" },
+              "entry": { "type": "string", "description": "Id of the registry entry that owns the file for this agent." },
+              "kind": { "enum": ["instructions", "settings", "hooks", "skills", "commands", "subagents", "mcp", "unknown"] },
+              "loadModel": { "enum": ["always", "ancestors", "folder", "glob", "invoked", "unknown"] },
+              "nested": { "type": "boolean", "description": "True when the registry does not fix the folder of the file (a file in a subfolder, under a glob that starts with *). Nested files are never read." },
+              "status": { "enum": ["loads", "not-loaded", "excluded", "unknown"] },
+              "blockedBy": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Present on not-loaded and on an unknown status caused by a blocker: the sorted paths of the blocking files." },
+              "excludedBy": { "type": "string", "description": "Present on every Claude Code pair whose file claudeMdExcludes matches, whatever its status: the redacted form of the first matching pattern." },
+              "budget": { "enum": ["as-before"], "description": "Present only on a Claude Code entry whose load model is not verified and which the existing budget still counts." }
+            }
+          }
+        },
+        "files": {
+          "type": "array",
+          "description": "One item per listed file that an entry owns. At most 2000 files are listed (MAX_FILES), in path order; the rest are left out of files and items, and the agent-files-cut warning counts them. Sorted by path. loadedBy, notLoadedBy and unknownFor are sorted agent ids. notLoadedBy also holds every verified agent of the registry that has no pair for the file.",
+          "items": {
+            "type": "object",
+            "required": ["bytes", "estTokens", "lines", "loadedBy", "nested", "notLoadedBy", "notReadReason", "path", "read", "unknownFor"],
+            "additionalProperties": false,
+            "properties": {
+              "path": { "type": "string" },
+              "nested": { "type": "boolean" },
+              "read": { "type": "boolean" },
+              "notReadReason": {
+                "enum": ["binary", "bytes-cap", "claude-md-excludes", "nested", "not-a-file", "not-found", "outside-root", "read-error", "secret-name", "too-large", null],
+                "description": "Null when the file was read. nested: a file in a subfolder, never read. secret-name: the name of the file or of its link target is a secret name, never read. claude-md-excludes: only Claude Code owns it and its claude-code pair matches claudeMdExcludes, so it is never read (memory.mjs does not read excluded files). bytes-cap: reading it would pass the total byte cap of the measure. outside-root: a link that leaves the target, never read. The other values are the safe-fs reasons of a failed read."
+              },
+              "bytes": { "type": ["integer", "null"], "minimum": 0, "description": "Size of the file, from its stat. Null when it is not known." },
+              "lines": { "type": ["integer", "null"], "minimum": 0, "description": "Null when the file was not read." },
+              "estTokens": { "type": ["integer", "null"], "minimum": 0, "description": "Estimate with chars/4, present when the file was read and one of its pairs has a context kind (instructions, skills, commands, subagents). Null otherwise." },
+              "loadedBy": { "type": "array", "items": { "type": "string" } },
+              "notLoadedBy": { "type": "array", "items": { "type": "string" } },
+              "unknownFor": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "unknownStatic": {
+          "type": "array",
+          "description": "The context files of agents whose budget is unknownStatic, that were read: one per pair. Sorted by agent, then by path.",
+          "items": {
+            "type": "object",
+            "required": ["agent", "estTokens", "kind", "path"],
+            "additionalProperties": false,
+            "properties": {
+              "agent": { "type": "string" },
+              "path": { "type": "string" },
+              "kind": { "enum": ["instructions", "skills", "commands", "subagents"] },
+              "estTokens": { "type": "integer", "minimum": 0 }
+            }
           }
         }
       }

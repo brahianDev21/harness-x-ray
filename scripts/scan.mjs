@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { agentInventoryMeasure } from "./lib/agent-inventory.mjs";
 import { claudeConfigMeasure } from "./lib/claude-config.mjs";
 import { destructiveCommandsMeasure } from "./lib/destructive-commands.mjs";
 import { duplicationMeasure } from "./lib/duplication.mjs";
@@ -34,13 +35,16 @@ const USAGE = "usage: node scripts/scan.mjs <target> [--out <dir>] [--include-us
 
 // The measures, in the order they run, for the given flags. Each measure adds its import and one line here. The references,
 // verification and structure measures read the memory texts, so they run after the memory measure. The user layer runs right
-// after the project configuration, because the permission measures read the rules it adds to ctx.outside.
+// after the project configuration, because the permission measures read the rules it adds to ctx.outside. The agent-harness
+// measure runs right after the memory measure: it reads the files of the other agents, and it needs neither the memory texts
+// nor the output of the measures that follow it.
 function measuresFor({ userLayer, ancestors }) {
   const memory = ancestors ? createMemoryMeasure({ includeAncestors: true }) : memoryMeasure;
   return [
     claudeConfigMeasure,
     ...(userLayer ? [createUserLayerMeasure()] : []),
     memory,
+    agentInventoryMeasure,
     referencesMeasure,
     verificationMeasure,
     destructiveCommandsMeasure,

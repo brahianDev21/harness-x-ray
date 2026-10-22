@@ -26,9 +26,10 @@ const EMPTY_FIXTURE = path.join(TEST_DIR, "fixtures", "empty");
 const SCHEMA_FILE = path.join(HARNESS_ROOT, "schemas", "measurements.schema.json");
 const PACKAGE_FILE = path.join(HARNESS_ROOT, "package.json");
 // Top-level keys of every scan with the registered measures. The core writes the first five, the
-// claude-config measure always writes claudeConfig and security, and the references measure writes instructions.
-// The derive step of the CLI writes the last three.
+// claude-config measure always writes claudeConfig and security, the references measure writes instructions, and the
+// agent-harness measure writes agentHarness. The derive step of the CLI writes the last three.
 const TOP_LEVEL_KEYS = [
+  "agentHarness",
   "candidates",
   "claudeConfig",
   "code",

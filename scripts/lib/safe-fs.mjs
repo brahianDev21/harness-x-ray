@@ -28,6 +28,7 @@ const PARENT_LIKE = /^[. ]*\.\.[. ]*$/;
  *   stat: (rel: string) => object,
  *   exists: (rel: string) => boolean,
  *   listDir: (rel: string) => object,
+ *   resolve: (rel: string) => { ok: true, path: string, target: string } | { ok: false, path: string, reason: string },
  *   warnings: () => Array<{ path: string, reason: string }>,
  * }}
  */
@@ -131,13 +132,22 @@ export function createTargetFs(root) {
     return { ok: true, path: target.path, entries };
   }
 
+  // The real location of rel, after every symbolic link on the way is followed, as a POSIX path relative to the root. It
+  // uses the same check as readText and stat: a location outside the root is refused with outside-root.
+  function resolve(rel) {
+    assertRelativeArg(rel);
+    const target = locate(rel);
+    if (!target.ok) return target;
+    return { ok: true, path: target.path, target: path.relative(realRoot, target.real).split(path.sep).join("/") };
+  }
+
   function warnings() {
     return [...recorded.values()]
       .map((item) => ({ path: item.path, reason: item.reason }))
       .sort((a, b) => compareText(a.path, b.path) || compareText(a.reason, b.reason));
   }
 
-  return { readText, stat, exists, listDir, warnings };
+  return { readText, stat, exists, listDir, resolve, warnings };
 }
 
 /**

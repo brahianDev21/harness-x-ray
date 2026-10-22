@@ -8,9 +8,11 @@ import {
   KINDS,
   LOAD_MODELS,
   globProblem,
+  loadAgentHarness,
   matchHarnessGlob,
   validateAgentHarness,
 } from "../scripts/lib/agent-harness.mjs";
+import { makeFixture } from "./helpers/make-fixture.mjs";
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const HARNESS_ROOT = path.resolve(TEST_DIR, "..");
@@ -346,3 +348,42 @@ test("the shadowing check passes a narrow entry before a general one, and report
   issueAt(check(registryOfGlobs(["**/CLAUDE.md", ".claude/CLAUDE.md"])), "/files/1/glob", /shadowed by claude-code-0;/);
   issueAt(check(registryOfGlobs([".a/**", ".a/b.json"])), "/files/1/glob", /shadowed by claude-code-0;/);
 });
+
+// loadAgentHarness reads the registry and the sources of a folder, and throws on any problem. A temp fixture holds both files.
+test("loadAgentHarness reads the real registry of this repository and returns it unchanged (positive control)", () => {
+  assert.deepEqual(loadAgentHarness(HARNESS_ROOT), readRegistry());
+});
+
+test("loadAgentHarness throws for a registry with a problem, and the message names the file and the problem", (t) => {
+  const registry = {
+    agents: [{ id: "x", name: "X", type: "agent" }],
+    files: [{ id: "x-a", agent: "x", glob: "/abs", kind: "instructions", loadModel: "always", sources: [] }],
+  };
+  const fixture = makeFixture({ files: { "data/agent-harness.json": JSON.stringify(registry), "rules/sources.json": sourcesText() } });
+  t.after(fixture.cleanup);
+  assert.throws(
+    () => loadAgentHarness(fixture.root),
+    (error) =>
+      error instanceof Error &&
+      error.message.startsWith("data/agent-harness.json is not valid:") &&
+      error.message.includes("/files/0/glob"),
+  );
+});
+
+test("loadAgentHarness returns a valid registry from another folder (positive control for the test above)", (t) => {
+  const files = { "data/agent-harness.json": JSON.stringify(readRegistry()), "rules/sources.json": sourcesText() };
+  const fixture = makeFixture({ files });
+  t.after(fixture.cleanup);
+  assert.deepEqual(loadAgentHarness(fixture.root), readRegistry());
+});
+
+test("loadAgentHarness throws when the sources file is missing, and when the paths are not absolute", (t) => {
+  const fixture = makeFixture({ files: { "data/agent-harness.json": JSON.stringify(readRegistry()) } });
+  t.after(fixture.cleanup);
+  assert.throws(() => loadAgentHarness(fixture.root), /cannot read rules\/sources\.json/);
+  assert.throws(() => loadAgentHarness("relative/folder"), TypeError);
+});
+
+function sourcesText() {
+  return fs.readFileSync(SOURCES, "utf8");
+}

@@ -1,7 +1,7 @@
 // The agent registry. data/agent-harness.json lists, for each coding agent and for conventions that no single agent owns
 // (AGENTS.md and .agents/), the files it reads, what each file is, when it loads, and the official source that says so.
-// This module checks that file's format and matches its globs. scripts/check-catalog.mjs runs the check. No consumer reads
-// the registry yet.
+// This module checks that file's format and matches its globs. scripts/check-catalog.mjs runs the check. The scanner reads
+// the registry with loadAgentHarness, which throws on a file that is not valid.
 //
 // The format. The top level is an object with exactly two keys, agents and files, both non-empty lists. Any other key is
 // an error.
@@ -53,6 +53,8 @@
 // "**" dropped (a trailing one stays as one folder) and one with every "**" as one folder. So a narrow entry before a
 // general one passes, and a general entry before a narrow one is reported.
 
+import fs from "node:fs";
+import path from "node:path";
 import { isPlainObject } from "./json-out.mjs";
 import { wildcardMatches } from "./permissions.mjs";
 
@@ -62,6 +64,9 @@ export const KINDS = Object.freeze(["instructions", "settings", "hooks", "skills
 export const LOAD_MODELS = Object.freeze(["always", "ancestors", "folder", "glob", "invoked", "unknown"]);
 /** The types an agent entry can have. */
 export const AGENT_TYPES = Object.freeze(["agent", "convention"]);
+
+const REGISTRY_FILE = "data/agent-harness.json";
+const SOURCES_FILE = "rules/sources.json";
 
 const TOP_FIELDS = ["agents", "files"];
 const AGENT_FIELDS = ["id", "name", "type"];
@@ -188,6 +193,51 @@ export function validateAgentHarness(data, { sourceTypes }) {
   if (agents !== null && filesList !== null) checkCoverage(agents, filesList, report);
   checkShadowing(files, report);
   return issues;
+}
+
+/**
+ * Reads data/agent-harness.json under harnessRoot, checks it with validateAgentHarness and returns it. The sources it names
+ * are looked up in rules/sources.json under the same folder. Both files belong to this tool, not to a target: they are read
+ * with plain fs, and nothing in them is run.
+ * @param {string} harnessRoot Absolute path of the repository that holds data/ and rules/.
+ * @returns {{ agents: object[], files: object[] }} The parsed registry.
+ * @throws {Error} When a file is missing or is not valid JSON, or when the registry has a problem. The message names the file
+ *   and each problem, on one line.
+ */
+export function loadAgentHarness(harnessRoot) {
+  if (typeof harnessRoot !== "string" || !path.isAbsolute(harnessRoot)) {
+    throw new TypeError("harnessRoot must be an absolute folder");
+  }
+  const data = readJsonFile(harnessRoot, REGISTRY_FILE);
+  const sources = readJsonFile(harnessRoot, SOURCES_FILE);
+  if (!isPlainObject(sources) || !Array.isArray(sources.sources)) {
+    throw new Error(`${SOURCES_FILE} must hold a list named sources`);
+  }
+  // A source whose type is not a string maps to null, which validateAgentHarness reports as not official-docs.
+  const sourceTypes = new Map();
+  for (const source of sources.sources) {
+    if (isPlainObject(source) && isString(source.id)) sourceTypes.set(source.id, isString(source.type) ? source.type : null);
+  }
+  const issues = validateAgentHarness(data, { sourceTypes });
+  if (issues.length > 0) {
+    const detail = issues.map((issue) => `${issue.pointer === "" ? "(root)" : issue.pointer}: ${issue.message}`);
+    throw new Error(`${REGISTRY_FILE} is not valid: ${detail.join("; ")}`);
+  }
+  return data;
+}
+
+function readJsonFile(harnessRoot, rel) {
+  let text;
+  try {
+    text = fs.readFileSync(path.join(harnessRoot, rel), "utf8");
+  } catch (error) {
+    throw new Error(`cannot read ${rel}: ${error.code ?? "unknown error"}`, { cause: error });
+  }
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${rel} is not valid JSON: ${error.message}`, { cause: error });
+  }
 }
 
 // Returns the list, or null after reporting it when it is not a non-empty list. A missing list is reported by the

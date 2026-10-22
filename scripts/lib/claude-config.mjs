@@ -25,7 +25,7 @@ const SKILLS_DIR = ".claude/skills";
 const COMMANDS_DIR = ".claude/commands";
 const AGENTS_DIR = ".claude/agents";
 // Folders deeper than this, below the folder that is searched, are not searched.
-const MAX_WALK_DEPTH = 6;
+export const MAX_WALK_DEPTH = 6;
 // Claude Code truncates description and when_to_use in the skill listing at this many characters.
 const MAX_DESCRIPTION_CHARS = 1536;
 // Events whose plain-text stdout Claude Code adds to the context (docs: hooks).
