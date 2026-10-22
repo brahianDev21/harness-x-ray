@@ -2,12 +2,26 @@
 // (measured-findings.mjs) and the structure measure read the same numbers. This module has no imports, so any
 // module can import it without a cycle.
 //
-// Every value is provisional. None is measured: each is an assumption, derived as the comment says, and
-// calibration on Agent Atlas and on at least one more repository must confirm or change it. The report states
-// that status next to every threshold it cites, using THRESHOLDS_STATUS.
+// Every value starts provisional. None is measured: each is an assumption, derived as the comment says. A value
+// changes only with the evidence that scripts/calibrate.mjs writes (the distribution of each measure over a sample
+// of repositories, see lib/calibration.mjs and the calibration document). When a value changes on that evidence, its
+// status in THRESHOLDS_STATUS becomes "calibrated" in the same change. The report states the status next to every
+// threshold it cites, by key, using THRESHOLDS_STATUS.
 
-/** Status of every value in THRESHOLDS. */
-export const THRESHOLDS_STATUS = "provisional";
+/**
+ * The status of every value in THRESHOLDS, by key: "provisional" (an assumption) or "calibrated" (changed on the
+ * evidence of a calibration). Frozen, with the same keys as THRESHOLDS.
+ */
+export const THRESHOLDS_STATUS = Object.freeze({
+  memoryFileMaxLines: "provisional",
+  alwaysLoadedTokensMedium: "provisional",
+  alwaysLoadedTokensHigh: "provisional",
+  skillDescriptionMaxChars: "provisional",
+  skillCountMax: "provisional",
+  largeFileBytes: "provisional",
+  duplicationPctMedium: "provisional",
+  duplicationPctHigh: "provisional",
+});
 
 export const THRESHOLDS = Object.freeze({
   // CTX-01. An always-loaded memory file above this many lines. From the size target of the memory documentation
