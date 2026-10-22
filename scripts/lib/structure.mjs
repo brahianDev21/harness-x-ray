@@ -11,11 +11,20 @@
 // Each large and generated entry has protection (what the permission rules decide for Read and Edit) and memory (the
 // memory lines that name the entry, and whether one of them marks it as not to touch).
 //
+// With a scope (ctx.scope, see scope.mjs), only the files inside the scope folders are measured, and the folders are
+// counted from each scope folder instead of from the root. tree has the first and second folder levels below each scope
+// folder, and mapCoverage the first-level folders below each one; both use full paths (apps/web/src). The generated and
+// large files are the scope's. A memory file mentions such a folder by its full path, as without a scope, and also, when its
+// harness folder H (harnessFolderOf) is not the root and the folder lies inside H, by its path relative to H: a line in
+// apps/web/CLAUDE.md that names src/ maps apps/web/src. Protection still uses the global permission rules. Without a scope,
+// the base of every path is the root and the output is the one described above.
+//
 // Heuristics. All of them are conservative, and the memory text is data: nothing in it is followed.
 // - A path is mentioned by a memory line when the path begins the line, or follows whitespace, a backtick, a quote,
 //   "(" or "[", optionally after "./". A path that follows other text (x/src/, ../src/, xsrc/, **src/**) is part of a
 //   longer path or word, so it does not count. Fenced code blocks count too, which is how tree listings mention folders.
-// - A top-level folder is also mentioned by a code span that is exactly its name, or its name with a slash.
+// - A mapCoverage folder is also mentioned by a code span that is exactly its path, or its path with a slash. The path
+//   relative to the harness folder counts the same way (see above).
 // - A folder entry is mentioned by its path followed by a slash. A file entry is mentioned by its path, or by its
 //   pattern glob (for example `*.min.js`), when no path character follows.
 // - A mention marks the entry as not to touch when the same line also contains a do-not-touch phrase from the data
@@ -27,6 +36,7 @@ import { loadClaudeConfig } from "./claude-config.mjs";
 import { codeSpans, markdownLines } from "./markdown.mjs";
 import { isPlainObject } from "./json-out.mjs";
 import { USER_LAYER, decide, decisionRules } from "./permissions.mjs";
+import { harnessFolderOf } from "./scope.mjs";
 import { THRESHOLDS } from "./thresholds.mjs";
 
 export const MEASURE_ID = "structure";
@@ -82,18 +92,20 @@ export function generatedPatternOf(relPath, patterns = loadGeneratedPatterns()) 
   return file === undefined ? null : file.id;
 }
 
-// Reads the target through ctx only. Returns the section that the scan core merges.
+// Reads the target through ctx only. Returns the section that the scan core merges. With a scope, the size measures see
+// only the files inside the scope folders; the memory and the permission rules are read as before.
 function collectStructure(ctx) {
   const config = loadClaudeConfig(ctx);
   const rules = decisionRules(config.permissions, ctx.outside);
   const patterns = loadGeneratedPatterns();
   const lines = memoryLines(ctx.memory);
-  const generated = classifyGenerated(ctx.files, patterns);
+  const files = filesInScope(ctx.files, ctx.scope);
+  const generated = classifyGenerated(files, patterns);
   const warnings = [];
 
   const generatedKept = capped(generated.entries, MAX_GENERATED_ENTRIES, "generated-entries-cut", warnings);
   const largeKept = capped(
-    largeCandidates(ctx.files, generated.members, patterns.lockfiles),
+    largeCandidates(files, generated.members, patterns.lockfiles),
     MAX_LARGE_ENTRIES,
     "large-files-cut",
     warnings,
@@ -101,8 +113,8 @@ function collectStructure(ctx) {
 
   return {
     structure: {
-      tree: treeOf(ctx.files),
-      mapCoverage: mapCoverageOf(ctx.files, generated.topFolders, lines),
+      tree: treeOf(files, ctx.scope),
+      mapCoverage: mapCoverageOf(files, generated.generatedFolders, lines, ctx.scope),
       largeFiles: largeKept.map((file) => largeEntry(file, rules, lines, patterns.phrases)),
       generatedFiles: generatedKept.map((entry) => generatedEntry(entry, rules, lines, patterns.phrases)),
     },
@@ -110,16 +122,54 @@ function collectStructure(ctx) {
   };
 }
 
+/**
+ * The files that the size measures read: every file without a scope, and with a scope the files inside its folders.
+ * @param {Array<{ path: string, bytes: number }>} files ctx.files.
+ * @param {{ contains: (rel: string) => boolean } | null} scope ctx.scope: the scope of scope.mjs, or null.
+ * @returns {Array<{ path: string, bytes: number }>} The same objects, in the same order.
+ */
+export function filesInScope(files, scope) {
+  return !scope ? files : files.filter((file) => scope.contains(file.path));
+}
+
+// The folder that a path is measured from: the scope folder that holds it, or the root ("") without a scope. Every path given
+// here lies inside a scope folder when there is a scope (filesInScope).
+function baseOf(rel, scope) {
+  if (!scope) return "";
+  const folder = scope.folders.find((item) => rel.startsWith(`${item}/`));
+  if (folder === undefined) throw new Error(`${rel} lies outside the scope`);
+  return folder;
+}
+
+// The part of a path below its base folder. The base "" is the root, so the path itself.
+function belowBase(rel, base) {
+  return base === "" ? rel : rel.slice(base.length + 1);
+}
+
+// A folder path made of the base and the given segments below it.
+function folderAt(base, segments) {
+  const below = segments.join("/");
+  return base === "" ? below : `${base}/${below}`;
+}
+
+// The first-level folder of a path, from the target, or null when the path lies directly in the base.
+function firstLevelDirOf(rel, base) {
+  const segments = belowBase(rel, base).split("/");
+  return segments.length < 2 ? null : folderAt(base, segments.slice(0, 1));
+}
+
 // ---------------------------------------------------------------------------------------------------
 // The tree
 
-// One entry per top-level folder and per second-level folder. files counts the files below the folder, at any depth.
-function treeOf(files) {
+// One entry per first and second folder level below each base (the root, or each scope folder). files counts the files below
+// the folder, at any depth. Files directly in a base are not counted.
+function treeOf(files, scope) {
   const counts = new Map();
   for (const { path } of files) {
-    const segments = path.split("/");
+    const base = baseOf(path, scope);
+    const segments = belowBase(path, base).split("/");
     for (let depth = 1; depth <= Math.min(2, segments.length - 1); depth += 1) {
-      const folder = segments.slice(0, depth).join("/");
+      const folder = folderAt(base, segments.slice(0, depth));
       counts.set(folder, (counts.get(folder) ?? 0) + 1);
     }
   }
@@ -129,29 +179,46 @@ function treeOf(files) {
 // ---------------------------------------------------------------------------------------------------
 // Map coverage
 
-// The top-level folders that are not generated, and for each one the memory files that mention it.
-function mapCoverageOf(files, generatedTop, lines) {
+// The first-level folders that are not generated, and for each one the memory files that mention it. Without a scope these
+// are the top-level folders; with one, the first-level folders below each scope folder, by full path.
+function mapCoverageOf(files, generatedFolders, lines, scope) {
   const counts = new Map();
   for (const { path } of files) {
-    const slash = path.indexOf("/");
-    if (slash === -1) continue;
-    const dir = path.slice(0, slash);
+    const dir = firstLevelDirOf(path, baseOf(path, scope));
+    if (dir === null) continue;
     counts.set(dir, (counts.get(dir) ?? 0) + 1);
   }
   const byDir = [...counts.keys()]
-    .filter((dir) => !generatedTop.has(dir))
+    .filter((dir) => !generatedFolders.has(dir))
     .sort(compareText)
     .map((dir) => {
-      const regex = folderRegex(dir);
-      const mentions = firstMentionPerFile(lines, (line) => dirMentioned(line, dir, regex));
+      const mentions = firstMentionPerFile(lines, mentionsDir(dir));
       return { dir, files: counts.get(dir), mentioned: mentions.length > 0, mentions };
     });
   return { dirs: byDir.length, mentioned: byDir.filter((item) => item.mentioned).length, byDir };
 }
 
-// A folder is mentioned by its path with a slash, or by a code span that is exactly the name or the name with a slash.
+// The predicate that tells whether a memory line mentions a mapCoverage folder. The folder counts by its full path. It also
+// counts by its path relative to the harness folder of the memory file, when that folder is not the root and holds the folder.
+function mentionsDir(dir) {
+  const regex = folderRegex(dir);
+  return (line) => {
+    if (dirMentioned(line, dir, regex)) return true;
+    const relative = relativeToHarness(dir, harnessFolderOf(line.file));
+    return relative !== null && dirMentioned(line, relative, folderRegex(relative));
+  };
+}
+
+// A folder is mentioned by its path with a slash, or by a code span that is exactly the path or the path with a slash.
 function dirMentioned(line, dir, regex) {
   return regex.test(line.text) || line.spans.some((span) => span.text === dir || span.text === `${dir}/`);
+}
+
+// The path of a folder relative to a harness folder, when the folder lies inside it. Null for the root harness "." and for a
+// folder outside the harness folder.
+function relativeToHarness(folder, harness) {
+  if (harness === "." || !folder.startsWith(`${harness}/`)) return null;
+  return folder.slice(harness.length + 1);
 }
 
 // The first matching line of each memory file. The lines are ordered by file, so this keeps the first one of each.
@@ -172,7 +239,7 @@ function firstMentionPerFile(lines, predicate) {
 // The generated entries before the cap. A folder whose name is a directory pattern is one entry, at the outermost
 // level where that name appears; every file below it belongs to that entry. A file outside such a folder is one entry
 // when its base name matches a file pattern. members holds the path of every file that belongs to an entry.
-// topFolders holds the top-level folders that are entries themselves.
+// generatedFolders holds the path of every folder entry.
 function classifyGenerated(files, patterns) {
   const folderByName = new Map(patterns.directories.map((item) => [item.folder, item]));
   const folders = new Map();
@@ -198,8 +265,7 @@ function classifyGenerated(files, patterns) {
     }
   }
   const entries = [...folders.values(), ...singles].sort((a, b) => compareText(a.path, b.path));
-  const topFolders = new Set([...folders.keys()].filter((folder) => !folder.includes("/")));
-  return { entries, members, topFolders };
+  return { entries, members, generatedFolders: new Set(folders.keys()) };
 }
 
 // The versioned files above THRESHOLDS.largeFileBytes, sorted by path. Lockfiles are left out by base name, in any

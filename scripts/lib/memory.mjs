@@ -1,10 +1,16 @@
 // Measure "memory": the memory files that Claude Code loads at the start of a session, and how much
 // they weigh. It finds CLAUDE.md, .claude/CLAUDE.md, CLAUDE.local.md, AGENTS.md and .claude/AGENTS.md at
 // the root, the rules of .claude/rules/ (with and without paths), and the files that the loaded memory
-// files import with @path. The CLAUDE.md and AGENTS.md files of subfolders are listed and never read.
-// The parent folders of the target are checked by existence and size only. With includeAncestors, their
-// memory files are also read, for the line and token counts only: their text is never kept, and they are
-// never in the inventory, the budget, ctx.memory or the limits. Their imports are not followed.
+// files import with @path. The CLAUDE.md and AGENTS.md files of subfolders are listed by size and never read, unless a
+// scope keeps them (see below). The parent folders of the target are checked by existence and size only. With
+// includeAncestors, their memory files are also read, for the line and token counts only: their text is never kept, and
+// they are never in the inventory, the budget, ctx.memory or the limits. Their imports are not followed.
+// With a scope (--scope, see scope.mjs), a subfolder file that ctx.scope.keepsHarness admits is read like a root memory file,
+// with loadMode "on-demand": its counts and text are kept, claudeMdExcludes and the size cap apply, and it is listed with
+// loadReason SUBFOLDER_REASON. A subfolder file that the scope does not keep is left out of the inventory. Its imports are not
+// followed, because only an always-loaded file is traversed. NOT VERIFIED by a note: whether Claude Code expands the imports
+// of a subfolder memory file. The root files, the rules, the imports and the parent folders do not change with a scope: the
+// ancestors are the target's, never the scope's.
 //
 // The target is read only through ctx.fs and ctx.readText, with root-relative paths. An import that
 // leaves the target, or that points to the home folder, is recorded as external: it is never read and
@@ -77,6 +83,15 @@ const RULE_PATHS_REASON = "rule with paths, loaded when a matching file is read"
 // The caller reports it as a warning.
 export const RULE_INVALID_REASON = "rule with invalid frontmatter, loaded at session start";
 const SUBFOLDER_REASON = "subfolder memory, loaded when a file in its folder is read";
+// The spec of a subfolder memory file that a scope keeps: it is read through admit, as on-demand memory. Its imports are
+// not followed.
+const SUBFOLDER_SPEC = Object.freeze({
+  kind: "memory",
+  loadMode: "on-demand",
+  reason: SUBFOLDER_REASON,
+  depth: null,
+  parent: null,
+});
 const TOO_LARGE_REASON = "not read: larger than 4 MiB";
 
 // Reason code of a memory file that is skipped because it is larger than the cap.
@@ -155,9 +170,16 @@ function collectMemory(ctx, options) {
     admit(state, rel, { kind: "rule", loadMode: null, reason: null, depth: null, parent: null });
   }
 
-  // 4. Memory files of subfolders. They come from the file list, and they are never read.
+  // 4. Memory files of subfolders. They come from the file list. Without a scope they are listed and never read. With a scope,
+  // a file that the scope keeps is read through admit, as on-demand memory, and a file it does not keep is left out. A kept
+  // file that admit cannot probe keeps the listing without counts, as it has without a scope.
+  const scope = ctx.scope ?? null;
   for (const entry of ctx.files) {
     if (!isSubfolderMemory(entry.path) || state.nodes.has(key(entry.path))) continue;
+    if (scope !== null) {
+      if (!scope.keepsHarness(entry.path)) continue;
+      if (admit(state, entry.path, SUBFOLDER_SPEC) !== null) continue;
+    }
     const node = {
       path: entry.path,
       kind: "memory",

@@ -64,6 +64,8 @@ Whether the harness guides reuse is not judged here. The "no guidance on reuse" 
 
 Groups in test files are not part of the percentage. Duplication that appears only under `inTests` does not raise a finding.
 
+With a scope (the `scope` section of measurements.json is present), only the code inside the scope is read. `duplicatedLinesPct` is then the share of the normalized lines inside the scope, and a copy outside the scope is not seen. A low share does not show that the rest of the repository has no copies.
+
 ## Recommendation
 
 Change the harness, in this order. Refactoring the existing copies is a code task for the team, and it is not what this rule recommends.

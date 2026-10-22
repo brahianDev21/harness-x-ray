@@ -10,6 +10,7 @@ import { createMemoryMeasure } from "../scripts/lib/memory.mjs";
 import { scan } from "../scripts/lib/scanner.mjs";
 import { verificationMeasure } from "../scripts/lib/verification.mjs";
 import { makeFixture } from "./helpers/make-fixture.mjs";
+import { schemaProblems } from "./helpers/schema-check.mjs";
 
 const execFileAsync = promisify(execFile);
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -445,6 +446,151 @@ test("byFile: AGENTS.md and .cursorrules that both say pnpm give no conflict (po
   ]);
 });
 
+// Runs the memory measure, then the verification measure, with a scope. The ancestor walk stops at the fixture folder.
+function scopedVerificationScan(fixture, scope) {
+  return scan({
+    root: fixture.root,
+    measures: [
+      createMemoryMeasure({ ancestorLimit: fixture.base, home: path.join(fixture.base, "no-home") }),
+      verificationMeasure,
+    ],
+    now: FIXED_NOW,
+    scope,
+  });
+}
+
+// A monorepo whose only check is at the root: a test script, a CI workflow, and a root memory line that names the command.
+// The web app has a package.json without scripts.
+function monorepoWithRootCheck() {
+  return {
+    "package.json": packageJson({ scripts: { test: "node --test" } }),
+    ".github/workflows/ci.yml": "name: ci\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n",
+    "CLAUDE.md": "# Monorepo\n\nBefore reporting a change as done, run `npm test`.\n",
+    "apps/web/package.json": packageJson({ name: "web" }),
+    "apps/web/src/index.ts": "export {};\n",
+  };
+}
+
+test("VER-01 acceptance: with the scope apps/web, the root test script, the root mention and the CI workflow still count", async (t) => {
+  const fixture = freshFixture(t, { files: monorepoWithRootCheck() });
+  const result = await scopedVerificationScan(fixture, ["apps/web"]);
+
+  assert.deepEqual(result.verification.commands, [{ name: "test", categories: ["test"] }]);
+  assert.deepEqual(result.verification.mentioned, [{ script: "test", file: "CLAUDE.md", line: 3, text: "npm test" }]);
+  assert.deepEqual(result.structure.enforcementTools, [{ tool: "github-actions", path: ".github/workflows/ci.yml" }]);
+  assert.deepEqual(result.verification.packages, [{ path: "apps/web/package.json", where: "scope", status: "ok", commands: [] }]);
+  assert.deepEqual(verificationWarnings(result), []);
+});
+
+test("VER-01 acceptance: positive control, without a scope there is no packages list, and the same root checks are found", async (t) => {
+  const fixture = freshFixture(t, { files: monorepoWithRootCheck() });
+  const result = await verificationScan(fixture);
+
+  assert.equal(Object.hasOwn(result.verification, "packages"), false);
+  assert.deepEqual(result.verification.commands, [{ name: "test", categories: ["test"] }]);
+  assert.deepEqual(result.structure.enforcementTools, [{ tool: "github-actions", path: ".github/workflows/ci.yml" }]);
+  assert.deepEqual(verificationWarnings(result), []);
+});
+
+test("VER-01 acceptance: the only check lives in packages/testing, which is listed as other; its script name makes the root mention count", async (t) => {
+  const fixture = freshFixture(t, {
+    files: {
+      "package.json": packageJson(),
+      "CLAUDE.md": "# Monorepo\n\nRun `npm test` before you finish.\n",
+      "apps/package.json": packageJson({ scripts: { lint: "eslint ." } }),
+      "apps/web/package.json": packageJson({ name: "web" }),
+      "packages/testing/package.json": packageJson({ scripts: { test: "vitest run" } }),
+    },
+  });
+  const result = await scopedVerificationScan(fixture, ["apps/web"]);
+
+  assert.deepEqual(result.verification.commands, []);
+  assert.deepEqual(result.verification.packages, [
+    { path: "apps/web/package.json", where: "scope", status: "ok", commands: [] },
+    { path: "apps/package.json", where: "inherited", status: "ok", commands: [{ name: "lint", categories: ["lint"] }] },
+    { path: "packages/testing/package.json", where: "other", status: "ok", commands: [{ name: "test", categories: ["test"] }] },
+  ]);
+  assert.deepEqual(result.verification.mentioned, [{ script: "test", file: "CLAUDE.md", line: 3, text: "npm test" }]);
+});
+
+test("VER-01 acceptance: positive control, without a scope the packages of other layers are not read, and the root mention is not a listed name", async (t) => {
+  const fixture = freshFixture(t, {
+    files: {
+      "package.json": packageJson(),
+      "CLAUDE.md": "# Monorepo\n\nRun `npm test` before you finish.\n",
+      "packages/testing/package.json": packageJson({ scripts: { test: "vitest run" } }),
+    },
+  });
+  const result = await verificationScan(fixture);
+
+  assert.deepEqual(result.verification, { commands: [], mentioned: [] });
+});
+
+test("packages: a package.json that cannot be read or parsed is listed as such, one under node_modules is skipped, and the valid one is ok", async (t) => {
+  const fixture = freshFixture(t, {
+    files: {
+      "apps/web/package.json": packageJson({ scripts: { test: "node --test" } }),
+      "apps/web/bad/package.json": "{ not json",
+      "apps/web/bin/package.json": Buffer.from('{"scripts":{"test":"x"}}\u0000'),
+      "apps/web/node_modules/dep/package.json": packageJson({ scripts: { test: "node --test" } }),
+    },
+  });
+  const result = await scopedVerificationScan(fixture, ["apps/web"]);
+
+  assert.deepEqual(result.verification.packages, [
+    { path: "apps/web/bad/package.json", where: "scope", status: "invalid", commands: [] },
+    { path: "apps/web/bin/package.json", where: "scope", status: "unreadable", commands: [] },
+    { path: "apps/web/package.json", where: "scope", status: "ok", commands: [{ name: "test", categories: ["test"] }] },
+  ]);
+  assert.deepEqual(verificationWarnings(result), []);
+});
+
+test("packages: more than 100 package.json files keep the first 100 and count the rest in one warning; 100 give none", async (t) => {
+  const many = (count) =>
+    Object.fromEntries(Array.from({ length: count }, (_, index) => [`apps/web/pkg-${index}/package.json`, packageJson()]));
+  const over = freshFixture(t, { files: many(103) });
+  const overResult = await scopedVerificationScan(over, ["apps/web"]);
+
+  assert.equal(overResult.verification.packages.length, 100);
+  assert.deepEqual(verificationWarnings(overResult), [
+    { source: "verification", path: ".", reason: "scope-packages-cut", detail: "count=3" },
+  ]);
+
+  // Positive control: 99 extra files plus apps/web/package.json itself make exactly 100, which nothing cuts.
+  const exact = freshFixture(t, { files: { ...many(99), "apps/web/package.json": packageJson() } });
+  const exactResult = await scopedVerificationScan(exact, ["apps/web"]);
+  assert.equal(exactResult.verification.packages.length, 100);
+  assert.deepEqual(verificationWarnings(exactResult), []);
+});
+
+test("tools with a scope: the configs directly in an inherited folder and in the scope folder count; the ones deeper or outside do not", async (t) => {
+  const fixture = freshFixture(t, {
+    files: {
+      "biome.json": "{}\n",
+      ".github/workflows/ci.yml": "name: ci\n",
+      "apps/.eslintrc.json": "{}\n",
+      "apps/web/tsconfig.json": "{}\n",
+      "apps/web/src/tsconfig.json": "{}\n",
+      "apps/api/biome.json": "{}\n",
+      "apps/web/.github/workflows/local.yml": "name: local\n",
+    },
+  });
+  const result = await scopedVerificationScan(fixture, ["apps/web"]);
+
+  assert.deepEqual(result.structure.enforcementTools, [
+    { tool: "biome", path: "biome.json" },
+    { tool: "eslint", path: "apps/.eslintrc.json" },
+    { tool: "github-actions", path: ".github/workflows/ci.yml" },
+    { tool: "typescript", path: "apps/web/tsconfig.json" },
+  ]);
+  // Positive control: without a scope, only the root configs and the root workflows count.
+  const unscoped = await verificationScan(fixture);
+  assert.deepEqual(unscoped.structure.enforcementTools, [
+    { tool: "biome", path: "biome.json" },
+    { tool: "github-actions", path: ".github/workflows/ci.yml" },
+  ]);
+});
+
 test("verification: the measurements schema documents the verification, structure and packageManager fields", () => {
   const schema = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "schemas", "measurements.schema.json"), "utf8"));
   assert.deepEqual(schema.properties.verification.required, ["commands", "mentioned"]);
@@ -462,6 +608,32 @@ test("verification: the measurements schema documents the verification, structur
     "typecheck",
     "verify",
   ]);
+});
+
+test("a scoped result holds the values the schema describes: verification, with its packages, and the enforcement tools", async (t) => {
+  const fixture = freshFixture(t, {
+    files: {
+      ...monorepoWithRootCheck(),
+      "apps/package.json": packageJson({ scripts: { lint: "eslint ." } }),
+      "apps/web/bad/package.json": "{ not json",
+    },
+  });
+  const result = await scopedVerificationScan(fixture, ["apps/web"]);
+  const schema = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "schemas", "measurements.schema.json"), "utf8"));
+
+  assert.deepEqual(schemaProblems(schema.properties.verification, result.verification), []);
+  assert.deepEqual(schemaProblems(schema.properties.structure.properties.enforcementTools, result.structure.enforcementTools), []);
+});
+
+test("the measurements schema documents verification.packages as optional, with the three where values and the three statuses", () => {
+  const schema = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "schemas", "measurements.schema.json"), "utf8"));
+  const verification = schema.properties.verification;
+  assert.deepEqual(verification.required, ["commands", "mentioned"], "packages is optional: it is present only with a scope");
+  const packages = verification.properties.packages;
+  assert.deepEqual([...packages.items.required].sort(), ["commands", "path", "status", "where"]);
+  assert.deepEqual(packages.items.properties.where.enum, ["scope", "inherited", "other"]);
+  assert.deepEqual(packages.items.properties.status.enum, ["ok", "unreadable", "invalid"]);
+  assert.match(schema.properties.warnings.items.properties.reason.description, /scope-packages-cut/);
 });
 
 test("two CLI runs on a copy of pm-conflict give the same JSON, except meta", async (t) => {
@@ -486,4 +658,27 @@ test("two CLI runs on a copy of pm-conflict give the same JSON, except meta", as
     false,
     "no absolute path of this machine outside meta",
   );
+});
+
+test("tools with a scope: a config at the root of another layer counts when that layer has a package.json, and one without it does not", async (t) => {
+  const fixture = freshFixture(t, {
+    files: {
+      "packages/api/package.json": packageJson({ name: "api" }),
+      "packages/api/eslint.config.js": "export default [];\n",
+      "packages/api/src/tsconfig.json": "{}\n",
+      "packages/tools/eslint.config.js": "export default [];\n",
+      "apps/web/package.json": packageJson({ name: "web" }),
+      "apps/web/src/index.ts": "export {};\n",
+    },
+  });
+  const result = await scopedVerificationScan(fixture, ["apps/web"]);
+
+  assert.deepEqual(result.verification.packages, [
+    { path: "apps/web/package.json", where: "scope", status: "ok", commands: [] },
+    { path: "packages/api/package.json", where: "other", status: "ok", commands: [] },
+  ]);
+  assert.deepEqual(result.structure.enforcementTools, [{ tool: "eslint", path: "packages/api/eslint.config.js" }]);
+  // Positive control: without a scope the other layers are not read, and their configs are not listed.
+  const unscoped = await verificationScan(fixture);
+  assert.deepEqual(unscoped.structure.enforcementTools, []);
 });

@@ -615,3 +615,41 @@ test("hostile-exec: a scan runs nothing from the target, and still lists its hoo
   }
   assert.deepEqual(data.claudeConfig.mcpServers.map((item) => item.name), ["hostile"]);
 });
+
+test("claude-config: with a scope, a nested skill outside it is left out, and the root and inherited skills are kept", async (t) => {
+  const skill = (name) => `---\nname: ${name}\ndescription: The ${name} skill.\n---\nBody.\n`;
+  const fixture = makeFixture({
+    files: {
+      ".claude/skills/main/SKILL.md": skill("main"),
+      "apps/.claude/skills/shared/SKILL.md": skill("shared"),
+      "apps/web/.claude/skills/web/SKILL.md": skill("web"),
+      "apps/api/.claude/skills/api/SKILL.md": skill("api"),
+      "packages/a/.claude/skills/pkg/SKILL.md": skill("pkg"),
+    },
+  });
+  t.after(fixture.cleanup);
+  const skillPaths = (result) => result.claudeConfig.skills.map((item) => item.path);
+  const inventoryPaths = (result) => result.inventory.filter((item) => item.kind === "skill").map((item) => item.path);
+
+  const scoped = await scan({ root: fixture.root, measures: [claudeConfigMeasure], scope: ["apps/web"], now: FIXED_NOW });
+
+  // The root skill is global, the skill of apps is inherited and the skill of apps/web is inside the scope.
+  assert.deepEqual(skillPaths(scoped), [
+    ".claude/skills/main/SKILL.md",
+    "apps/.claude/skills/shared/SKILL.md",
+    "apps/web/.claude/skills/web/SKILL.md",
+  ]);
+  assert.deepEqual(inventoryPaths(scoped), skillPaths(scoped), "the inventory holds the same skills");
+  assert.equal(scoped.claudeConfig.skills.find((item) => item.path === "apps/web/.claude/skills/web/SKILL.md").scope, "nested");
+
+  // Positive control: without a scope the nested skill of apps/api and of packages/a are read too.
+  const plain = await scanOnly(fixture.root);
+  assert.deepEqual(skillPaths(plain), [
+    ".claude/skills/main/SKILL.md",
+    "apps/.claude/skills/shared/SKILL.md",
+    "apps/api/.claude/skills/api/SKILL.md",
+    "apps/web/.claude/skills/web/SKILL.md",
+    "packages/a/.claude/skills/pkg/SKILL.md",
+  ]);
+  assert.deepEqual(scoped.context.alwaysLoaded, plain.context.alwaysLoaded, "nested skills never count in the budget");
+});

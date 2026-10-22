@@ -246,7 +246,34 @@ function buildScenarios() {
   const ancestors = flagged({ userLayer: false, ancestors: true }, [ancestorEvidence]);
   const both = flagged({ userLayer: true, ancestors: true }, [userEvidence, ancestorEvidence]);
 
-  return { golden, rich, empty, userLayer, ancestors, both };
+  // A scan with a scope: the header names it, and the limits say what was measured inside it and what was read outside.
+  const scoped = cloneOf(run.measurements);
+  scoped.scope = { folders: ["apps/web"], inherited: [".", "apps"], files: { inScope: 3, outside: 5 } };
+  const scopedScenario = { measurements: scoped, findings: readGoldenFindings("findings.en.json"), catalog };
+
+  // A scan with a layer plan: the context section has one row per layer, and the nested skills are shown apart. The layer name
+  // has a pipe, which the table must escape.
+  const layered = cloneOf(run.measurements);
+  layered.context.byLayer = [
+    {
+      name: "web | front",
+      folders: ["apps/web"],
+      agent: "claude-code",
+      onDemand: { estTokens: 120, items: [{ path: "apps/web/CLAUDE.md", kind: "memory", estTokens: 120 }] },
+      nestedSkills: { estTokens: 30, items: [{ path: "apps/web/.claude/skills/x/SKILL.md", estTokens: 30 }] },
+      notCounted: [{ path: "apps/web/vendor/CLAUDE.md", reason: "claude-md-excludes" }],
+    },
+    {
+      name: "api",
+      folders: ["apps/api"],
+      agent: "claude-code",
+      onDemand: { estTokens: 0, items: [] },
+      nestedSkills: { estTokens: 0, items: [] },
+      notCounted: [],
+    },
+  ];
+  const layeredScenario = { measurements: layered, findings: readGoldenFindings("findings.en.json"), catalog };
+  return { golden, rich, empty, userLayer, ancestors, both, scoped: scopedScenario, layered: layeredScenario };
 }
 
 // The agentHarness of a scan that detects every registry agent, sorted by id as the scan writes them. Claude Code has every

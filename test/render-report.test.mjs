@@ -7,6 +7,7 @@ import { after, before, describe, test } from "node:test";
 import { writeStableJson } from "../scripts/lib/json-out.mjs";
 import { MARKERS, fillTemplate, missingField, renderReport } from "../scripts/lib/report.mjs";
 import { readCatalog } from "../scripts/lib/report-catalog.mjs";
+import { formatNumber } from "../scripts/lib/report-markdown.mjs";
 import { loadLabels } from "../scripts/lib/report-labels.mjs";
 import { loadRules } from "../scripts/lib/findings-validate.mjs";
 import {
@@ -104,6 +105,124 @@ describe("golden reports", () => {
     for (const name of ["report.en.md", "report.es.md"]) {
       assert.deepEqual(absolutePathsIn(readGolden(name)), [], name);
     }
+  });
+});
+
+describe("scope", () => {
+  // The labels of both languages, read from templates/, so that the tests compare with the exact text of the report.
+  const labelsEn = loadLabels(HARNESS_ROOT, "en");
+  const labelsEs = loadLabels(HARNESS_ROOT, "es");
+
+  // The scan's measurements with a scope: 3 files inside it and 5 outside.
+  function scopedMeasurements() {
+    const measurements = structuredClone(run.measurements);
+    measurements.scope = { folders: ["apps/web"], inherited: [".", "apps"], files: { inScope: 3, outside: 5 } };
+    return measurements;
+  }
+
+  test("with a scope, the header names the scope and the inherited folders, and the limits say what was measured and read", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements: scopedMeasurements() });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.ok(report.includes("- **Scope:** folders `apps/web`; inherited folders `.`, `apps`\n"), "the Scope header field");
+    assert.ok(report.includes(`${labelsEn["limits.scope"].replace("{outside}", "5")}\n`), "the scope paragraph of the limits");
+    assert.match(report, /^## Limits of this scan\n\n/m);
+  });
+
+  test("with a scope in Spanish, the report has the Alcance field and the Spanish scope paragraph", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.es.json"), measurements: scopedMeasurements() });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.ok(report.includes("- **Alcance:** carpetas `apps/web`; carpetas heredadas `.`, `apps`\n"), "the Alcance header field");
+    assert.ok(report.includes(`${labelsEs["limits.scope"].replace("{outside}", "5")}\n`), "the Spanish scope paragraph");
+    assert.doesNotMatch(report, /\*\*Scope:\*\*|The scan was limited to a scope/, "no English scope text in a Spanish report");
+  });
+
+  test("positive control: without a scope there is no scope field and no scope paragraph", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.doesNotMatch(report, /\*\*Scope:\*\*/);
+    assert.doesNotMatch(report, /The scan was limited to a scope/);
+  });
+});
+
+describe("context by layer", () => {
+  const labelsEn = loadLabels(HARNESS_ROOT, "en");
+  const labelsEs = loadLabels(HARNESS_ROOT, "es");
+
+  // The scan's measurements with a layer plan: a layer whose name has a pipe, and one with two folders.
+  function layeredMeasurements() {
+    const measurements = structuredClone(run.measurements);
+    measurements.context.byLayer = [
+      {
+        name: "web | front",
+        folders: ["apps/web"],
+        agent: "claude-code",
+        onDemand: { estTokens: 120, items: [{ path: "apps/web/CLAUDE.md", kind: "memory", estTokens: 120 }] },
+        nestedSkills: { estTokens: 30, items: [{ path: "apps/web/.claude/skills/x/SKILL.md", estTokens: 30 }] },
+        notCounted: [],
+      },
+      {
+        name: "api",
+        folders: ["apps/api", "apps/api/src"],
+        agent: "claude-code",
+        onDemand: { estTokens: 0, items: [] },
+        nestedSkills: { estTokens: 0, items: [] },
+        notCounted: [],
+      },
+    ];
+    return measurements;
+  }
+
+  // The row of a layer in the table: its cells, with the numbers formatted for the language of the findings.
+  function rowsOf(language, always) {
+    const num = (value) => formatNumber(value, language);
+    return {
+      web: `| web \\| front | \`apps/web\` | ${num(always)} | ${num(120)} | ${num(always + 120)} | ${num(30)} |`,
+      api: `| api | \`apps/api\`, \`apps/api/src\` | ${num(always)} | ${num(0)} | ${num(always)} | ${num(0)} |`,
+    };
+  }
+
+  test("with a layer plan, the context section has a row per layer, the total, and the nested skills apart (English)", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements: layeredMeasurements() });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    const always = run.measurements.context.alwaysLoaded.estTokensTotal;
+    const rows = rowsOf("en", always);
+    assert.ok(report.includes(`**${labelsEn["context.byLayer"]}:**\n\n`), "the lead-in of the table");
+    assert.ok(report.includes("| Layer | Folders | Always loaded | On demand in the layer | Total | Nested skills (not verified) |\n"), "the headers");
+    assert.ok(report.includes(`${rows.web}\n${rows.api}\n`), "one row per layer, in plan order, with the pipe escaped");
+    assert.ok(report.includes(`${labelsEn["context.byLayerNote"]}\n`), "the sentence that says what on demand means");
+    assert.ok(report.indexOf("**Context by layer:**") > report.indexOf("## Context budget"), "the table is in the context section");
+    assert.ok(report.indexOf("**Context by layer:**") < report.indexOf("## Limits of this scan"), "and before the limits");
+  });
+
+  test("the same table in Spanish carries the Spanish labels and the Spanish number format", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.es.json"), measurements: layeredMeasurements() });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    const always = run.measurements.context.alwaysLoaded.estTokensTotal;
+    const rows = rowsOf("es", always);
+    const headers = ["table.layer", "table.folders", "table.alwaysLoaded", "table.onDemand", "table.total", "table.nestedSkills"];
+    assert.ok(report.includes(`| ${headers.map((key) => labelsEs[key]).join(" | ")} |\n`), "the Spanish headers, from the labels");
+    assert.ok(report.includes(`${rows.web}\n${rows.api}\n`), "the rows with Spanish numbers");
+    assert.ok(report.includes(`${labelsEs["context.byLayerNote"]}\n`), "the Spanish sentence");
+    assert.doesNotMatch(report, /Context by layer|On demand in the layer/, "no English label in the Spanish report");
+  });
+
+  test("positive control: without a layer plan there is no table and no sentence of it", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.doesNotMatch(report, /Context by layer/);
+    assert.doesNotMatch(report, new RegExp(labelsEn["context.byLayerNote"].slice(0, 40).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   });
 });
 

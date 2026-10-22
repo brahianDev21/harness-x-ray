@@ -34,8 +34,10 @@ export const MAX_NAME_LENGTH = 80;
 export const MAX_REASON_LENGTH = 500;
 
 const SCHEMA_VERSION = 1;
-const LAYERS_FILE = "layers.json";
-const PLAN_FILE = "layer-plan.json";
+/** The name of the layer map in a run folder, written by map.mjs. */
+export const LAYERS_FILE = "layers.json";
+/** The name of the layer plan in a run folder, written by the agent. */
+export const PLAN_FILE = "layer-plan.json";
 const LAYERS_SHAPE = "an object with schemaVersion 1 and a folders list of strings";
 // Characters that are invisible or that change how a line is laid out: controls, format characters (the right-to-left
 // override U+202E, the zero-width joiner...), and line and paragraph separators.
@@ -104,15 +106,30 @@ export function validateLayerPlan(plan, layers) {
  * @throws {TypeError} When runDir is not an absolute path.
  */
 export function readLayerPlan(runDir) {
+  const { ok, errors } = loadLayerPlan(runDir);
+  return { ok, errors };
+}
+
+/**
+ * The same check as readLayerPlan, and the parsed files too, for a caller that needs the folders of the plan and the target
+ * that layers.json names (the scan command line does). plan and layers are the parsed files, or null when a file could not
+ * be read or parsed. Only when ok is true have they passed the checks; otherwise they are data that the caller must not use
+ * as a plan.
+ * @param {string} runDir Absolute path of the run folder.
+ * @returns {{ ok: boolean, errors: { pointer: string, message: string }[], plan: unknown, layers: unknown }}
+ * @throws {TypeError} When runDir is not an absolute path.
+ */
+export function loadLayerPlan(runDir) {
   if (typeof runDir !== "string" || !path.isAbsolute(runDir)) throw new TypeError("runDir must be an absolute folder");
   const errors = [];
-  const layers = readJsonFile(runDir, LAYERS_FILE, errors);
-  const plan = readJsonFile(runDir, PLAN_FILE, errors);
-  if (errors.length > 0) return { ok: false, errors };
+  const layers = readJsonFile(runDir, LAYERS_FILE, errors) ?? null;
+  const plan = readJsonFile(runDir, PLAN_FILE, errors) ?? null;
+  if (errors.length > 0) return { ok: false, errors, plan, layers };
   if (!hasLayersShape(layers)) {
-    return { ok: false, errors: [{ pointer: "", message: `${LAYERS_FILE} is not a layers.json: ${LAYERS_SHAPE}` }] };
+    const error = { pointer: "", message: `${LAYERS_FILE} is not a layers.json: ${LAYERS_SHAPE}` };
+    return { ok: false, errors: [error], plan, layers };
   }
-  return validateLayerPlan(plan, layers);
+  return { ...validateLayerPlan(plan, layers), plan, layers };
 }
 
 // The folders of layers.json as a set. A value of another shape is a caller's mistake, so it throws.

@@ -55,9 +55,9 @@ function copyOf(t, name, description = {}) {
   return fixture;
 }
 
-// Runs only the duplication measure and returns its section and the warnings that it wrote.
-async function scanDuplication(root, options) {
-  const result = await scan({ root, measures: [createDuplicationMeasure(options)], now: FIXED_NOW });
+// Runs only the duplication measure and returns its section and the warnings that it wrote. A scope is optional.
+async function scanDuplication(root, options, scope) {
+  const result = await scan({ root, measures: [createDuplicationMeasure(options)], now: FIXED_NOW, scope });
   return { section: result.code.duplication, warnings: ownWarnings(result) };
 }
 
@@ -403,6 +403,81 @@ test("performance: a 100-line boilerplate in 1000 files finishes in under five s
   assert.equal(section.groups[0].copies.length, 1000);
   assert.equal(section.redundantLines, 99900);
   assert.equal(section.duplicatedLinesPct, 99.9);
+});
+
+test("scope: only the files inside the scope are read and measured, so a copy outside the scope is not seen", async (t) => {
+  const block = statements(10, "s");
+  const fixture = freshFixture(t, {
+    files: {
+      "apps/web/src/a.js": `${block.join("\n")}\n`,
+      "apps/web/src/b.js": `${block.join("\n")}\n`,
+      "apps/api/src/c.js": `${block.join("\n")}\n`,
+      "apps/api/src/d.js": `${block.join("\n")}\n`,
+    },
+  });
+  const { section, warnings } = await scanDuplication(fixture.root, undefined, ["apps/web"]);
+
+  assert.equal(section.filesScanned, 2);
+  assert.equal(section.linesScanned, 20);
+  assert.deepEqual(section.groups, [
+    {
+      lines: 10,
+      redundantLines: 10,
+      copies: [
+        { file: "apps/web/src/a.js", line: 1, endLine: 10 },
+        { file: "apps/web/src/b.js", line: 1, endLine: 10 },
+      ],
+    },
+  ]);
+  assert.equal(section.duplicatedLinesPct, 50, "the share is over the files inside the scope");
+  assert.deepEqual(warnings, []);
+});
+
+test("scope: positive control, the same four files without a scope give one group of four copies and a share of 75", async (t) => {
+  const block = statements(10, "s");
+  const fixture = freshFixture(t, {
+    files: {
+      "apps/web/src/a.js": `${block.join("\n")}\n`,
+      "apps/web/src/b.js": `${block.join("\n")}\n`,
+      "apps/api/src/c.js": `${block.join("\n")}\n`,
+      "apps/api/src/d.js": `${block.join("\n")}\n`,
+    },
+  });
+  const { section } = await scanDuplication(fixture.root);
+
+  assert.equal(section.filesScanned, 4);
+  assert.equal(section.groupCount, 1);
+  assert.deepEqual(
+    section.groups[0].copies.map((copy) => copy.file),
+    ["apps/api/src/c.js", "apps/api/src/d.js", "apps/web/src/a.js", "apps/web/src/b.js"],
+  );
+  assert.equal(section.duplicatedLinesPct, 75);
+});
+
+test("scope: the scope filter runs before the caps, so files outside the scope are neither read nor counted as cut", async (t) => {
+  const fixture = freshFixture(t, {
+    files: {
+      "apps/web/src/a.js": "export const a = 1;\n",
+      "apps/web/src/b.js": "export const b = 2;\n",
+      "apps/api/src/c.js": "export const c = 3;\n",
+      "apps/api/src/d.js": "export const d = 4;\n",
+    },
+  });
+  const reads = [];
+  const result = await scan({
+    root: fixture.root,
+    measures: [recordingReads({ maxFiles: 2 }, reads)],
+    now: FIXED_NOW,
+    scope: ["apps/web"],
+  });
+
+  assert.deepEqual(reads, ["apps/web/src/a.js", "apps/web/src/b.js"]);
+  assert.equal(result.code.duplication.filesScanned, 2);
+  assert.deepEqual(ownWarnings(result), [], "the two files outside the scope are not a cut");
+
+  // Positive control: the same target without a scope cuts the two files beyond the cap.
+  const unscoped = await scan({ root: fixture.root, measures: [createDuplicationMeasure({ maxFiles: 2 })], now: FIXED_NOW });
+  assert.deepEqual(ownWarnings(unscoped), [{ source: MEASURE_ID, path: ".", reason: "code-files-cut", detail: "count=2" }]);
 });
 
 test("generated, vendored and non-code files are never read", async (t) => {
