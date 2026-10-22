@@ -5,10 +5,12 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { claudeConfigMeasure } from "../scripts/lib/claude-config.mjs";
 import { toStableJson } from "../scripts/lib/json-out.mjs";
 import { createMemoryMeasure, memoryMeasure } from "../scripts/lib/memory.mjs";
 import { DEFAULT_MAX_BYTES } from "../scripts/lib/safe-fs.mjs";
 import { scan } from "../scripts/lib/scanner.mjs";
+import { estimateTokens } from "../scripts/lib/tokens.mjs";
 import { makeFixture, symlinkSupport } from "./helpers/make-fixture.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -552,11 +554,176 @@ test("memory: the CLI gives the same JSON twice, except meta, on the imports fix
   assert.equal(withoutMetaText(rawFirst), withoutMetaText(rawSecond));
 });
 
+// Memory and claude-config together, as in the production scan: the exclusion list comes from claude-config.
+async function scanWithConfig(t, files, extra = []) {
+  const fixture = freshFixture(t, { files });
+  return memoryScan(fixture.root, fixture.base, { extra: [...extra, claudeConfigMeasure] });
+}
+
+const SKILL = (name) => `---\nname: ${name}\ndescription: The ${name} skill.\n---\nBody.\n`;
+
+test("memory: claudeMdExcludes lists the files it matches as not-loaded, never reads them, and keeps the others", async (t) => {
+  const { seen, probe } = memoryProbe();
+  const result = await scanWithConfig(t, {
+    ".claude/settings.json": JSON.stringify({ claudeMdExcludes: ["**/vendor/**"] }),
+    ".claude/settings.local.json": JSON.stringify({ claudeMdExcludes: ["**/drafts/**"] }),
+    "CLAUDE.md": "# Root\n\nRoot memory.\n",
+    "vendor/lib/CLAUDE.md": `# Vendor\n\n${WITNESS}\n`,
+    "vendor/lib/AGENTS.md": "# Vendor agents\n",
+    "drafts/CLAUDE.md": "# Drafts\n",
+    "app/CLAUDE.md": "# App\n\nApp memory.\n",
+  }, [probe]);
+
+  const vendor = item(result, "vendor/lib/CLAUDE.md");
+  assert.equal(vendor.loadMode, "not-loaded");
+  assert.equal(vendor.loadReason, "claude-md-excludes");
+  assert.equal(vendor.excludedBy, "**/vendor/**");
+  assert.equal(vendor.lines, null, "an excluded file is never read");
+  assert.equal(vendor.estTokens, null);
+  assert.ok(vendor.bytes > 0, "its size is still known");
+  assert.equal(item(result, "vendor/lib/AGENTS.md").excludedBy, "**/vendor/**");
+  // The pattern of the local file excludes this one; the shared file's pattern does not match it.
+  assert.equal(item(result, "drafts/CLAUDE.md").excludedBy, "**/drafts/**");
+  // Positive control: a file that no pattern matches stays on demand, and has no excludedBy.
+  const app = item(result, "app/CLAUDE.md");
+  assert.equal(app.loadMode, "on-demand");
+  assert.equal(app.loadReason, "subfolder memory, loaded when a file in its folder is read");
+  assert.equal("excludedBy" in app, false);
+  assert.equal(item(result, "CLAUDE.md").loadMode, "always");
+
+  // The budget counts the root file only. The excluded files are not in it, and nothing reads them.
+  const budget = result.context.alwaysLoaded.byComponent.find((component) => component.component === "memory");
+  assert.deepEqual(budget.items.map((entry) => entry.path), ["CLAUDE.md"]);
+  assert.equal(budget.estTokens, estimateTokens("# Root\n\nRoot memory.\n").estTokens);
+  assert.deepEqual(seen.entries.map(([file]) => file), ["CLAUDE.md"], "only the root file is in ctx.memory");
+  assertNoWitness(result, seen);
+});
+
+test("memory: an import of an excluded file is listed as excluded, and the imports of that file are not followed", async (t) => {
+  const scanned = await scanWithConfig(t, {
+    ".claude/settings.json": JSON.stringify({ claudeMdExcludes: ["**/vendor/**"] }),
+    "CLAUDE.md": "# Root\n\n@vendor/notes.md\n@docs/extra.md\n",
+    "vendor/notes.md": "# Notes\n\n@deep/file.md\n",
+    "deep/file.md": "# Deep\n",
+    "docs/extra.md": "# Extra\n",
+  });
+  const result = scanned;
+
+  const imports = result.context.imports;
+  assert.equal(imports.find((entry) => entry.ref === "vendor/notes.md").status, "excluded");
+  assert.equal(imports.find((entry) => entry.ref === "docs/extra.md").status, "ok", "positive control: an import that is not excluded is loaded");
+  assert.equal(item(result, "vendor/notes.md").loadReason, "claude-md-excludes");
+  assert.equal(item(result, "docs/extra.md").loadMode, "always");
+  assert.equal(result.inventory.some((entry) => entry.path === "deep/file.md"), false, "an import of an excluded file is not followed");
+});
+
+test("memory: a rule that claudeMdExcludes matches is not loaded, and other rules keep their mode", async (t) => {
+  const scanned = await scanWithConfig(t, {
+    ".claude/settings.json": JSON.stringify({ claudeMdExcludes: ["**/shared.md"] }),
+    "CLAUDE.md": "# Root\n",
+    ".claude/rules/shared.md": "# Shared rule\n",
+    ".claude/rules/general.md": "# General rule\n",
+    ".claude/rules/scoped.md": "---\npaths: src/**\n---\n# Scoped rule\n",
+  });
+  const result = scanned;
+
+  const shared = item(result, ".claude/rules/shared.md");
+  assert.equal(shared.loadMode, "not-loaded");
+  assert.equal(shared.excludedBy, "**/shared.md");
+  assert.equal(shared.lines, null);
+  assert.equal(item(result, ".claude/rules/general.md").loadMode, "always", "positive control: a rule without paths still loads");
+  assert.equal(item(result, ".claude/rules/scoped.md").loadMode, "on-demand", "positive control: a rule with paths is on demand");
+  const budget = result.context.alwaysLoaded.byComponent.find((component) => component.component === "memory");
+  assert.equal(budget.items.some((entry) => entry.path === ".claude/rules/shared.md"), false);
+});
+
+test("memory: a claudeMdExcludes entry that is invalid does not stop a valid pattern from excluding a file", async (t) => {
+  const scanned = await scanWithConfig(t, {
+    ".claude/settings.json": JSON.stringify({ claudeMdExcludes: ["[", "**/vendor/**", 4] }),
+    "CLAUDE.md": "# Root\n",
+    "vendor/CLAUDE.md": "# Vendor\n",
+    "app/CLAUDE.md": "# App\n",
+  });
+
+  assert.equal(item(scanned, "vendor/CLAUDE.md").excludedBy, "**/vendor/**");
+  assert.equal(item(scanned, "app/CLAUDE.md").loadMode, "on-demand", "positive control: a file no valid pattern matches");
+});
+
+test("memory: a repository that excludes its own test fixtures lists their memory files as excluded and their skills as nested", async (t) => {
+  const scanned = await scanWithConfig(t, {
+    ".claude/settings.json": JSON.stringify({ claudeMdExcludes: ["**/test/fixtures/**"] }),
+    "CLAUDE.md": "# Repository\n",
+    "test/fixtures/a/CLAUDE.md": "# Fixture\n",
+    "test/fixtures/a/AGENTS.md": "# Fixture agents\n",
+    "test/fixtures/a/.claude/skills/x/SKILL.md": SKILL("x"),
+  });
+
+  assert.equal(item(scanned, "test/fixtures/a/CLAUDE.md").excludedBy, "**/test/fixtures/**");
+  assert.equal(item(scanned, "test/fixtures/a/AGENTS.md").loadMode, "not-loaded");
+  assert.equal(item(scanned, "CLAUDE.md").loadMode, "always");
+  const [skill] = scanned.claudeConfig.skills;
+  assert.equal(skill.path, "test/fixtures/a/.claude/skills/x/SKILL.md");
+  assert.equal(skill.scope, "nested");
+  assert.equal(skill.loadMode, "on-demand");
+});
+
+test("memory: when the only root CLAUDE.md is excluded, AGENTS.md has its own reason; a CLAUDE.md that loads keeps the old one", async (t) => {
+  const excluded = await scanWithConfig(t, {
+    ".claude/settings.json": JSON.stringify({ claudeMdExcludes: ["CLAUDE.md"] }),
+    "CLAUDE.md": "# Root\n",
+    "AGENTS.md": "# Agents\n",
+  });
+  assert.equal(item(excluded, "CLAUDE.md").loadReason, "claude-md-excludes");
+  const agents = item(excluded, "AGENTS.md");
+  assert.equal(agents.loadMode, "not-loaded", "the budget is unchanged: AGENTS.md is not loaded");
+  assert.equal(agents.loadReason, "claude-md-excluded-agents-unverified");
+  assert.equal(agents.lines, 1, "the AGENTS file is still read for its size");
+
+  // Positive control: a root CLAUDE.md that is not excluded keeps the existing reason.
+  const loads = await scanWithConfig(t, {
+    ".claude/settings.json": JSON.stringify({ claudeMdExcludes: ["**/vendor/**"] }),
+    "CLAUDE.md": "# Root\n",
+    "AGENTS.md": "# Agents\n",
+  });
+  assert.equal(item(loads, "CLAUDE.md").loadMode, "always");
+  assert.equal(item(loads, "AGENTS.md").loadReason, "a CLAUDE.md exists and does not import it");
+
+  // Mixed: one root CLAUDE file is excluded and another loads, so the existing reason stays.
+  const mixed = await scanWithConfig(t, {
+    ".claude/settings.json": JSON.stringify({ claudeMdExcludes: ["CLAUDE.md"] }),
+    "CLAUDE.md": "# Root\n",
+    "CLAUDE.local.md": "# Local\n",
+    "AGENTS.md": "# Agents\n",
+  });
+  assert.equal(item(mixed, "CLAUDE.local.md").loadMode, "always", "positive control: the local file is not excluded");
+  assert.equal(item(mixed, "AGENTS.md").loadReason, "a CLAUDE.md exists and does not import it");
+});
+
+test("memory: an absolute claudeMdExcludes pattern is a warning and excludes nothing, while a relative pattern excludes (positive control)", async (t) => {
+  const absolute = await scanWithConfig(t, {
+    ".claude/settings.json": JSON.stringify({ claudeMdExcludes: ["/CLAUDE.md", "C:/work/**"] }),
+    "CLAUDE.md": "# Root\n",
+  });
+  assert.ok(
+    absolute.warnings.some((warning) => warning.source === "claude-config" && warning.reason === "unsupported-pattern"),
+    "an absolute pattern is an unsupported-pattern warning",
+  );
+  assert.equal(item(absolute, "CLAUDE.md").loadMode, "always", "the root CLAUDE.md stays loaded");
+  assert.equal("excludedBy" in item(absolute, "CLAUDE.md"), false);
+
+  const relative = await scanWithConfig(t, {
+    ".claude/settings.json": JSON.stringify({ claudeMdExcludes: ["CLAUDE.md"] }),
+    "CLAUDE.md": "# Root\n",
+  });
+  assert.equal(item(relative, "CLAUDE.md").loadReason, "claude-md-excludes", "positive control: a relative pattern excludes the file");
+  assert.equal(relative.warnings.some((warning) => warning.reason === "unsupported-pattern"), false);
+});
+
 test("memory: the measurements schema documents the memory fields", () => {
   const schema = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "schemas", "measurements.schema.json"), "utf8"));
   const context = schema.properties.context;
   assert.deepEqual([...context.required].sort(), ["alwaysLoaded", "ancestors", "imports", "limits"]);
-  assert.deepEqual(context.properties.imports.items.properties.status.enum, ["ok", "broken", "external", "too-deep", "cycle"]);
+  assert.deepEqual(context.properties.imports.items.properties.status.enum, ["ok", "broken", "external", "too-deep", "cycle", "excluded"]);
   assert.deepEqual(context.properties.limits.items.properties.limit.enum, ["memory-lines", "memory-bytes"]);
   assert.ok(context.properties.ancestors.items.required.includes("bytes"));
   assert.deepEqual(

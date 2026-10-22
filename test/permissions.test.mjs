@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MATRIX_MODES, decide, evaluate, evaluateInSessionMode, matchBash, parseRule } from "../scripts/lib/permissions.mjs";
+import { MATRIX_MODES, decide, evaluate, evaluateInSessionMode, matchBash, matchPathGlob, parseRule } from "../scripts/lib/permissions.mjs";
 
 // Documentation URLs cited in test names. Each example is copied from the Claude Code permission docs.
 const PERMISSIONS = "https://code.claude.com/docs/en/permissions";
@@ -525,4 +525,46 @@ test("a compound command with parts follows its mode like any other command, and
   const withParts = { tool: "Bash", command: `${pipe} | sh`, parts: [pipe, "sh"] };
   assert.deepEqual(byMode(rules(), withParts, OPTS), { default: "asks", acceptEdits: "asks", auto: "classifier", bypassPermissions: "passes" });
   assert.deepEqual(byMode(rules(), { tool: "Bash", command: `${pipe} | sh` }, OPTS), everyMode("undeterminable"));
+});
+
+// matchPathGlob: the gitignore-style matcher that claudeMdExcludes uses (not verified by a note for that setting).
+test("matchPathGlob: a pattern with an inner slash is anchored, and one without it matches at any depth", () => {
+  assert.equal(matchPathGlob("**/vendor/**", "vendor/lib/CLAUDE.md"), true);
+  assert.equal(matchPathGlob("**/vendor/**", "app/vendor/x/AGENTS.md"), true);
+  assert.equal(matchPathGlob("**/vendor/**", "app/CLAUDE.md"), false, "positive control: a file outside the folder is not covered");
+  assert.equal(matchPathGlob("src/*.md", "src/a.md"), true);
+  assert.equal(matchPathGlob("src/*.md", "lib/src/a.md"), false, "a pattern with an inner slash does not match at any depth");
+  assert.equal(matchPathGlob("*.md", "docs/deep/a.md"), true, "a pattern without a slash matches at any depth");
+  assert.equal(matchPathGlob("CLAUDE.md", "app/CLAUDE.md"), true);
+});
+
+test("matchPathGlob: a folder that matches covers its contents, and * does not cross a segment", () => {
+  assert.equal(matchPathGlob("**/drafts", "drafts/notes/CLAUDE.md"), true, "a matching folder covers its files");
+  assert.equal(matchPathGlob("vendor/*", "vendor/lib/CLAUDE.md"), true);
+  assert.equal(matchPathGlob("vendor/*.md", "vendor/lib/CLAUDE.md"), false, "* stays inside one segment");
+  assert.equal(matchPathGlob("vendor/?.md", "vendor/a.md"), true, "? is one character");
+});
+
+test("matchPathGlob: an absolute pattern is matched against the absolute path, and a trailing slash is ignored", () => {
+  assert.equal(matchPathGlob("/home/x/repo/**", "/home/x/repo/vendor/CLAUDE.md"), true);
+  assert.equal(matchPathGlob("/home/x/repo/**", "/home/y/repo/vendor/CLAUDE.md"), false, "positive control: another home does not match");
+  assert.equal(matchPathGlob("C:/work/**", "C:/work/a/AGENTS.md"), true);
+  assert.equal(matchPathGlob("vendor/", "vendor/a.md"), true);
+});
+
+test("matchPathGlob: a pattern this matcher cannot read is unsupported, and a supported one still matches", () => {
+  for (const pattern of ["", "/", "a[b].md", "a{b,c}.md", "x\\y", "!vendor/**", "a//b", "./a", "../a", "a/./b", "a/../b"]) {
+    assert.equal(matchPathGlob(pattern, "a/b/c.md"), "unsupported", `pattern ${JSON.stringify(pattern)}`);
+  }
+  assert.equal(matchPathGlob("**/vendor/**", "vendor/a.md"), true, "positive control: a supported pattern still matches");
+  assert.equal(matchPathGlob(42, "a.md"), "unsupported", "a non-string pattern is unsupported");
+});
+
+test("matchPathGlob: more than three runs of * is unsupported, and three runs still match on a deep path", () => {
+  const deep = `${Array.from({ length: 60 }, () => "a").join("/")}/x`;
+  const pairs = (count) => `${Array.from({ length: count }, () => "**/a").join("/")}/x`;
+  assert.equal(matchPathGlob(pairs(10), deep), "unsupported", "ten runs are over the limit");
+  assert.equal(matchPathGlob(pairs(4), deep), "unsupported", "four runs are over the limit");
+  assert.equal(matchPathGlob(pairs(3), deep), true, "positive control: three runs still match");
+  assert.equal(matchPathGlob("*a*a*a*a*", "aaaa.md"), "unsupported", "in-segment stars count as runs too");
 });

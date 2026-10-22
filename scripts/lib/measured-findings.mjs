@@ -16,6 +16,7 @@
 // A section that a scan did not write (for example a scan with no measures) means no finding, never an error.
 // Thresholds come from thresholds.mjs, and the category of a script name from verification.mjs.
 
+import { CLAUDE_EXCLUDED_AGENTS_REASON, EXCLUDED_REASON } from "./memory.mjs";
 import { categoriesOfScriptName } from "./verification.mjs";
 import { THRESHOLDS } from "./thresholds.mjs";
 
@@ -202,7 +203,13 @@ function emitAlwaysLoadedBudget(measurements) {
 
 // ---------------------------------------------------------------------------------------------------
 // CTX-07 AGENTS.md not loaded: one finding per AGENTS entry that the scan marks not-loaded. The cause is a CLAUDE file
-// in the target when the inventory has one that loads, otherwise a CLAUDE file in an ancestor folder.
+// in the target when the inventory has one that loads, otherwise a CLAUDE file in an ancestor folder. An AGENTS file that
+// claudeMdExcludes matches is not counted: it is not loaded because of that setting, not because of a CLAUDE file. An
+// AGENTS file whose only root CLAUDE files are excluded (loadReason claude-md-excluded-agents-unverified) is undeterminable:
+// whether Claude Code loads it is not verified by a note, so it is never a finding.
+
+const CLAUDE_EXCLUDED_UNDETERMINABLE =
+  "the root CLAUDE.md files match claudeMdExcludes, so whether Claude Code loads this AGENTS file is not verified (not verified by a note)";
 
 function emitAgentsMdNotLoaded(measurements) {
   const inventory = listAt(measurements.inventory);
@@ -214,15 +221,23 @@ function emitAgentsMdNotLoaded(measurements) {
   if (inTarget !== undefined) cause = { causedBy: "target", file: inTarget.path };
   else if (ancestor !== undefined) cause = { causedBy: "ancestor", file: ancestor.path };
 
-  const findings = inventory.map((item, index) => {
-    if (item.kind !== "memory" || item.loadMode !== "not-loaded" || !AGENTS_FILE_NAMES.includes(item.path)) return null;
+  const findings = [];
+  const undeterminable = [];
+  inventory.forEach((item, index) => {
+    if (item.kind !== "memory" || item.loadMode !== "not-loaded" || item.loadReason === EXCLUDED_REASON) return;
+    if (!AGENTS_FILE_NAMES.includes(item.path)) return;
+    const pointer = `/inventory/${index}`;
+    if (item.loadReason === CLAUDE_EXCLUDED_AGENTS_REASON) {
+      undeterminable.push(undeterminableOf("CTX-07", pointer, CLAUDE_EXCLUDED_UNDETERMINABLE));
+      return;
+    }
     const evidence = [evidenceOf(item.path)];
     if (cause.file !== undefined) evidence.push(evidenceOf(cause.file));
     const detail = { causedBy: cause.causedBy };
-    const triggers = [trigger("agents-md-not-loaded", "medium", `/inventory/${index}`, { detail })];
-    return measuredFinding("CTX-07", triggers, evidence);
+    const triggers = [trigger("agents-md-not-loaded", "medium", pointer, { detail })];
+    findings.push(measuredFinding("CTX-07", triggers, evidence));
   });
-  return { findings: compact(findings), undeterminable: [] };
+  return { findings: compact(findings), undeterminable };
 }
 
 function baseName(relPath) {
@@ -574,8 +589,10 @@ function buildCandidates(measurements) {
     candidates.push({ kind: "hook-script", rules: [...HOOK_RULES], measurementRef: scripts.get(file), file });
   }
 
+  // A memory or rule file that claudeMdExcludes matches is not read by Claude Code, so it is not a candidate.
   listAt(measurements.inventory).forEach((item, index) => {
     if (item.kind !== "memory" && item.kind !== "rule") return;
+    if (item.loadReason === EXCLUDED_REASON) return;
     candidates.push({
       kind: "memory-file",
       rules: [...MEMORY_RULES],

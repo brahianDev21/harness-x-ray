@@ -351,6 +351,148 @@ test("claude-config: unexpected shapes inside a settings file are warnings, and 
   ]);
 });
 
+test("claude-config: claudeMdExcludes is read from both settings files, in file order, and the output is sorted", async (t) => {
+  const fixture = makeFixture({
+    files: {
+      ".claude/settings.json": JSON.stringify({ claudeMdExcludes: ["**/vendor/**"] }),
+      ".claude/settings.local.json": JSON.stringify({ claudeMdExcludes: ["**/drafts/**"] }),
+    },
+  });
+  t.after(fixture.cleanup);
+
+  const result = await scanOnly(fixture.root);
+
+  assert.deepEqual(result.claudeConfig.claudeMdExcludes, [
+    { pattern: "**/drafts/**", source: ".claude/settings.local.json" },
+    { pattern: "**/vendor/**", source: ".claude/settings.json" },
+  ]);
+});
+
+test("claude-config: invalid claudeMdExcludes entries are warnings, the scan exits 0 and the valid patterns still apply", async (t) => {
+  const fixture = makeFixture({
+    files: {
+      ".claude/settings.json": JSON.stringify({ claudeMdExcludes: ["**/vendor/**", 7, "a[b].md", "a//b", "", "**/a/**/b/**/c/**/d"] }),
+    },
+  });
+  t.after(fixture.cleanup);
+  const out = path.join(fixture.base, "out");
+
+  const result = await runScan([fixture.root, "--out", out]);
+
+  assert.equal(result.code, 0, result.stderr);
+  const data = JSON.parse(fs.readFileSync(path.join(out, "measurements.json"), "utf8"));
+  assert.deepEqual(
+    configWarnings(data).map((warning) => `${warning.reason}:${warning.detail}`).sort(),
+    ["unexpected-shape:claudeMdExcludes", "unsupported-pattern:claudeMdExcludes"],
+  );
+  assert.deepEqual(data.claudeConfig.claudeMdExcludes, [{ pattern: "**/vendor/**", source: ".claude/settings.json" }]);
+  assert.equal(JSON.stringify(data.claudeConfig).includes("a[b].md"), false, "an unsupported pattern is never copied");
+});
+
+test("claude-config: a claudeMdExcludes value that is not a list is one warning and excludes nothing", async (t) => {
+  const fixture = makeFixture({ files: { ".claude/settings.json": JSON.stringify({ claudeMdExcludes: "**/vendor/**" }) } });
+  t.after(fixture.cleanup);
+
+  const result = await scanOnly(fixture.root);
+
+  assert.deepEqual(result.claudeConfig.claudeMdExcludes, []);
+  assert.deepEqual(configWarnings(result), [
+    { source: "claude-config", path: ".claude/settings.json", reason: "unexpected-shape", detail: "claudeMdExcludes" },
+  ]);
+});
+
+test("claude-config: nested skills are inventoried on demand with their scope, and commands and subagents below the root are not", async (t) => {
+  const skill = (name, extra = "") => `---\nname: ${name}\ndescription: The ${name} skill.\n${extra}---\nBody.\n`;
+  const fixture = makeFixture({
+    files: {
+      ".claude/settings.json": JSON.stringify({ claudeMdExcludes: ["**/vendor/**"] }),
+      ".claude/skills/main/SKILL.md": skill("main"),
+      ".claude/skills/SKILL.md": skill("stray"),
+      ".claude/commands/root-cmd.md": "---\ndescription: Root command.\n---\nBody.\n",
+      "vendor/lib/.claude/skills/tool/SKILL.md": skill("tool"),
+      "app/.claude/skills/helper/SKILL.md": skill("helper", "disable-model-invocation: true\n"),
+      "vendor/lib/.claude/commands/nested-cmd.md": "---\ndescription: Nested command.\n---\nBody.\n",
+      "vendor/lib/.claude/agents/nested-agent.md": skill("nested-agent"),
+    },
+  });
+  t.after(fixture.cleanup);
+
+  const result = await scanOnly(fixture.root);
+  const { claudeConfig } = result;
+
+  // A skill is kept by its path. The stray SKILL.md directly in the root skills folder is not a skill.
+  assert.deepEqual(claudeConfig.skills.map((item) => item.path), [
+    ".claude/skills/main/SKILL.md",
+    "app/.claude/skills/helper/SKILL.md",
+    "vendor/lib/.claude/skills/tool/SKILL.md",
+  ]);
+  const byPath = new Map(claudeConfig.skills.map((item) => [item.path, item]));
+  assert.equal(byPath.get(".claude/skills/main/SKILL.md").scope, "root");
+  assert.equal(byPath.get(".claude/skills/main/SKILL.md").loadMode, "always");
+  // Not verified by a note: nested skills are on demand, and a nested skill with disable-model-invocation is not loaded.
+  assert.equal(byPath.get("vendor/lib/.claude/skills/tool/SKILL.md").scope, "nested");
+  assert.equal(byPath.get("vendor/lib/.claude/skills/tool/SKILL.md").loadMode, "on-demand", "claudeMdExcludes does not apply to skills");
+  assert.equal(byPath.get("app/.claude/skills/helper/SKILL.md").loadMode, "not-loaded");
+
+  const inventory = (rel) => result.inventory.find((item) => item.path === rel);
+  assert.equal(inventory("vendor/lib/.claude/skills/tool/SKILL.md").loadReason, "nested-skill");
+  assert.equal(inventory("vendor/lib/.claude/skills/tool/SKILL.md").loadMode, "on-demand");
+  assert.equal(inventory(".claude/skills/main/SKILL.md").loadReason, "the body loads when invoked");
+
+  // Only the root skill is in the budget: a nested skill never is.
+  const skills = result.context.alwaysLoaded.byComponent.find((component) => component.component === "skills");
+  assert.deepEqual(skills.items.map((item) => item.path), [".claude/skills/main/SKILL.md"]);
+  assert.equal(skills.estTokens, byPath.get(".claude/skills/main/SKILL.md").estTokens);
+
+  // Nested commands and subagents are not inventoried. The root command still is.
+  assert.deepEqual(claudeConfig.commands.map((item) => item.path), [".claude/commands/root-cmd.md"]);
+  assert.deepEqual(claudeConfig.subagents, []);
+  assert.equal(result.inventory.some((item) => item.path === "vendor/lib/.claude/commands/nested-cmd.md"), false);
+  assert.equal(result.inventory.some((item) => item.path === "vendor/lib/.claude/agents/nested-agent.md"), false);
+});
+
+test("claude-config: a skill inside a root skill's folder is listed once, as root (positive control: a skill in a subfolder is nested)", async (t) => {
+  const skill = (name) => `---\nname: ${name}\ndescription: The ${name} skill.\n---\nBody.\n`;
+  const fixture = makeFixture({
+    files: {
+      ".claude/skills/outer/SKILL.md": skill("outer"),
+      ".claude/skills/outer/.claude/skills/inner/SKILL.md": skill("inner"),
+      "vendor/lib/.claude/skills/tool/SKILL.md": skill("tool"),
+    },
+  });
+  t.after(fixture.cleanup);
+
+  const result = await scanOnly(fixture.root);
+  const innerPath = ".claude/skills/outer/.claude/skills/inner/SKILL.md";
+
+  const inner = result.claudeConfig.skills.filter((item) => item.path === innerPath);
+  assert.equal(inner.length, 1, "the path is listed once");
+  assert.equal(inner[0].scope, "root", "the root walk found it first");
+  assert.equal(result.claudeConfig.skills.find((item) => item.path === "vendor/lib/.claude/skills/tool/SKILL.md").scope, "nested");
+});
+
+test("claude-config: inside git, a nested skill is listed only when git tracks it; a root skill comes from the disk walk", async (t) => {
+  const skill = (name) => `---\nname: ${name}\ndescription: The ${name} skill.\n---\nBody.\n`;
+  const fixture = makeFixture({
+    git: true,
+    files: { "vendor/lib/.claude/skills/tracked/SKILL.md": skill("tracked") },
+  });
+  t.after(fixture.cleanup);
+  // Written after the commit, so git does not track these two files.
+  for (const rel of ["vendor/lib/.claude/skills/untracked/SKILL.md", ".claude/skills/loose/SKILL.md"]) {
+    fs.mkdirSync(path.dirname(path.join(fixture.root, rel)), { recursive: true });
+    fs.writeFileSync(path.join(fixture.root, rel), skill(path.basename(path.dirname(rel))));
+  }
+
+  const result = await scanOnly(fixture.root);
+
+  assert.equal(result.target.fileListSource, "git", "positive control: the scan used the git file list");
+  const nested = result.claudeConfig.skills.filter((item) => item.scope === "nested").map((item) => item.path);
+  assert.deepEqual(nested, ["vendor/lib/.claude/skills/tracked/SKILL.md"]);
+  assert.equal(result.claudeConfig.skills.some((item) => item.path.includes("untracked")), false, "an untracked nested skill is not listed");
+  assert.equal(result.claudeConfig.skills.find((item) => item.path === ".claude/skills/loose/SKILL.md").scope, "root");
+});
+
 test("claude-config: hook commands that contain the target root or the home folder are redacted", async (t) => {
   const fixture = fullConfig(t);
   const homeScript = path.join(os.homedir(), "tools", "helper.mjs");

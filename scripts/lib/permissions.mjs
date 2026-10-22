@@ -147,6 +147,32 @@ function patternCovers(body, anchored, path) {
   return false;
 }
 
+// The most runs of `*` (a `**` counts as one run) that a glob may have in matchPathGlob. The regular expression backtracks
+// in the number of runs: measured on a 40-segment path, four runs take about 4 ms, six take about 140 ms and seven about
+// 660 ms. A settings file of the target can hold any pattern, so a pattern over this limit is unsupported.
+const MAX_WILDCARD_RUNS = 3;
+
+// Whether a gitignore-style glob matches a path: `*` stays in one segment, `?` is one character, `**` spans segments, and
+// a folder that matches covers its contents. A pattern with a `/` before its end is anchored at the root; otherwise it
+// matches at any depth. A leading `/` is stripped and the pattern is anchored at the root, against the path as the caller
+// passes it (absolute or root-relative). That reading is not the one the Read and Edit rules give a leading `/`, so the
+// sentence "as the Read and Edit rules read it" does not hold for it; claudeMdExcludes refuses such patterns before they
+// reach this matcher (claude-config.mjs). Returns true, false, or "unsupported" for a pattern this matcher cannot read: a
+// negation (a leading "!"), the characters [ ] { } and \, an empty, "." or ".." segment, or more than MAX_WILDCARD_RUNS
+// runs of `*`. NOT VERIFIED for claudeMdExcludes: no note states its pattern syntax, so using these semantics there is a
+// repo choice.
+export function matchPathGlob(pattern, path) {
+  if (typeof pattern !== "string" || typeof path !== "string") return "unsupported";
+  if (pattern.startsWith("!") || /[[\]{}\\]/.test(pattern)) return "unsupported";
+  if ((pattern.match(/\*+/g) ?? []).length > MAX_WILDCARD_RUNS) return "unsupported";
+  const absolute = pattern.startsWith("/");
+  const body = (absolute ? pattern.slice(1) : pattern).replace(/\/+$/, "");
+  if (body === "") return "unsupported";
+  const subject = absolute ? path.replace(/^\/+/, "") : path;
+  const cover = patternCovers(body, absolute || body.includes("/"), subject);
+  return cover === null ? "unsupported" : cover;
+}
+
 // A relative pattern with no `/` before its end matches at any depth. A pattern with a `/` in the middle is anchored
 // at the project root. The exception from the docs: a single folder glob such as `src/**` is anchored in allow rules
 // and matches at any depth in deny and ask rules.

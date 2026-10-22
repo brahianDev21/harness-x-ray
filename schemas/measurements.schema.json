@@ -86,7 +86,11 @@
           },
           "loadReason": {
             "type": "string",
-            "description": "Short English reason for loadMode. For an import it names the importing file."
+            "description": "Short English reason for loadMode. For an import it names the importing file. nested-skill: a skill of a subfolder (on demand; not verified by a note). claude-md-excludes: a memory or rule file that claudeMdExcludes matches, not read. claude-md-excluded-agents-unverified: a root AGENTS file that is not-loaded because the only root CLAUDE files match claudeMdExcludes; CTX-07 reports it as undeterminable, and whether Claude Code loads it is not verified by a note. Other values are sentences."
+          },
+          "excludedBy": {
+            "type": "string",
+            "description": "Present only on a memory or rule file that claudeMdExcludes matches: the redacted form of the first matching pattern, in file order. The file is never read, so lines and estTokens are null for every excluded file. The secrets measure still scans it for secret values, on purpose, because Claude's Read can open it."
           },
           "bytes": {
             "type": "integer",
@@ -122,7 +126,7 @@
           },
           "reason": {
             "type": "string",
-            "description": "Fixed code, such as outside-root, too-large or binary. The duplication measure writes code-file-too-large, code-file-minified and code-file-unreadable (its detail is the safe-fs reason) for a code file it skips, and code-files-cut or code-bytes-cut for the files that a cap cut."
+            "description": "Fixed code, such as outside-root, too-large, binary or unsupported-pattern (a claudeMdExcludes pattern that is not used; the pattern is never copied). The duplication measure writes code-file-too-large, code-file-minified and code-file-unreadable (its detail is the safe-fs reason) for a code file it skips, and code-files-cut or code-bytes-cut for the files that a cap cut."
           },
           "detail": {
             "type": "string",
@@ -196,8 +200,8 @@
                 "description": "Hop of the import: the importing file's depth plus one. The root memory file is depth 0. An import at depth 5 is too-deep and is not read."
               },
               "status": {
-                "enum": ["ok", "broken", "external", "too-deep", "cycle"],
-                "description": "ok: the file exists and is loaded (once). broken: missing or not a file. external: home path, absolute path outside the target, or a path that leaves the target; never read. too-deep: more than four hops. cycle: the file is one of the files that led to this import."
+                "enum": ["ok", "broken", "external", "too-deep", "cycle", "excluded"],
+                "description": "ok: the file exists and is loaded (once). broken: missing or not a file. external: home path, absolute path outside the target, or a path that leaves the target; never read. too-deep: more than four hops. cycle: the file is one of the files that led to this import. excluded: the file matches claudeMdExcludes; it is listed in the inventory, never read, and its imports are not followed. NOT VERIFIED by a note: whether Claude Code loads an import of an excluded file."
               }
             }
           }
@@ -591,7 +595,7 @@
     "claudeConfig": {
       "type": "object",
       "description": "The Claude Code configuration of the target, read but never run. Every array is sorted. Strings from the target are redacted; env and header values are never copied.",
-      "required": ["settings", "hooks", "skills", "commands", "subagents", "mcpServers"],
+      "required": ["settings", "hooks", "skills", "commands", "subagents", "mcpServers", "claudeMdExcludes"],
       "properties": {
         "settings": {
           "type": "array",
@@ -648,8 +652,23 @@
         },
         "skills": {
           "type": "array",
-          "description": "One item per .claude/skills/**/SKILL.md file.",
-          "items": { "$ref": "#/$defs/markdownItem" }
+          "description": "One item per .claude/skills/**/SKILL.md file of the root (scope root, found by a disk walk) and per .claude/skills/**/SKILL.md file of a subfolder (scope nested, on demand, not in the budget; not verified by a note). Nested skills come from the file list: git-tracked files only inside a git repository, so an untracked nested skill is not listed there, and without git the disk walk may list copies such as .claude/worktrees/*/.claude/skills/*. A path found by the root walk is listed once, as root. Sorted by path. scope is present on every item (required here).",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/markdownItem" }],
+            "required": ["scope"]
+          }
+        },
+        "claudeMdExcludes": {
+          "type": "array",
+          "description": "The valid claudeMdExcludes patterns of .claude/settings.json and .claude/settings.local.json, sorted by pattern then source. pattern is redacted. A pattern with a leading \"/\" or a drive letter, or with a backslash, is an unsupported-pattern warning and is not listed. Not verified by a note: which settings files accept it; its pattern syntax (gitignore-style here); case-sensitive matching; a trailing slash dropped (gitignore's directory-only meaning is not kept); AGENTS.md treated as covered; ancestors not checked against the patterns.",
+          "items": {
+            "type": "object",
+            "required": ["pattern", "source"],
+            "properties": {
+              "pattern": { "type": "string" },
+              "source": { "type": "string", "description": "The settings file that lists the pattern." }
+            }
+          }
         },
         "commands": {
           "type": "array",
@@ -1044,16 +1063,17 @@
     },
     "markdownItem": {
       "type": "object",
-      "description": "A skill, command or subagent. loadMode always: its description is in the budget; not-loaded: disable-model-invocation, or a subagent without a name; null: the frontmatter could not be read.",
+      "description": "A skill, command or subagent. loadMode always: its description is in the budget; on-demand: a nested skill (not verified by a note; never in the budget); not-loaded: disable-model-invocation, or a subagent without a name; null: the frontmatter could not be read.",
       "required": ["path", "name", "descriptionChars", "overLimit", "disableModelInvocation", "estTokens", "loadMode", "frontmatterError"],
       "properties": {
         "path": { "type": "string" },
         "name": { "type": ["string", "null"] },
+        "scope": { "enum": ["root", "nested"], "description": "Skills only, and present on every skill item (the skills list requires it; commands and subagents have none). root: .claude/skills of the target; nested: .claude/skills inside a subfolder." },
         "descriptionChars": { "type": ["integer", "null"], "minimum": 0, "description": "Length of description and when_to_use together." },
         "overLimit": { "type": ["boolean", "null"], "description": "True when descriptionChars is above 1,536." },
         "disableModelInvocation": { "type": ["boolean", "null"] },
         "estTokens": { "type": ["integer", "null"], "minimum": 0 },
-        "loadMode": { "enum": ["always", "not-loaded", null] },
+        "loadMode": { "enum": ["always", "on-demand", "not-loaded", null] },
         "frontmatterError": { "enum": ["broken", "unsupported-value", null] }
       }
     }

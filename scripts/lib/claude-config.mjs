@@ -2,7 +2,7 @@
 // .claude/settings.local.json, .mcp.json, and the skills, commands and subagents, through ctx only. It
 // never runs, spawns or requires anything from the target.
 //
-// Output: claudeConfig (settings, hooks, skills, commands, subagents, mcpServers), security.permissions
+// Output: claudeConfig (settings, hooks, skills, commands, subagents, mcpServers, claudeMdExcludes), security.permissions
 // (reading only), one inventory item per file, and the always-loaded budget of skills, commands and
 // subagents. The MCP servers and the context-injecting hooks go to context.alwaysLoaded.unknownStatic,
 // because their size cannot be known without running them. Every string copied from the target goes
@@ -12,6 +12,7 @@
 import { parseFrontmatter } from "./frontmatter.mjs";
 import { classifyScriptPath, findScriptWord, hookWords } from "./hook-command.mjs";
 import { isPlainObject, toStableJson } from "./json-out.mjs";
+import { matchPathGlob } from "./permissions.mjs";
 import { createRedactor } from "./redact.mjs";
 import { estimateTokens } from "./tokens.mjs";
 
@@ -39,6 +40,14 @@ const READ_KEYS = ["name", "description", "when_to_use", "disable-model-invocati
 const CONFIG_REASON = "configuration, not loaded into context";
 const BODY_REASON = "the body loads when invoked";
 const NAMELESS_REASON = "no name in the frontmatter, so Claude Code skips the file";
+// A skill of a subfolder. NOT VERIFIED by a note: no note says that nested skills load on demand. This repository's
+// CLAUDE.md says that skills inside test/fixtures load on demand, and this measure follows that. Nested commands and
+// subagents are not inventoried: no note says that they load from a subfolder, so they are left out.
+const NESTED_SKILL_REASON = "nested-skill";
+const SCOPE_ROOT = "root";
+const SCOPE_NESTED = "nested";
+// The settings key that lists the memory files Claude Code does not load. Its syntax is not stated in any note.
+const EXCLUDES_KEY = "claudeMdExcludes";
 
 // The parsed configuration of each scan, keyed by its context. ctx.memory holds only memory file texts,
 // which other measures iterate, so the parsed configuration is kept here instead.
@@ -52,10 +61,12 @@ export const claudeConfigMeasure = Object.freeze({ id: MEASURE_ID, collect: coll
  * object is shared: callers must not change it.
  * @param {object} ctx The scan context. One context is one scan, so it keys the parsed configuration.
  * @returns {{ settings: object[], hooks: object[], permissions: object, skills: object[], commands: object[],
- *   subagents: object[], mcpServers: object[], parsedFiles: { settings: Array<{ path: string, data: object }>,
- *   mcp: { path: string, data: object } | null }, inventory: object[], warnings: object[] }}
- *   parsedFiles holds the parsed JSON objects of the settings and of .mcp.json, for measures that read values which the
- *   output does not copy (secrets). It is never written to the output.
+ *   subagents: object[], mcpServers: object[], claudeMdExcludes: Array<{ pattern: string, shown: string, source: string }>,
+ *   parsedFiles: { settings: Array<{ path: string, data: object }>, mcp: { path: string, data: object } | null },
+ *   inventory: object[], warnings: object[] }}
+ *   claudeMdExcludes lists the valid patterns of both settings files in file order: pattern is as written, for matching,
+ *   and shown is the redacted form, for output. parsedFiles holds the parsed JSON objects of the settings and of
+ *   .mcp.json, for measures that read values which the output does not copy (secrets). It is never written to the output.
  */
 export function loadClaudeConfig(ctx) {
   if (!parsedByScan.has(ctx)) parsedByScan.set(ctx, parseClaudeConfig(ctx));
@@ -85,6 +96,7 @@ function collectClaudeConfig(ctx) {
       commands: config.commands,
       subagents: config.subagents,
       mcpServers: config.mcpServers,
+      claudeMdExcludes: config.claudeMdExcludes.map(({ shown, source }) => ({ pattern: shown, source })).sort(byExclude),
     },
     security: { permissions: config.permissions },
     inventory: config.inventory,
@@ -116,7 +128,20 @@ function parseClaudeConfig(ctx) {
   const mcp = readMcpServers(ctx, options);
   // A skill is a SKILL.md inside its own folder (docs: skills). A SKILL.md directly in the skills folder is not one.
   const skillFiles = findFiles(ctx, SKILLS_DIR, (name) => name === "SKILL.md").filter((rel) => rel !== `${SKILLS_DIR}/SKILL.md`);
-  const skills = readMarkdownFiles(ctx, "skill", skillFiles, options);
+  // Root skills come from the disk walk above. Nested skills come from ctx.files, which is the git-tracked list inside a git
+  // repository and the disk walk otherwise. So inside git an untracked root skill is listed and an untracked nested skill is
+  // not, and without git the disk walk also lists copies, such as .claude/worktrees/*/.claude/skills/*. A path that the root
+  // walk already found is a root skill, so it is not listed again as nested (a skill inside another skill's folder).
+  const rootSkillFiles = new Set(skillFiles);
+  const nestedSkillFiles = ctx.files
+    .map((file) => file.path)
+    .filter((rel) => isNestedSkill(rel) && !rootSkillFiles.has(rel))
+    .sort(compareText);
+  // Root skills and nested skills share one list. Each item says its scope, and only the root items count in the budget.
+  const skills = [
+    ...readMarkdownFiles(ctx, "skill", skillFiles, options, SCOPE_ROOT),
+    ...readMarkdownFiles(ctx, "skill", nestedSkillFiles, options, SCOPE_NESTED),
+  ].sort(byPath);
   const commands = readMarkdownFiles(ctx, "command", findFiles(ctx, COMMANDS_DIR, isMarkdownName), options);
   const subagents = readMarkdownFiles(ctx, "subagent", findFiles(ctx, AGENTS_DIR, isMarkdownName), options);
 
@@ -128,6 +153,7 @@ function parseClaudeConfig(ctx) {
     commands,
     subagents,
     mcpServers: mcp.servers,
+    claudeMdExcludes: settings.claudeMdExcludes,
     parsedFiles: { settings: settings.objects, mcp: mcp.document },
     inventory,
     warnings,
@@ -144,6 +170,7 @@ function readSettings(ctx, { redact, warn, inventory }) {
   const items = [];
   const hooks = [];
   const objects = [];
+  const claudeMdExcludes = [];
   const lists = { allow: [], ask: [], deny: [], additionalDirectories: [] };
   let defaultMode = null;
   let disableBypassPermissionsMode = null;
@@ -161,6 +188,7 @@ function readSettings(ctx, { redact, warn, inventory }) {
     const summary = summarizeSettings(data, rel, { redact, warn });
     items.push(summary.item);
     for (const key of Object.keys(lists)) lists[key].push(...summary[key]);
+    claudeMdExcludes.push(...summary.claudeMdExcludes);
     for (const entry of summary.hookEntries) hooks.push(hookItem(entry, rel, ctx, { redact, warn }));
     if (summary.defaultMode !== null) defaultMode = summary.defaultMode;
     if (summary.disableBypassPermissionsMode !== null) disableBypassPermissionsMode = summary.disableBypassPermissionsMode;
@@ -179,7 +207,7 @@ function readSettings(ctx, { redact, warn, inventory }) {
     disableBypassPermissionsMode,
     notes: notes.sort(compareText),
   };
-  return { items: items.sort(byPath), hooks, permissions, objects };
+  return { items: items.sort(byPath), hooks, permissions, objects, claudeMdExcludes };
 }
 
 // What one parsed settings file says. Unexpected shapes are warnings, and the values that are fine are
@@ -200,6 +228,7 @@ function summarizeSettings(data, rel, { redact, warn }) {
     defaultMode: null,
     disableBypassPermissionsMode: null,
     hookEntries: hookEntriesOf(data.hooks, rel, warn),
+    claudeMdExcludes: excludesOf(data[EXCLUDES_KEY], rel, { redact, warn }),
   };
   const permissions = data.permissions;
   if (permissions === undefined) return summary;
@@ -374,6 +403,40 @@ function stringsOf(value, rel, detail, warn) {
   return strings;
 }
 
+// The valid patterns of claudeMdExcludes in one settings file, in file order. A value that is not a list, an entry that
+// is not a string and a pattern that cannot be read are warnings, and the other patterns still apply. A pattern that
+// starts with "/" or a drive letter, or that contains a backslash, is an unsupported-pattern: its meaning is not verified
+// by a note, so it is not used (matchPathGlob also refuses the backslash and the brackets). An unsupported pattern is
+// never copied, not even redacted. NOT VERIFIED: no note says which settings files accept claudeMdExcludes, so both project
+// files are read, as the other lists are. The matching is case-sensitive, a trailing slash is dropped, AGENTS.md is treated
+// as covered, and ancestors are not checked against the patterns (see memory.mjs); none of these is verified by a note.
+function excludesOf(value, rel, { redact, warn }) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    warn(rel, "unexpected-shape", EXCLUDES_KEY);
+    return [];
+  }
+  const patterns = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") {
+      warn(rel, "unexpected-shape", EXCLUDES_KEY);
+      continue;
+    }
+    // Whether a pattern is supported does not depend on the path, so an empty path is enough to ask.
+    if (isAbsoluteExclude(entry) || entry.includes("\\") || matchPathGlob(entry, "") === "unsupported") {
+      warn(rel, "unsupported-pattern", EXCLUDES_KEY);
+      continue;
+    }
+    patterns.push({ pattern: entry, shown: redact(entry), source: rel });
+  }
+  return patterns;
+}
+
+// A leading "/" or a drive letter. The meaning of such a claudeMdExcludes pattern is not verified by a note.
+function isAbsoluteExclude(pattern) {
+  return pattern.startsWith("/") || /^[A-Za-z]:/.test(pattern);
+}
+
 // Reads a JSON file whose top level must be an object. Returns null after a warning when it is not.
 // The warning has no detail: the parser's message could quote the file.
 function parseObject(text, rel, warn) {
@@ -441,13 +504,17 @@ function serverType(server, { redact, warn }) {
 // Skills, commands and subagents
 
 // Describes each markdown file of one kind, in the order given. The file is read only once; its
-// inventory entry is recorded here.
-function readMarkdownFiles(ctx, kind, files, { redact, warn, inventory }) {
+// inventory entry is recorded here. A skill has a scope: a root skill is in the budget when its description is
+// (loadMode always); a nested skill is on demand and is never in the budget.
+function readMarkdownFiles(ctx, kind, files, { redact, warn, inventory }, scope = SCOPE_ROOT) {
   const items = [];
   for (const rel of files) {
     const read = ctx.readText(rel);
     if (!read.ok) continue;
     const item = describeMarkdown(kind, rel, read.text, { redact, warn });
+    const nested = kind === "skill" && scope === SCOPE_NESTED;
+    if (kind === "skill") item.scope = scope;
+    if (nested && item.loadMode === "always") item.loadMode = "on-demand";
     items.push(item);
     const notLoaded = kind === "subagent" && item.name === null;
     inventory.push({
@@ -457,10 +524,19 @@ function readMarkdownFiles(ctx, kind, files, { redact, warn, inventory }) {
       lines: countLines(read.text),
       estTokens: estimateTokens(read.text).estTokens,
       loadMode: notLoaded ? "not-loaded" : "on-demand",
-      loadReason: notLoaded ? NAMELESS_REASON : BODY_REASON,
+      loadReason: notLoaded ? NAMELESS_REASON : nested ? NESTED_SKILL_REASON : BODY_REASON,
     });
   }
   return items;
+}
+
+// A nested skill: a SKILL.md inside a .claude/skills folder of a subfolder of the target, at any depth. The first
+// ".claude" folder below the root must be followed by "skills", and at least one folder must lie between "skills" and
+// SKILL.md, as at the root (a SKILL.md directly in the skills folder is not a skill).
+function isNestedSkill(rel) {
+  const parts = rel.split("/");
+  const at = parts.indexOf(".claude", 1);
+  return parts.at(-1) === "SKILL.md" && at !== -1 && parts[at + 1] === "skills" && parts.length - (at + 2) >= 2;
 }
 
 // What the listing of one skill, command or subagent costs. The description is what Claude Code keeps
@@ -603,6 +679,7 @@ function countLines(text) {
 
 const byPath = (a, b) => compareText(a.path, b.path) || compareText(a.source ?? "", b.source ?? "");
 const byRule = (a, b) => compareText(a.rule, b.rule) || compareText(a.source, b.source);
+const byExclude = (a, b) => compareText(a.pattern, b.pattern) || compareText(a.source, b.source);
 
 function byHook(a, b) {
   return (

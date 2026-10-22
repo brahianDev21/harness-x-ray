@@ -339,6 +339,53 @@ test("CTX-07: .claude/AGENTS.md counts too; an AGENTS.md that loads is no findin
   assert.deepEqual(summaryOf(loads, "CTX-07"), []);
 });
 
+test("CTX-07: an AGENTS.md that claudeMdExcludes matches is not a finding, while one that a CLAUDE.md causes still is (positive control)", () => {
+  const excluded = {
+    path: "AGENTS.md",
+    kind: "memory",
+    loadMode: "not-loaded",
+    loadReason: "claude-md-excludes",
+    excludedBy: "AGENTS.md",
+    lines: null,
+    estTokens: null,
+    bytes: 4000,
+  };
+  const claude = { path: "CLAUDE.md", kind: "memory", loadMode: "always", lines: 30, estTokens: 200, bytes: 900 };
+  assert.deepEqual(summaryOf(measured({ inventory: [excluded, claude] }), "CTX-07"), []);
+
+  const notExcluded = {
+    path: "AGENTS.md",
+    kind: "memory",
+    loadMode: "not-loaded",
+    loadReason: "a CLAUDE.md exists and does not import it",
+    lines: 120,
+    estTokens: 800,
+    bytes: 4000,
+  };
+  assert.deepEqual(summaryOf(measured({ inventory: [notExcluded, claude] }), "CTX-07").map((item) => item.ref), ["/inventory/0"]);
+});
+
+test("CTX-07: an AGENTS.md whose only root CLAUDE.md files are excluded is undeterminable, not a finding (positive control: a CLAUDE.md that loads still gives a finding)", () => {
+  const unverified = {
+    path: "AGENTS.md",
+    kind: "memory",
+    loadMode: "not-loaded",
+    loadReason: "claude-md-excluded-agents-unverified",
+    lines: 3,
+    estTokens: 20,
+    bytes: 40,
+  };
+  const excluded = measured({ inventory: [unverified] });
+  assert.deepEqual(summaryOf(excluded, "CTX-07"), []);
+  const undetermined = derived(excluded).undeterminable.filter((entry) => entry.rule === "CTX-07");
+  assert.deepEqual(undetermined.map((entry) => entry.measurementRef), ["/inventory/0"]);
+  assert.equal(typeof undetermined[0].reason, "string");
+
+  const control = measured({ inventory: [{ ...unverified, loadReason: "a CLAUDE.md exists and does not import it" }] });
+  assert.deepEqual(summaryOf(control, "CTX-07").map((item) => item.ref), ["/inventory/0"]);
+  assert.deepEqual(derived(control).undeterminable.filter((entry) => entry.rule === "CTX-07"), []);
+});
+
 // ---------------------------------------------------------------------------------------------------
 // SEC-01
 
@@ -1143,6 +1190,18 @@ test("candidates: duplication groups list the file and line of each copy, and ne
       { file: "src/c.js", line: 1, endLine: 9 },
     ],
   });
+});
+
+test("candidates: a memory or rule file that claudeMdExcludes matches is not a candidate; a file no pattern matches still is", () => {
+  const m = measured({
+    inventory: [
+      { path: "vendor/CLAUDE.md", kind: "memory", loadMode: "not-loaded", loadReason: "claude-md-excludes", excludedBy: "**/vendor/**", lines: null, estTokens: null, bytes: 90 },
+      { path: ".claude/rules/shared.md", kind: "rule", loadMode: "not-loaded", loadReason: "claude-md-excludes", excludedBy: "**/shared.md", lines: null, estTokens: null, bytes: 40 },
+      { path: "app/CLAUDE.md", kind: "memory", loadMode: "on-demand", loadReason: "subfolder memory, loaded when a file in its folder is read", lines: null, estTokens: null, bytes: 50 },
+    ],
+  });
+  const memoryCandidates = derived(m).candidates.filter((candidate) => candidate.kind === "memory-file");
+  assert.deepEqual(memoryCandidates.map((candidate) => candidate.file), ["app/CLAUDE.md"]);
 });
 
 test("candidates: hook scripts inside the target, one per path, sorted by path; external or missing scripts are left out", () => {
