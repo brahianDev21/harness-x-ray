@@ -5,7 +5,7 @@
 - **Fecha del escaneo (UTC):** 2026-10-18
 - **Ejes revisados:** Instrucciones, Contexto, Seguridad, Verificación, Estructura, Código
 - **Herramienta:** `harness-x-ray@0.0.0`
-- **Catálogo:** 16 reglas, SHA-256 `4bfe477a8935`
+- **Catálogo:** 16 reglas, SHA-256 `59b3922be7bc`
 
 ---
 

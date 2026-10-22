@@ -49,6 +49,7 @@
   "measure.at": "Medido en {ref}: {value}",
   "threshold.cell": "{key} = {value} ({status})",
   "status.provisional": "provisional",
+  "trigger.hookNotVerified": "un hook se ejecuta sobre este comando, pero el escaneo no puede saber si lo bloquea",
   "mode.default": "default",
   "table.evidence": "Evidencia",
   "table.quote": "Cita",

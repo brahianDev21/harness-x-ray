@@ -316,7 +316,9 @@ function allowIndexOf(allow, rule, source) {
 
 // ---------------------------------------------------------------------------------------------------
 // SEC-02 Destructive commands. A passing command is high. Otherwise, and only when nothing passes, the medium rows:
-// a command that only the default-mode prompt stops, and a PreToolUse hook that fails open.
+// a command that only the default-mode prompt stops, and a PreToolUse hook that fails open. A command that only the
+// default-mode prompt stops, and that a fail-closed hook covers, is low: the scan does not run the hook, so it cannot
+// tell that the hook blocks the command.
 
 function emitDestructiveCommands(measurements) {
   const coverage = measurements.security?.destructiveCoverage ?? {};
@@ -327,6 +329,7 @@ function emitDestructiveCommands(measurements) {
   const undeterminable = [];
   const high = [];
   const medium = [];
+  const low = [];
 
   commands.forEach((command, index) => {
     const pointer = `${base}/commands/${index}`;
@@ -356,6 +359,14 @@ function emitDestructiveCommands(measurements) {
       const pointer = `${base}/commands/${index}`;
       if (command.preToolUseHook === "none") {
         medium.push({ trigger: trigger("default-mode-without-hook", "medium", pointer), evidence: [] });
+      } else if (command.preToolUseHook === "runs") {
+        // The hooks whose matcher surely lists the command's tool. A hook whose matcher is undeterminable is not counted:
+        // a failing-open one is reported as undeterminable below. A covering hook that fails open is the medium row below.
+        const covering = hooks.filter((hook) => listAt(hook.tools).includes(command.tool));
+        if (covering.length > 0 && covering.every((hook) => hook.failsOpen === false)) {
+          const evidence = covering.flatMap((hook) => hookEvidence(hook));
+          low.push({ trigger: trigger("hook-not-verified", "low", pointer), evidence });
+        }
       } else if (command.preToolUseHook === "undeterminable") {
         undeterminable.push(undeterminableOf("SEC-02", `${pointer}/preToolUseHook`, "the PreToolUse hook state is undeterminable"));
       }
@@ -371,7 +382,7 @@ function emitDestructiveCommands(measurements) {
     });
   }
 
-  const rows = [...high, ...medium];
+  const rows = [...high, ...medium, ...low];
   const finding = measuredFinding(
     "SEC-02",
     rows.map((row) => row.trigger),

@@ -545,19 +545,201 @@ test("SEC-02: a command that only the default-mode prompt stops is medium, with 
   ]);
 });
 
-test("SEC-02: an ask rule, or a command with a hook that runs and fails closed, is not the default-mode row", () => {
+const ASK_PUSH = Object.freeze({ kind: "rule", list: "ask", rule: "Bash(git push *)", source: SETTINGS });
+
+test("SEC-02: a command that an ask rule covers is no finding, with or without a hook that fails closed", () => {
   const m = measured({
     security: {
       destructiveCoverage: {
         commands: [
-          shellCommand("git-push-force", "asks", { kind: "rule", list: "ask", rule: "Bash(git push *)", source: SETTINGS }, "none"),
-          shellCommand("rm-recursive-force", "asks", MODE_DEFAULT, "runs"),
+          shellCommand("git-push-force", "asks", ASK_PUSH, "none"),
+          shellCommand("git-push-force-long", "asks", ASK_PUSH, "runs"),
         ],
         preToolUseHooks: [hook({ failsOpen: false })],
       },
     },
   });
   assert.deepEqual(summaryOf(m, "SEC-02"), []);
+});
+
+test("SEC-02: a default-mode command behind a hook that runs and fails closed is low, and the ask rule beside it is not", () => {
+  const m = measured({
+    security: {
+      destructiveCoverage: {
+        commands: [
+          shellCommand("git-push-force", "asks", ASK_PUSH, "none"),
+          shellCommand("rm-recursive-force", "asks", MODE_DEFAULT, "runs"),
+        ],
+        preToolUseHooks: [hook({ failsOpen: false })],
+      },
+    },
+  });
+  assert.deepEqual(summaryOf(m, "SEC-02"), [
+    {
+      id: "mf-1",
+      impact: "low",
+      ref: "/security/destructiveCoverage/commands/1",
+      triggers: [["hook-not-verified", "low", "/security/destructiveCoverage/commands/1"]],
+    },
+  ]);
+  const [finding] = findingsOf(m, "SEC-02");
+  assert.deepEqual(finding.evidence, [{ file: SETTINGS }, { file: ".claude/hooks/guard.mjs" }]);
+});
+
+test("SEC-02: the low row needs the default mode, and a command with no hook is still the medium row", () => {
+  const m = measured({
+    security: {
+      destructiveCoverage: {
+        commands: [shellCommand("npm-publish", "asks", MODE_DEFAULT, "none")],
+        preToolUseHooks: [hook({ failsOpen: false })],
+      },
+    },
+  });
+  assert.deepEqual(summaryOf(m, "SEC-02").map((item) => item.triggers[0][0]), ["default-mode-without-hook"]);
+  const accept = measured({
+    security: {
+      destructiveCoverage: {
+        commands: [shellCommand("curl-pipe-shell", "asks", MODE_ACCEPT, "runs")],
+        preToolUseHooks: [hook({ failsOpen: false })],
+      },
+    },
+  });
+  assert.deepEqual(summaryOf(accept, "SEC-02"), []);
+});
+
+test("SEC-02: a hook that covers the command and fails open is medium, and the low row does not join it", () => {
+  const m = measured({
+    security: {
+      destructiveCoverage: {
+        commands: [shellCommand("rm-recursive-force", "asks", MODE_DEFAULT, "runs")],
+        preToolUseHooks: [hook({ failsOpen: false }), hook({ failsOpen: true, onFailure: null })],
+      },
+    },
+  });
+  const [finding] = findingsOf(m, "SEC-02");
+  assert.equal(finding.impact, "medium");
+  assert.deepEqual(finding.triggers, [{ trigger: "hook-fails-open", impact: "medium", measurementRef: "/security/destructiveCoverage/preToolUseHooks/1" }]);
+});
+
+test("SEC-02: a fail-open hook that covers only PowerShell does not stop the Bash command from being low", () => {
+  const m = measured({
+    security: {
+      destructiveCoverage: {
+        commands: [shellCommand("rm-recursive-force", "asks", MODE_DEFAULT, "runs")],
+        preToolUseHooks: [
+          hook({ failsOpen: false }),
+          hook({ failsOpen: true, onFailure: null, matcher: "PowerShell", tools: ["PowerShell"] }),
+        ],
+      },
+    },
+  });
+  assert.deepEqual(summaryOf(m, "SEC-02"), [
+    {
+      id: "mf-1",
+      impact: "medium",
+      ref: "/security/destructiveCoverage/preToolUseHooks/1",
+      triggers: [
+        ["hook-fails-open", "medium", "/security/destructiveCoverage/preToolUseHooks/1"],
+        ["hook-not-verified", "low", "/security/destructiveCoverage/commands/0"],
+      ],
+    },
+  ]);
+});
+
+test("SEC-02: a fail-open hook whose matcher cannot be settled does not stop a fail-closed covering hook from giving low, and is undeterminable, not medium", () => {
+  const m = measured({
+    security: {
+      destructiveCoverage: {
+        commands: [shellCommand("rm-recursive-force", "asks", MODE_DEFAULT, "runs")],
+        preToolUseHooks: [hook({ failsOpen: false }), hook({ failsOpen: true, onFailure: null, tools: "undeterminable" })],
+      },
+    },
+  });
+  assert.deepEqual(summaryOf(m, "SEC-02"), [
+    {
+      id: "mf-1",
+      impact: "low",
+      ref: "/security/destructiveCoverage/commands/0",
+      triggers: [["hook-not-verified", "low", "/security/destructiveCoverage/commands/0"]],
+    },
+  ]);
+  assert.deepEqual(findingsOf(m, "SEC-02")[0].evidence, [{ file: SETTINGS }, { file: ".claude/hooks/guard.mjs" }]);
+  assert.deepEqual(undeterminableOf(m, "SEC-02").map((item) => item.measurementRef), [
+    "/security/destructiveCoverage/preToolUseHooks/1/tools",
+  ]);
+});
+
+test("SEC-02: a runs state with an empty list of PreToolUse hooks gives no hook-not-verified (defensive)", () => {
+  const m = measured({
+    security: {
+      destructiveCoverage: {
+        commands: [shellCommand("rm-recursive-force", "asks", MODE_DEFAULT, "runs")],
+        preToolUseHooks: [],
+      },
+    },
+  });
+  assert.deepEqual(summaryOf(m, "SEC-02"), []);
+  assert.deepEqual(undeterminableOf(m, "SEC-02"), []);
+});
+
+test("SEC-02: a default-mode command with an ignored mode, behind a fail-closed covering hook, is low (positive control)", () => {
+  const ignoredAuto = Object.freeze({ kind: "mode", mode: "default", ignoredMode: "auto" });
+  const m = measured({
+    security: {
+      destructiveCoverage: {
+        commands: [shellCommand("rm-recursive-force", "asks", ignoredAuto, "runs")],
+        preToolUseHooks: [hook({ failsOpen: false })],
+      },
+    },
+  });
+  assert.deepEqual(summaryOf(m, "SEC-02"), [
+    {
+      id: "mf-1",
+      impact: "low",
+      ref: "/security/destructiveCoverage/commands/0",
+      triggers: [["hook-not-verified", "low", "/security/destructiveCoverage/commands/0"]],
+    },
+  ]);
+});
+
+test("SEC-02: a fail-closed hook whose matcher cannot be settled is not in the low evidence, next to a fail-closed covering hook (positive control)", () => {
+  const m = measured({
+    security: {
+      destructiveCoverage: {
+        commands: [shellCommand("rm-recursive-force", "asks", MODE_DEFAULT, "runs")],
+        preToolUseHooks: [
+          hook({ failsOpen: false, tools: "undeterminable", script: { path: ".claude/hooks/other.mjs", external: false, exists: true } }),
+          hook({ failsOpen: false }),
+        ],
+      },
+    },
+  });
+  const [finding] = findingsOf(m, "SEC-02");
+  assert.equal(finding.impact, "low");
+  assert.deepEqual(finding.triggers, [
+    { trigger: "hook-not-verified", impact: "low", measurementRef: "/security/destructiveCoverage/commands/0" },
+  ]);
+  assert.deepEqual(finding.evidence, [{ file: SETTINGS }, { file: ".claude/hooks/guard.mjs" }]);
+  assert.deepEqual(undeterminableOf(m, "SEC-02"), []);
+});
+
+test("SEC-02: when a command passes, only the high row is shown, even with a hook that fails closed", () => {
+  const m = measured({
+    security: {
+      destructiveCoverage: {
+        commands: [
+          shellCommand("rm-recursive-force", "passes", ALLOW("Bash(rm -rf *)"), "runs"),
+          shellCommand("npm-publish", "asks", MODE_DEFAULT, "runs"),
+        ],
+        preToolUseHooks: [hook({ failsOpen: false })],
+      },
+    },
+  });
+  const [finding] = findingsOf(m, "SEC-02");
+  assert.equal(finding.impact, "high");
+  assert.deepEqual(finding.triggers, [
+    { trigger: "destructive-command-passes", impact: "high", measurementRef: "/security/destructiveCoverage/commands/0" },
+  ]);
 });
 
 test("SEC-02: a PreToolUse hook that fails open and covers Bash is medium, with the settings file and the script", () => {

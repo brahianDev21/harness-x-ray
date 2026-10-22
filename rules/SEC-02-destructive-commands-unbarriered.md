@@ -35,10 +35,10 @@ This is a measured rule. No `THRESHOLDS` key applies.
 
 Fields the scanner reads:
 
-- `security.destructiveCoverage.commands[]`: `outcome`; `decidedBy`, which is `{ kind: "rule", list, rule }`, `{ kind: "mode", mode }` with an optional `ignoredMode`, or `{ kind: "critical-path" }`; `reason`; and `preToolUseHook`, which is `runs`, `none` or `undeterminable`.
+- `security.destructiveCoverage.commands[]`: `tool`; `outcome`; `decidedBy`, which is `{ kind: "rule", list, rule }`, `{ kind: "mode", mode }` with an optional `ignoredMode`, or `{ kind: "critical-path" }`; `reason`; and `preToolUseHook`, which is `runs`, `none` or `undeterminable`.
 - `security.destructiveCoverage.commands[].builtInProtection` and `criticalPath`, copied from the data file. The data marks `rm` with `critical-path-removal`, the PowerShell removal with `remove-item-system-paths`, and the cmd removals with `cmd-system-path-removal`. The scanner simulates the critical-path rule for `rm` and `rmdir` only, and applies it when `criticalPath` is `true`. The PowerShell and cmd marks describe protection of system paths, which the examples do not target, so they do not change an outcome here.
 - `security.destructiveCoverage.subagents[].results[]`: the `outcome` of each shell command a subagent can run.
-- `security.destructiveCoverage.preToolUseHooks[]`: `failsOpen` and `onFailure` for each PreToolUse hook that covers Bash or PowerShell.
+- `security.destructiveCoverage.preToolUseHooks[]`: `failsOpen`, `onFailure` and `tools` for each PreToolUse hook that covers Bash or PowerShell. `tools` is the list of the shell tools that the matcher covers, or `undeterminable`.
 
 Triggers:
 
@@ -47,9 +47,12 @@ Triggers:
 | Any command or subagent result with `outcome: passes` | `commands[].outcome`, `subagents[].results[].outcome` | High |
 | No command passes, and a command has `outcome: asks` with `decidedBy.kind` `mode` and `mode` `default` (with or without `ignoredMode`), and its `preToolUseHook` is `none` | `commands[]` | Medium |
 | No command passes, and a PreToolUse hook that covers a command has `failsOpen: true` | `preToolUseHooks[].failsOpen` | Medium |
-| Every command is `blocked`, or has a hook that runs (`preToolUseHook: runs`) with `failsOpen: false` | `commands[]` | No finding |
+| `hook-not-verified`: no command passes, and a command has `outcome: asks` with `decidedBy.kind` `mode` and `mode` `default` (with or without `ignoredMode`), its `preToolUseHook` is `runs`, at least one PreToolUse hook has a `tools` list that includes the command's `tool`, and none of those hooks has `failsOpen: true` | `commands[].outcome`, `commands[].tool`, `commands[].decidedBy`, `commands[].preToolUseHook`, `preToolUseHooks[].tools`, `preToolUseHooks[].failsOpen` | Low |
+| Otherwise: the command is `blocked`, is decided by an `ask` or `deny` rule, by the critical-path rule or by a mode other than `default`, or its outcome or PreToolUse hook state is `undeterminable` | `commands[]` | No finding |
 
-A command with an `ask` or `deny` rule that covers it, or with a hook that runs, is not part of the medium case: the project has written a control for it. Medium means that the only barrier is the confirmation the mode asks for. The impact is an opinion of the rule, not a measurement of how often a prompt is skipped. An `undeterminable` outcome is listed with its `reason`, and it is not a finding.
+A hook covers a command when its `tools` list includes the command's tool. The `if` field of a hook does not narrow coverage in either row: a hook covers a tool through its matcher alone, so a covering fail-open hook gives medium even when its `if` would not select the command. That is the conservative reading. A hook whose `tools` is `undeterminable` is not counted as covering. Its matcher cannot be settled, so it does not make the low row. A failing-open one is listed as undeterminable, and it gives no finding. A command with an `ask` or `deny` rule that covers it is not part of the default-mode rows: the project has written a control for it. A fail-closed hook that runs for the command lowers the level from medium to low. A covering hook that fails open stays medium, as the `hook-fails-open` row. Medium means that the only barrier is the confirmation the mode asks for. The impact is an opinion of the rule, not a measurement of how often a prompt is skipped. An `undeterminable` outcome is listed with its `reason`, and it is not a finding.
+
+The impact of this row is low, although the low row of the impact table in `rules/README.md` is for hardening. The hook runs for the command (its matcher and `if` select it) and fails closed, but the scan cannot tell whether it blocks the command; the simulated outcome stays `asks` by the mode. The row therefore asks the agent to read the script. For each covering hook whose script is a `hook-script` candidate (inside the target; a script outside it is not a candidate), the agent reads the file and says in the finding whether the script blocks the destructive commands of the scan, and which ones. The reading does not change the impact, which stays the measured one: low.
 
 ## Recommendation
 
@@ -103,7 +106,7 @@ A hook that only logs the call, or that exits with code 0 in every case, does no
 - The person runs in `auto` mode. The classifier reviews the commands and blocks several of them by default, and the scanner does not see that. The finding still describes the project settings, and the report says that the mode was assumed.
 - The outcome is `undeterminable`, for example because of a wrapper, an alias, a quote character or a compound command the scanner cannot split. The rule does not guess; it lists the outcome and its reason.
 - A command that is not in the scanner's list. The list has examples, so a command missing from it is not measured.
-- A command with an `ask` or `deny` rule, or a hook that runs, when the hook fails closed. The project has a control for it.
+- A command with an `ask` or `deny` rule that covers it. The project has a control for it. A hook that runs and fails closed does not end the check: that case is the low row, and the finding says what the hook covers.
 
 ## Examples
 
@@ -129,8 +132,12 @@ Bad: the project sets `"defaultMode": "acceptEdits"`. `rm -rf build` has outcome
 
 ### Applies: only the confirmation prompt is left (medium)
 
-Bad: no `deny`, `ask` or hook in the project, and no `defaultMode`. Every command has outcome `asks` decided by mode `default`, and `preToolUseHook` is `none`. No command passes, so the finding is medium: the only barrier is the prompt. Good: add the `deny` and `ask` rules and the hook above with `onFailure: "block"`. The medium finding goes away.
+Bad: no `deny`, `ask` or hook in the project, and no `defaultMode`. Every command has outcome `asks` decided by mode `default`, and `preToolUseHook` is `none`. No command passes, so the finding is medium: the only barrier is the prompt. Good: add the `deny` and `ask` rules and the hook above with `onFailure: "block"`. The medium finding goes away. A command that still asks behind the hook alone gives the low finding of the next example.
 
-### Does not apply: a hook that runs and fails closed
+### Applies, low: a hook runs, but nothing shows that it blocks the command
 
-Good: the project has the `deny` rules and the hook above with `onFailure: "block"`, and `rm -rf build` asks with the hook running. Each command is blocked by a rule, or asks behind a hook that fails closed. No command passes. No finding.
+Bad: the project has the hook above with `onFailure: "block"`, and no `deny`, `ask` or `defaultMode`. `rm -rf build` asks by the default mode, its `preToolUseHook` is `runs` and the hook has `failsOpen: false`. No command passes, so the finding is low, not medium. The agent reads the hook script and says in the finding whether it blocks `rm -rf`; the impact stays low either way, because the scan did not run the script. Good: put `Bash(rm -rf *)` in `ask` or `deny`, as the rules above do. Then the command has a rule and no finding.
+
+### Does not apply: each command is blocked by a rule
+
+Good: the project has a `deny` rule for every command of the list, so each one is `blocked`. No command asks or passes, so the hook does not matter. No finding.

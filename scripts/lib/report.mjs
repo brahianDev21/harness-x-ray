@@ -38,6 +38,8 @@ const COMPONENT_LABELS = Object.freeze({
   memory: "component.memory",
 });
 const STATUS_LABELS = Object.freeze({ provisional: "status.provisional" });
+// A trigger whose name does not say the state it stands for: its label is shown in brackets after the name.
+const TRIGGER_NOTES = Object.freeze({ "hook-not-verified": "trigger.hookNotVerified" });
 // The fields of measurements.json that the report reads. Their presence is checked before anything is rendered.
 const REQUIRED_FIELDS = Object.freeze([
   "/meta/tool",
@@ -294,7 +296,10 @@ function triggerRow(ctx, group) {
           value: valueText(ctx, group.threshold.value, true),
           status: statusText(ctx),
         });
-  return [ctx.tableCode(group.trigger), ctx.num(group.count), t(`impact.${group.impact}`), value, threshold];
+  const name = Object.hasOwn(TRIGGER_NOTES, group.trigger)
+    ? `${ctx.tableCode(group.trigger)} (${ctx.tableText(t(TRIGGER_NOTES[group.trigger]))})`
+    : ctx.tableCode(group.trigger);
+  return [name, ctx.num(group.count), t(`impact.${group.impact}`), value, threshold];
 }
 
 function isObjectValue(value) {

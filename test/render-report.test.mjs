@@ -107,6 +107,50 @@ describe("golden reports", () => {
   });
 });
 
+describe("trigger notes", () => {
+  // A copy of the scan with one measured SEC-02 finding, whose only trigger is hook-not-verified.
+  function withHookNotVerified() {
+    const measurements = structuredClone(run.measurements);
+    const ref = "/security/destructiveCoverage/commands/0";
+    measurements.measuredFindings.push({
+      id: `mf-${measurements.measuredFindings.length + 1}`,
+      rule: "SEC-02",
+      axis: "security",
+      impact: "low",
+      measurementRef: ref,
+      evidence: [{ file: ".claude/settings.json" }],
+      triggers: [{ trigger: "hook-not-verified", impact: "low", measurementRef: ref }],
+    });
+    return measurements;
+  }
+
+  test("the hook-not-verified row shows its name and the note of its state, in English", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements: withHookNotVerified() });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.ok(
+      report.includes("`hook-not-verified` (a hook runs on this command, but the scan cannot tell whether it blocks it)"),
+      "the English note is missing",
+    );
+  });
+
+  test("the same row in the Spanish report carries the Spanish note", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.es.json"), measurements: withHookNotVerified() });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    const note = loadLabels(HARNESS_ROOT, "es")["trigger.hookNotVerified"];
+    assert.ok(report.includes(`\`hook-not-verified\` (${note})`), "the Spanish note is missing");
+  });
+
+  test("a trigger without a note is shown by its name alone, as before (positive control)", () => {
+    const report = readGolden("report.en.md");
+    assert.ok(report.includes("| `destructive-command-passes` | "), "the name-only row is missing");
+    assert.equal(report.includes("hook-not-verified"), false, "the golden scan has no hook-not-verified trigger");
+  });
+});
+
 describe("privacy", () => {
   test("a path of the target that the agent writes is shown as <target>", async () => {
     const findings = readGoldenFindings("findings.en.json");

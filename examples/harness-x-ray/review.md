@@ -15,11 +15,11 @@ This review records the scan of this repository's own harness. The report itself
 | --- | --- | --- | --- |
 | Instructions | 0 | 0 | 0 |
 | Context | 0 | 0 | 0 |
-| Security | 0 | 2 | 0 |
+| Security | 0 | 2 | 1 |
 | Verification | 0 | 0 | 0 |
 | Structure | 0 | 0 | 0 |
 | Code | 0 | 0 | 1 |
-| **Total** | **0** | **2** | **1** |
+| **Total** | **0** | **2** | **2** |
 
 There is no high finding. Always-loaded context is about 1,053 tokens (estimated, chars/4), and the scan raised no context finding.
 
@@ -59,6 +59,16 @@ No deny rule covers either one (`deny` is empty in the measurements). The only P
 
 ## Low findings
 
+### SEC-02 · Destructive commands pass or depend only on manual confirmation
+
+**What the scan found.** All 16 destructive commands in the scanner's list ask under the default mode, and no command passes. A PreToolUse hook runs for each of them: its matcher is `Read|Grep|Bash|PowerShell` and its `onFailure` is `block`, so `failsOpen` is false. Measured as `hook-not-verified` at `/security/destructiveCoverage/commands/0` to `/commands/15`, one trigger of low impact per command. The evidence is `.claude/settings.json` and the hook script `scripts/hooks/guard-secret-reads.mjs`.
+
+This row is new with V02-03. Before it, a fail-closed hook gave no SEC-02 finding, although the scan cannot tell whether the hook blocks these commands without running it.
+
+**Why it is low.** The hook runs for these commands and fails closed, but the scan does not run it, so it cannot say whether the hook blocks `rm -rf`, `git push --force` or the other commands. The simulated outcome stays `asks` by the mode. `CLAUDE.md` describes the hook as blocking calls that name a secret file, which points to no block on these commands, but this review does not count that description as a measurement. The impact stays low whatever the reading of the script says.
+
+**What would change the decision.** This review does not record a reading of `scripts/hooks/guard-secret-reads.mjs` for these commands. The rule asks for one: the agent reads the script and says in the finding whether it covers the commands. A deny or ask rule for each command would remove the finding (open decision 2). The fail-closed setting depends on Claude Code v2.1.295 or later, as the SEC-02 rule says.
+
 ### COD-04 · No reuse step before writing new code
 
 No instruction file tells the agent to search for an existing helper before it writes one. CLAUDE.md names `scripts/lib/` as the shared modules, and `.claude/rules/dev.md` names two helpers, but no line says to search first. The measured duplication is 0.21% of lines across 34 files, with one 11-line block copied between `scripts/scan.mjs` and `scripts/render-report.mjs`.
@@ -66,8 +76,6 @@ No instruction file tells the agent to search for an existing helper before it w
 The step is not added. Its text would load in every session that works on `scripts/` or `test/` files, the scope of `.claude/rules/dev.md`, so it costs tokens each time. The rule's evidence is a third-party benchmark that the rule has not verified. It stays a hypothesis for a controlled test: the same helper-writing task with and without the step, counting the new helpers that duplicate code in `scripts/lib/`. See open decision 5.
 
 ## Findings the scan does not give, and why
-
-**SEC-02, destructive commands: no finding, and the reason is a limit of the measure.** The scanner counts the PreToolUse hook as coverage for Bash and PowerShell, because it runs for every such call and is set to fail closed. The measurements show `preToolUseHook: runs` for all 16 commands, and the hook has `failsOpen: false`. But the hook blocks only calls that name a secret file. It does not stop `rm -rf`, `git push --force`, `git reset --hard` or the other destructive commands, and this review does not count it as a barrier for them. For those commands, the only barrier is the confirmation prompt of the default mode, which is what SEC-02 rates medium when no hook runs. The `failsOpen` value comes only from `onFailure` and does not check the Claude Code version. `onFailure` needs v2.1.295 or later. On an older version, a crashing hook lets the call through.
 
 **SEC-03, secrets: no finding.** The scanned copy has no secret-named file and no literal secret, since both lists are empty in the measurements. A read of the `.env` file at the root has no permission rule, but the hook runs for it and fails closed. The hook judges names, not content, so a secret kept under another name passes.
 
@@ -80,7 +88,7 @@ The step is not added. Its text would load in every session that works on `scrip
 ## Open decisions
 
 1. Whether `--out` should be limited to the runs folder, and whether the renderer's folder argument should be limited the same way (SEC-01). Decided in v0.2 (V02-01): both are limited to `runs/` and the system temp folder, in the scanner and in the renderer.
-2. Whether to add deny or ask rules for the destructive commands in the scanner's list. The scan gives no finding for them, so this is a choice and not a fix the scan requires (SEC-02).
+2. Whether to add deny or ask rules for the destructive commands in the scanner's list. The scan gives SEC-02 low for them (`hook-not-verified`), and a deny or ask rule for each command would remove it. This is a choice and not a fix the rule requires (SEC-02).
 3. Whether to build the hook and deny rules that SEC-05 recommends, given that the tests write to the temp folder (SEC-05).
 4. Whether the scanner should read `claudeMdExcludes` and inventory the skills under `test/fixtures/`, so that its inventory matches what loads.
 5. Whether to add the reuse step to `.claude/rules/dev.md`, after the controlled test (COD-04).

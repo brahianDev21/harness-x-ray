@@ -129,3 +129,65 @@ for (const name of TARGETS) {
     }
   });
 }
+
+// The self-scan shape: this repository's own .claude/settings.json has one PreToolUse hook on Read, Grep, Bash and
+// PowerShell that fails closed, and no permission rule and no defaultMode. Its script is written here empty and is never
+// run. The scan cannot tell that the hook blocks the destructive commands, so SEC-02 is low, one trigger per command.
+const SELF_SCAN_SETTINGS = {
+  hooks: {
+    PreToolUse: [
+      {
+        matcher: "Read|Grep|Bash|PowerShell",
+        hooks: [
+          { type: "command", command: "node", args: ["${CLAUDE_PROJECT_DIR}/scripts/hooks/guard-secret-reads.mjs"], onFailure: "block" },
+        ],
+      },
+    ],
+  },
+};
+
+test("the self-scan shape: a fail-closed PreToolUse hook on Bash gives SEC-02 low, with one hook-not-verified per command", async (t) => {
+  const fixture = makeFixture({
+    files: {
+      ".claude/settings.json": `${JSON.stringify(SELF_SCAN_SETTINGS, null, 2)}\n`,
+      "scripts/hooks/guard-secret-reads.mjs": "// Never run by the scan; its content does not matter here.\n",
+    },
+  });
+  t.after(fixture.cleanup);
+  const { data } = await scanInto(fixture.root, path.join(fixture.base, "self"));
+
+  const commands = data.security.destructiveCoverage.commands;
+  assert.equal(commands.length, 16, "the scanner lists the 16 destructive commands");
+  const findings = data.measuredFindings.filter((finding) => finding.rule === "SEC-02");
+  assert.equal(findings.length, 1);
+  const [finding] = findings;
+  assert.equal(finding.impact, "low");
+  assert.deepEqual(
+    finding.triggers.map((item) => [item.trigger, item.impact, item.measurementRef]),
+    commands.map((_, index) => ["hook-not-verified", "low", `/security/destructiveCoverage/commands/${index}`]),
+  );
+  assert.deepEqual(finding.evidence, [{ file: ".claude/settings.json" }, { file: "scripts/hooks/guard-secret-reads.mjs" }]);
+  assert.ok(
+    data.candidates.some((item) => item.kind === "hook-script" && item.file === "scripts/hooks/guard-secret-reads.mjs"),
+    "the hook script is a candidate for the agent to read",
+  );
+});
+
+test("the positive controls keep their SEC-02 finding: default-only medium, permissive high, guarded none", async (t) => {
+  for (const [name, impact] of [
+    ["default-only", "medium"],
+    ["permissive", "high"],
+    ["guarded", null],
+  ]) {
+    const fixture = makeFixture({ fromDir: path.join(FIXTURES, name) });
+    t.after(fixture.cleanup);
+    const { data } = await scanInto(fixture.root, path.join(fixture.base, "out"));
+    const findings = data.measuredFindings.filter((finding) => finding.rule === "SEC-02");
+    if (impact === null) {
+      assert.deepEqual(findings, [], name);
+    } else {
+      assert.equal(findings.length, 1, name);
+      assert.equal(findings[0].impact, impact, name);
+    }
+  }
+});
