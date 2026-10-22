@@ -14,7 +14,7 @@ import fs from "node:fs";
 import { loadClaudeConfig } from "./claude-config.mjs";
 import { UNDETERMINABLE, coveredTools, hookRunState } from "./hook-matcher.mjs";
 import { isPlainObject } from "./json-out.mjs";
-import { MATRIX_MODES, evaluate, evaluateInSessionMode } from "./permissions.mjs";
+import { MATRIX_MODES, decisionRules, evaluate, evaluateInSessionMode } from "./permissions.mjs";
 
 export { hookFilterState } from "./hook-matcher.mjs";
 
@@ -118,11 +118,12 @@ export function toolsCoveredBy(matcher) {
 
 // ---------------------------------------------------------------------------------------------------
 
-// Reads the parsed configuration and the data, and simulates every command with the project's rules.
+// Reads the parsed configuration and the data, and simulates every command with the project's rules. The rules include the
+// user layer's when it was read (decisionRules). The mode is the project's defaultMode only: the user's is not applied.
 function collectDestructiveCoverage(ctx) {
   const config = loadClaudeConfig(ctx);
   const commands = loadDestructiveCommands();
-  const rules = { allow: config.permissions.allow, ask: config.permissions.ask, deny: config.permissions.deny };
+  const rules = decisionRules(config.permissions, ctx.outside);
   const defaultMode = config.permissions.defaultMode;
   const mode = defaultMode === null ? null : defaultMode.value;
   // The main conversation runs in the project mode only when the project file may apply it; otherwise in default.

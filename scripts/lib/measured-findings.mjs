@@ -123,11 +123,13 @@ function measuredFinding(rule, triggers, evidence, measurementRef) {
   };
 }
 
-// The evidence of a file, with a line and an end line only when they are integers.
-function evidenceOf(file, line, endLine) {
+// The evidence of a file, with a line and an end line only when they are integers. A file outside the target carries its
+// layer ("user" or "ancestor"); a file of the target carries none.
+function evidenceOf(file, line, endLine, layer) {
   const entry = { file };
   if (Number.isInteger(line)) entry.line = line;
   if (Number.isInteger(endLine)) entry.endLine = endLine;
+  if (layer !== undefined) entry.layer = layer;
   return entry;
 }
 
@@ -217,9 +219,18 @@ function emitAgentsMdNotLoaded(measurements) {
     (item) => item.kind === "memory" && item.loadMode === "always" && CLAUDE_FILE_NAMES.includes(item.path),
   );
   const ancestor = listAt(measurements.context?.ancestors).find((item) => CLAUDE_BASE_NAMES.includes(baseName(item.path)));
+  // A parent-folder cause is cited with the ancestor layer only when the scan read it (read true, with --include-ancestors).
+  // The validator refuses an ancestor that was not read, so an unread one (read false) is not cited as evidence; the trigger
+  // still names it as the cause. Without the flag there is no read field, and the evidence is the same as before.
   let cause = { causedBy: null };
   if (inTarget !== undefined) cause = { causedBy: "target", file: inTarget.path };
-  else if (ancestor !== undefined) cause = { causedBy: "ancestor", file: ancestor.path };
+  else if (ancestor !== undefined) {
+    cause = {
+      causedBy: "ancestor",
+      file: ancestor.read === false ? undefined : ancestor.path,
+      layer: ancestor.read === true ? "ancestor" : undefined,
+    };
+  }
 
   const findings = [];
   const undeterminable = [];
@@ -232,7 +243,7 @@ function emitAgentsMdNotLoaded(measurements) {
       return;
     }
     const evidence = [evidenceOf(item.path)];
-    if (cause.file !== undefined) evidence.push(evidenceOf(cause.file));
+    if (cause.file !== undefined) evidence.push(evidenceOf(cause.file, undefined, undefined, cause.layer));
     const detail = { causedBy: cause.causedBy };
     const triggers = [trigger("agents-md-not-loaded", "medium", pointer, { detail })];
     findings.push(measuredFinding("CTX-07", triggers, evidence));
@@ -312,6 +323,9 @@ function passingCommandsByAllowEntry(measurements, allow) {
   const byAllow = new Map();
   for (const item of passing) {
     if (item.outcome !== "passes" || item.decidedBy?.kind !== "rule" || item.decidedBy.list !== "allow") continue;
+    // A rule of the user's settings is not an entry of the project's allow list, which is all SEC-01 judges. Its text may
+    // equal a project entry's, so it is never matched to one.
+    if (item.decidedBy.layer === "user") continue;
     for (const part of String(item.decidedBy.rule).split(" && ")) {
       const index = allowIndexOf(allow, part, item.decidedBy.source);
       if (index === -1) continue;
@@ -406,11 +420,19 @@ function emitDestructiveCommands(measurements) {
   return { findings: compact([finding]), undeterminable };
 }
 
-// The harness file that lets a command pass: the allow or ask rule, or the project mode.
+// The harness file that lets a command pass: the allow or ask rule, or the project mode. A rule of the user's settings
+// carries the user layer.
 function passEvidence(decidedBy, mode) {
-  if (decidedBy?.kind === "rule" && typeof decidedBy.source === "string") return [evidenceOf(decidedBy.source)];
+  if (decidedBy?.kind === "rule" && typeof decidedBy.source === "string") {
+    return [evidenceOf(decidedBy.source, undefined, undefined, layerOf(decidedBy))];
+  }
   if (decidedBy?.kind === "mode" && typeof mode?.source === "string") return [evidenceOf(mode.source)];
   return [];
+}
+
+// The layer of a decision: "user" when its rule comes from the user's settings, otherwise undefined (a project rule).
+function layerOf(decidedBy) {
+  return decidedBy.layer === "user" ? "user" : undefined;
 }
 
 // The settings file that holds the hook, and its script when the script is in the target.

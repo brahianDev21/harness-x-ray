@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   AXES,
   EVIDENCE_FIELDS,
+  EVIDENCE_LAYERS,
   FINDING_FIELDS,
   IMPACTS,
   KINDS,
@@ -36,6 +37,11 @@ test("findings schema: unknown fields are errors at every level", () => {
 test("findings schema: the required fields are the ones the validator checks", () => {
   assert.deepEqual(SCHEMA.required, ["findings"]);
   assert.deepEqual(sorted(SCHEMA.$defs.finding.required), sorted(REQUIRED_FINDING_FIELDS));
+  assert.deepEqual(SCHEMA.$defs.evidence.required, ["file"]);
+});
+
+test("findings schema: the evidence layers are the validator's set, and a layer is optional", () => {
+  assert.deepEqual(SCHEMA.$defs.evidence.properties.layer.enum, [...EVIDENCE_LAYERS]);
   assert.deepEqual(SCHEMA.$defs.evidence.required, ["file"]);
 });
 

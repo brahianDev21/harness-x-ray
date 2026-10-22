@@ -203,7 +203,22 @@ function buildScenarios() {
   e.security.destructiveCoverage.mode = null;
   const empty = { measurements: e, findings: { findings: [] }, catalog };
 
-  return { golden, rich, empty };
+  // The scans that read beyond the target: one flag each, then both. Each gives its own limits text, and the evidence of
+  // the layer it reads is marked. The ancestors scenarios also give the context text of the parent folders.
+  const flagged = (include, evidence) => {
+    const measurements = cloneOf(run.measurements);
+    measurements.meta.include = include;
+    const findings = readGoldenFindings("findings.en.json");
+    findings.findings[0].evidence.push(...evidence);
+    return { measurements, findings, catalog };
+  };
+  const userEvidence = { file: "~/.claude/settings.json", layer: "user" };
+  const ancestorEvidence = { file: "../CLAUDE.md", layer: "ancestor" };
+  const userLayer = flagged({ userLayer: true, ancestors: false }, [userEvidence]);
+  const ancestors = flagged({ userLayer: false, ancestors: true }, [ancestorEvidence]);
+  const both = flagged({ userLayer: true, ancestors: true }, [userEvidence, ancestorEvidence]);
+
+  return { golden, rich, empty, userLayer, ancestors, both };
 }
 
 function probeFinding(id, measurementRef, trigger) {

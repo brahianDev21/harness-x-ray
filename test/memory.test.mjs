@@ -7,10 +7,11 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { claudeConfigMeasure } from "../scripts/lib/claude-config.mjs";
 import { toStableJson } from "../scripts/lib/json-out.mjs";
-import { createMemoryMeasure, memoryMeasure } from "../scripts/lib/memory.mjs";
+import { countsOf, createMemoryMeasure, memoryMeasure, ruleModeOf } from "../scripts/lib/memory.mjs";
 import { DEFAULT_MAX_BYTES } from "../scripts/lib/safe-fs.mjs";
 import { scan } from "../scripts/lib/scanner.mjs";
 import { estimateTokens } from "../scripts/lib/tokens.mjs";
+import { recordOpens, within } from "./helpers/record-opens.mjs";
 import { makeFixture, symlinkSupport } from "./helpers/make-fixture.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -21,6 +22,7 @@ const FIXTURES = path.join(TEST_DIR, "fixtures");
 const FIXED_NOW = new Date("2026-10-17T12:00:00.000Z");
 // Text that only the files outside the target contain. No output and no memory entry may include it.
 const WITNESS = "witness-5d1e-outside-the-target";
+const symlinkSkip = symlinkSupport().supported ? false : symlinkSupport().reason;
 
 // A copy of a versioned fixture in a temp folder, with extra files written on top of the copy.
 function copyOf(t, name, files = {}) {
@@ -38,10 +40,10 @@ function freshFixture(t, description = {}) {
 
 // Runs the memory measure. The ancestor walk stops at the fixture folder, so the real parent folders
 // of the temp folder never count. The home folder defaults to a folder that does not exist.
-function memoryScan(root, base, { home, extra = [] } = {}) {
+function memoryScan(root, base, { home, extra = [], includeAncestors } = {}) {
   return scan({
     root,
-    measures: [createMemoryMeasure({ ancestorLimit: base, home: home ?? path.join(base, "no-home") }), ...extra],
+    measures: [createMemoryMeasure({ ancestorLimit: base, home: home ?? path.join(base, "no-home"), includeAncestors }), ...extra],
     now: FIXED_NOW,
   });
 }
@@ -62,6 +64,13 @@ function memoryProbe() {
 function item(result, rel) {
   const found = result.inventory.find((entry) => entry.path === rel);
   assert.ok(found, `${rel} is in the inventory`);
+  return found;
+}
+
+// The context.ancestors item of a parent-folder file, by the path the target gives it (such as ../CLAUDE.md).
+function ancestorOf(result, rel) {
+  const found = result.context.ancestors.find((entry) => entry.path === rel);
+  assert.ok(found, `${rel} is in context.ancestors`);
   return found;
 }
 
@@ -514,6 +523,260 @@ test("memory: the .claude/CLAUDE.md of the home folder is user memory, so it is 
   const elsewhere = await memoryScan(root, fixture.base, { home: path.join(fixture.base, "other-home") });
   assert.deepEqual(elsewhere.context.ancestors.map((entry) => entry.path), ["../../.claude/CLAUDE.md"]);
   assert.equal(item(elsewhere, "AGENTS.md").loadMode, "not-loaded");
+});
+
+test("memory: with includeAncestors, the home folder's .claude is user layer: its AGENTS.md is listed and never opened, and a normal parent AGENTS.md is read", async (t) => {
+  const fixture = freshFixture(t, { files: { "sub/README.md": "Target.\n" } });
+  const realBase = fs.realpathSync(fixture.base);
+  const userAgents = path.join(fixture.base, ".claude", "AGENTS.md");
+  fs.mkdirSync(path.dirname(userAgents));
+  fs.writeFileSync(userAgents, `# User agents\n\n${WITNESS}\n`);
+  fs.writeFileSync(path.join(fixture.base, "AGENTS.md"), "# Parent agents\n");
+  const root = path.join(fixture.root, "sub");
+  const home = fixture.base;
+
+  // Without the flag the listing is as it was: the home folder's .claude/AGENTS.md is a parent file, by path and size.
+  const listed = await memoryScan(root, fixture.base, { home });
+  assert.deepEqual(
+    listed.context.ancestors.find((entry) => entry.path === "../../.claude/AGENTS.md"),
+    { path: "../../.claude/AGENTS.md", bytes: fs.statSync(userAgents).size },
+  );
+
+  const opened = recordOpens(t);
+  const result = await memoryScan(root, fixture.base, { home, includeAncestors: true });
+
+  // Nothing under the home folder's .claude is opened. The normal parent file is opened, which shows that the recorder works.
+  assert.deepEqual(opened.filter((file) => within(path.join(realBase, ".claude"), file)), []);
+  assert.ok(opened.includes(path.join(realBase, "AGENTS.md")), "positive control: the normal parent AGENTS.md is opened");
+  assert.deepEqual(ancestorOf(result, "../../.claude/AGENTS.md"), {
+    path: "../../.claude/AGENTS.md",
+    bytes: fs.statSync(userAgents).size,
+    read: false,
+    reason: "user-layer",
+  });
+  assert.equal(ancestorOf(result, "../../AGENTS.md").read, true, "positive control: the normal parent AGENTS.md is read");
+  assert.equal(ancestorOf(result, "../../AGENTS.md").lines, 1);
+  assert.equal(toStableJson(result).includes(WITNESS), false, "the user layer text is not in the output");
+});
+
+test("memory: a home folder reached through a link is the same folder, so its .claude/CLAUDE.md is user memory and is skipped", { skip: symlinkSkip }, async (t) => {
+  const fixture = freshFixture(t, { files: { "sub/AGENTS.md": "# Sub agents\n" } });
+  fs.mkdirSync(path.join(fixture.base, ".claude"));
+  fs.writeFileSync(path.join(fixture.base, ".claude", "CLAUDE.md"), "# User memory\n");
+  const link = path.join(fixture.base, "home-link");
+  fs.symlinkSync(fixture.base, link, "dir");
+  const root = path.join(fixture.root, "sub");
+
+  // The home folder is given through the link, which leads to the folder above the target. It is the same folder.
+  const viaLink = await memoryScan(root, fixture.base, { home: link });
+  assert.deepEqual(viaLink.context.ancestors, [], "the home's .claude/CLAUDE.md is not a parent memory file");
+  assert.equal(item(viaLink, "AGENTS.md").loadMode, "always", "user memory does not stop AGENTS.md from loading");
+
+  // Positive control: a home that is not that folder lists the same file.
+  const elsewhere = await memoryScan(root, fixture.base, { home: path.join(fixture.base, "other-home") });
+  assert.deepEqual(elsewhere.context.ancestors.map((entry) => entry.path), ["../../.claude/CLAUDE.md"]);
+});
+
+test("memory: the test seam refuses an includeAncestors that is not a boolean", () => {
+  assert.throws(() => createMemoryMeasure({ includeAncestors: "yes" }), TypeError);
+  assert.throws(() => createMemoryMeasure({ includeAncestors: null }), TypeError);
+  assert.doesNotThrow(() => createMemoryMeasure({ includeAncestors: true }), "positive control: a boolean is accepted");
+});
+
+test("memory: without includeAncestors, a parent file is listed by path and size only, and its text never appears", async (t) => {
+  const fixture = freshFixture(t, {
+    files: {
+      "CLAUDE.md": `# Parent\n\n${WITNESS}\n`,
+      "AGENTS.md": `# Parent agents\n\n${WITNESS}\n`,
+      "target/CLAUDE.md": "# Target\n",
+      "target/README.md": "Target.\n",
+    },
+  });
+  const target = path.join(fixture.root, "target");
+  const realBase = fs.realpathSync(fixture.base);
+  const realTarget = fs.realpathSync(target);
+  const opened = recordOpens(t);
+  const { seen, probe } = memoryProbe();
+  // The fake home is the folder above the target: the walk meets it as a parent folder, and it is the home of this scan.
+  const result = await memoryScan(target, fixture.base, { extra: [probe], home: fixture.base });
+
+  // The walk stats the parent files and opens none of them. The target's own memory file is opened: that shows the recorder works.
+  assert.deepEqual(
+    opened.filter((file) => within(realBase, file) && !within(realTarget, file)),
+    [],
+    "nothing above the target is opened",
+  );
+  assert.ok(opened.includes(path.join(realTarget, "CLAUDE.md")), "positive control: the target's own CLAUDE.md is opened");
+
+  // Positive control: the parent files exist, and the walk lists them.
+  assert.ok(fs.readFileSync(path.join(fixture.root, "CLAUDE.md"), "utf8").includes(WITNESS));
+  assert.deepEqual(result.context.ancestors, [
+    { path: "../AGENTS.md", bytes: fs.statSync(path.join(fixture.root, "AGENTS.md")).size },
+    { path: "../CLAUDE.md", bytes: fs.statSync(path.join(fixture.root, "CLAUDE.md")).size },
+  ]);
+  assertNoWitness(result, seen);
+});
+
+test("memory: with includeAncestors, a parent CLAUDE.md is read, and its counts are those of the same text at the root", async (t) => {
+  // The comment line is one line, and it does not count as tokens. CRLF line endings do not change the counts.
+  const text = "# Parent memory\r\n\r\n<!-- a comment that is not counted -->\r\nParent body.\r\n";
+  const asRoot = freshFixture(t, { files: { "CLAUDE.md": text } });
+  const rootItem = item(await memoryScan(asRoot.root, asRoot.base), "CLAUDE.md");
+
+  const fixture = freshFixture(t, { files: { "CLAUDE.md": text, "target/README.md": "Target.\n" } });
+  const result = await memoryScan(path.join(fixture.root, "target"), fixture.base, { includeAncestors: true });
+
+  assert.equal(rootItem.lines, 4, "positive control: the root file has four lines");
+  assert.deepEqual(ancestorOf(result, "../CLAUDE.md"), {
+    path: "../CLAUDE.md",
+    bytes: fs.statSync(path.join(fixture.root, "CLAUDE.md")).size,
+    read: true,
+    lines: rootItem.lines,
+    estTokens: rootItem.estTokens,
+    loadMode: "always",
+    loadReason: "memory file of a parent folder, loaded at session start",
+  });
+});
+
+test("memory: with includeAncestors, a parent AGENTS.md loads only when no CLAUDE file is in the target or above it", async (t) => {
+  const agents = "# Parent agents\n";
+  const alone = freshFixture(t, { files: { "AGENTS.md": agents, "target/README.md": "Target.\n" } });
+  const target = path.join(alone.root, "target");
+
+  // Positive control: no CLAUDE file anywhere, so the parent AGENTS.md loads at the start.
+  assert.deepEqual(ancestorOf(await memoryScan(target, alone.base, { includeAncestors: true }), "../AGENTS.md"), {
+    path: "../AGENTS.md",
+    bytes: Buffer.byteLength(agents),
+    read: true,
+    lines: 1,
+    estTokens: estimateTokens(agents).estTokens,
+    loadMode: "always",
+    loadReason: "no CLAUDE.md in the target or its ancestors",
+  });
+
+  // A CLAUDE.md above the target keeps the parent AGENTS.md from loading. The CLAUDE.md above is read and loads.
+  fs.writeFileSync(path.join(alone.base, "CLAUDE.md"), "# Above\n");
+  const above = await memoryScan(target, alone.base, { includeAncestors: true });
+  assert.equal(ancestorOf(above, "../AGENTS.md").loadMode, "not-loaded");
+  assert.equal(ancestorOf(above, "../AGENTS.md").loadReason, "a CLAUDE.md exists and does not import it");
+  assert.equal(ancestorOf(above, "../../CLAUDE.md").loadMode, "always", "positive control: the CLAUDE.md above loads");
+  assert.equal(ancestorOf(above, "../../CLAUDE.md").lines, 1);
+
+  // A CLAUDE.md in the target keeps it from loading too.
+  const inTarget = freshFixture(t, { files: { "AGENTS.md": agents, "target/CLAUDE.md": "# Target\n" } });
+  const result = await memoryScan(path.join(inTarget.root, "target"), inTarget.base, { includeAncestors: true });
+  assert.equal(ancestorOf(result, "../AGENTS.md").loadMode, "not-loaded");
+  assert.equal(item(result, "CLAUDE.md").loadMode, "always", "positive control: the target's own CLAUDE.md loads");
+});
+
+test("memory: with includeAncestors, the inventory, the budget, the limits and the imports do not change, and no parent text appears", async (t) => {
+  const fixture = freshFixture(t, {
+    files: {
+      "CLAUDE.md": `# Parent\n\n${WITNESS}\n`,
+      "AGENTS.md": `# Parent agents\n\n${WITNESS}\n`,
+      "target/CLAUDE.md": "# Target\n\n@notes.md\n",
+      "target/notes.md": "# Notes\n",
+    },
+  });
+  const target = path.join(fixture.root, "target");
+  const off = memoryProbe();
+  const on = memoryProbe();
+  const withoutFlag = await memoryScan(target, fixture.base, { extra: [off.probe] });
+  const withFlag = await memoryScan(target, fixture.base, { extra: [on.probe], includeAncestors: true });
+
+  // Positive control: the parent files are read only in the second run.
+  assert.deepEqual(withFlag.context.ancestors.map((entry) => entry.read), [true, true]);
+  assert.deepEqual(withoutFlag.context.ancestors.map((entry) => "read" in entry), [false, false]);
+  assert.deepEqual(withFlag.inventory, withoutFlag.inventory);
+  assert.deepEqual(withFlag.warnings, withoutFlag.warnings);
+  assert.deepEqual(withFlag.context.alwaysLoaded, withoutFlag.context.alwaysLoaded);
+  assert.deepEqual(withFlag.context.limits, withoutFlag.context.limits);
+  assert.deepEqual(withFlag.context.imports, withoutFlag.context.imports);
+  assert.deepEqual(on.seen.entries, off.seen.entries, "ctx.memory is the same");
+  assertNoWitness(withFlag, on.seen);
+  assertNoWitness(withoutFlag, off.seen);
+});
+
+test("memory: with includeAncestors, a parent CLAUDE.md that is a link out of its folder is not read", { skip: symlinkSupport().supported ? false : symlinkSupport().reason }, async (t) => {
+  const fixture = makeFixture({
+    files: { "target/README.md": "Target.\n" },
+    outside: { "secret.md": WITNESS },
+    symlinks: [{ path: "CLAUDE.md", target: "../outside/secret.md" }],
+  });
+  t.after(fixture.cleanup);
+  // Positive control: a regular memory file above the parent folder is read.
+  fs.writeFileSync(path.join(fixture.base, "CLAUDE.md"), "# Base\n");
+  const { seen, probe } = memoryProbe();
+  const result = await memoryScan(path.join(fixture.root, "target"), fixture.base, { extra: [probe], includeAncestors: true });
+
+  assert.ok(fs.readFileSync(path.join(fixture.outsideDir, "secret.md"), "utf8").includes(WITNESS));
+  assert.deepEqual(ancestorOf(result, "../CLAUDE.md"), {
+    path: "../CLAUDE.md",
+    bytes: Buffer.byteLength(WITNESS),
+    read: false,
+    reason: "outside-root",
+    loadMode: "always",
+    loadReason: "memory file of a parent folder, loaded at session start",
+  });
+  assert.equal(ancestorOf(result, "../../CLAUDE.md").read, true, "positive control: a regular file above is read");
+  assert.equal(ancestorOf(result, "../../CLAUDE.md").lines, 1);
+  assertNoWitness(result, seen);
+});
+
+test("memory: with includeAncestors, a parent CLAUDE.md over 4 MiB is not read and is not a limit, and a small one above it is read", async (t) => {
+  const size = DEFAULT_MAX_BYTES + 1;
+  const fixture = freshFixture(t, { files: { "CLAUDE.md": Buffer.alloc(size, 0x61), "target/README.md": "Target.\n" } });
+  fs.writeFileSync(path.join(fixture.base, "CLAUDE.md"), "# Base\n");
+  const result = await memoryScan(path.join(fixture.root, "target"), fixture.base, { includeAncestors: true });
+
+  assert.deepEqual(ancestorOf(result, "../CLAUDE.md"), {
+    path: "../CLAUDE.md",
+    bytes: size,
+    read: false,
+    reason: "too-large",
+    loadMode: "always",
+    loadReason: "memory file of a parent folder, loaded at session start",
+  });
+  // Positive control: a small file above the parent folder is read.
+  assert.equal(ancestorOf(result, "../../CLAUDE.md").read, true);
+  assert.deepEqual(result.context.limits, [], "an ancestor is never a limit");
+  assert.deepEqual(memoryWarnings(result), [], "an ancestor is never a memory warning");
+});
+
+test("memory: countsOf counts the lines as read and the tokens without HTML comments", () => {
+  assert.deepEqual(countsOf(""), { lines: 0, estTokens: 0 });
+  assert.deepEqual(countsOf("a\nb"), { lines: 2, estTokens: 1 });
+  assert.deepEqual(countsOf("a\n<!-- hidden -->\nbb\n"), { lines: 3, estTokens: estimateTokens("a\nbb\n").estTokens });
+});
+
+test("memory: ruleModeOf gives a user rule the mode that a project rule gets, with and without paths, and for an invalid paths value", async (t) => {
+  const always = "rule without paths, loaded at session start";
+  const onDemand = "rule with paths, loaded when a matching file is read";
+  const invalid = "rule with invalid frontmatter, loaded at session start";
+  const cases = [
+    ["general", "# General\n", "always", always],
+    ["described", "---\ndescription: Not a paths key.\n---\n# Described\n", "always", always],
+    ["empty", "---\npaths:\n---\n# Empty\n", "always", always],
+    ["scoped", "---\npaths: src/**\n---\n# Scoped\n", "on-demand", onDemand],
+    ["listed", '---\npaths: ["src/**", "test/**"]\n---\n# Listed\n', "on-demand", onDemand],
+    ["number", "---\npaths: 5\n---\n# Number\n", "always", invalid],
+    ["numbers", "---\npaths: [1, 2]\n---\n# Numbers\n", "always", invalid],
+    ["unclosed", "---\npaths: src/**\n# Unclosed\n", "always", invalid],
+  ];
+  const rules = Object.fromEntries(cases.map(([name, text]) => [`.claude/rules/${name}.md`, text]));
+  const fixture = freshFixture(t, { files: { "CLAUDE.md": "# Root\n", ...rules } });
+  const result = await memoryScan(fixture.root, fixture.base);
+
+  for (const [name, text, loadMode, loadReason] of cases) {
+    assert.deepEqual(ruleModeOf(text), { loadMode, loadReason }, `ruleModeOf of ${name}`);
+    const project = item(result, `.claude/rules/${name}.md`);
+    assert.deepEqual({ loadMode: project.loadMode, loadReason: project.loadReason }, { loadMode, loadReason }, `project rule ${name}`);
+  }
+  assert.deepEqual(memoryWarnings(result).map((warning) => warning.path), [
+    ".claude/rules/number.md",
+    ".claude/rules/numbers.md",
+    ".claude/rules/unclosed.md",
+  ]);
 });
 
 test("memory: a loaded file's text is kept in ctx.memory with its kind and load mode", async (t) => {

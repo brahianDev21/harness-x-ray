@@ -35,6 +35,8 @@ This is a measured rule. The threshold is not numeric: any matching entry is a f
 - `loadReason` says whether the `CLAUDE.md` that causes this sits in the target repository or in an ancestor folder. Cite it in the finding.
 - Threshold: no `THRESHOLDS` key applies. Any such entry is a finding.
 
+With `--include-ancestors`, a parent-folder `CLAUDE.md` that causes the finding is cited with `layer: "ancestor"`, and its `context.ancestors` item says whether the scan read it (`read`). Without that flag the parent file is cited without a layer, and the scan knows only its size.
+
 The scanner sets `not-loaded` only when no `CLAUDE.md` imports the `AGENTS.md` file. If `loadMode` is `always`, Claude Code reads the file, and the rule does not apply. An entry with loadReason `claude-md-excluded-agents-unverified` is an undeterminable case in `undeterminable`, not a finding.
 
 Impact: medium. The impact table has no row for silently missing instructions. Medium is used because the instructions are absent from every session, although no size threshold is involved.

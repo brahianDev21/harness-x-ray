@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "measurements.json",
-  "description": "Output of scripts/scan.mjs. Documentation only: nothing validates against it. This file lists the fields that every scan writes. Measures add their own sections (for example security or context), and each one extends this file. Outside meta, no value holds an absolute path of the machine that ran the scan; paths are relative to the target and use forward slashes.",
+  "description": "Output of scripts/scan.mjs. Documentation only: nothing validates against it. This file lists the fields that every scan writes. Measures add their own sections (for example security or context), and each one extends this file. Three things come only from an opt-in flag and are absent without it: meta.include, the top-level userLayer (--include-user-layer), and the read fields of context.ancestors (--include-ancestors). Outside meta, no value holds an absolute path of the machine that ran the scan; paths are relative to the target and use forward slashes, and the user layer and the parent folders are shown with ~/.claude/ and ../ instead.",
   "type": "object",
   "required": ["candidates", "claudeConfig", "code", "context", "instructions", "inventory", "measuredFindings", "meta", "schemaVersion", "security", "structure", "target", "undeterminable", "verification", "warnings"],
   "properties": {
@@ -27,6 +27,16 @@
         "targetRoot": {
           "type": "string",
           "description": "Absolute path of the scanned folder, as the scanner resolved it. It is the only absolute path of this machine in the file, and the findings validator uses it to read the evidence."
+        },
+        "include": {
+          "type": "object",
+          "description": "The opt-in flags of the run. Present only when at least one flag was given; a run without flags has no include key. userLayer is true when the user layer (~/.claude) was read, which adds the userLayer section; ancestors is true when the memory files of the parent folders were read, which adds the read fields of context.ancestors.",
+          "required": ["userLayer", "ancestors"],
+          "properties": {
+            "userLayer": { "type": "boolean" },
+            "ancestors": { "type": "boolean" }
+          },
+          "additionalProperties": false
         }
       }
     },
@@ -160,6 +170,104 @@
         "additionalProperties": false
       }
     },
+    "userLayer": {
+      "type": "object",
+      "description": "The user layer: the Claude Code files of the user, in ~/.claude. Present only with --include-user-layer (meta.include.userLayer is true); without the flag the key is absent. Only these files are read: ~/.claude/CLAUDE.md, the rules under ~/.claude/rules/, ~/.claude/settings.json, ~/.claude/skills/<name>/SKILL.md and ~/.claude/agents/**/*.md. Nothing else of that folder is listed or read, and managed settings are never read. Every path starts with ~/.claude/, and every string copied from a file is redacted with the home folder. Not in the inventory, the budget or the warnings of the target. Its permission rules join the SEC-02 simulation with layer user (see evidence.layer).",
+      "required": ["root", "found", "memory", "settings", "skills", "subagents", "warnings", "notes"],
+      "properties": {
+        "root": { "const": "~/.claude" },
+        "found": {
+          "type": "boolean",
+          "description": "false when ~/.claude is not a folder. Then nothing is read: memory, skills and subagents are empty, settings is absent (found false) and notes is empty."
+        },
+        "memory": {
+          "type": "array",
+          "description": "The memory file ~/.claude/CLAUDE.md (kind memory, loadMode always) and the .md rules under ~/.claude/rules/ (kind rule, with the load mode of their frontmatter), sorted by path. Each item has its lines and estTokens, which are not in the project's budget.",
+          "items": {
+            "type": "object",
+            "required": ["path", "kind", "loadMode", "loadReason", "bytes", "lines", "estTokens"],
+            "properties": {
+              "path": { "type": "string", "pattern": "^~/\\.claude/" },
+              "kind": { "enum": ["memory", "rule"] },
+              "loadMode": { "enum": ["always", "on-demand"] },
+              "loadReason": { "type": "string" },
+              "bytes": { "type": "integer", "minimum": 0 },
+              "lines": { "type": "integer", "minimum": 0 },
+              "estTokens": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "settings": {
+          "type": "object",
+          "description": "~/.claude/settings.json. Only its permissions (allow, ask and deny), its defaultMode and its hooks are read; other keys are not. The rules are redacted and checked as the project's are, and they are never listed in security.permissions. defaultMode is recorded with applied false: it is not applied. Hooks are counted with evaluated false: they are never run or read.",
+          "required": ["path", "found", "permissions", "defaultMode", "hooks"],
+          "properties": {
+            "path": { "const": "~/.claude/settings.json" },
+            "found": { "type": "boolean" },
+            "lines": { "type": "integer", "minimum": 0, "description": "Present only when found is true." },
+            "permissions": {
+              "type": "object",
+              "required": ["allow", "ask", "deny"],
+              "properties": {
+                "allow": { "$ref": "#/$defs/userRuleList" },
+                "ask": { "$ref": "#/$defs/userRuleList" },
+                "deny": { "$ref": "#/$defs/userRuleList" }
+              }
+            },
+            "defaultMode": {
+              "type": ["object", "null"],
+              "description": "null when the file sets no defaultMode.",
+              "required": ["value", "source", "applied"],
+              "properties": {
+                "value": { "type": "string" },
+                "source": { "const": "~/.claude/settings.json" },
+                "applied": { "const": false }
+              }
+            },
+            "hooks": {
+              "type": "object",
+              "required": ["count", "evaluated"],
+              "properties": {
+                "count": { "type": "integer", "minimum": 0 },
+                "evaluated": { "const": false }
+              }
+            }
+          }
+        },
+        "skills": {
+          "type": "array",
+          "description": "The skills ~/.claude/skills/<name>/SKILL.md, sorted by path. Only the path, the name and the load mode are kept; the body is not read into the output.",
+          "items": { "$ref": "#/$defs/userDescribed" }
+        },
+        "subagents": {
+          "type": "array",
+          "description": "The subagents ~/.claude/agents/**/*.md, sorted by path. Only the path, the name and the load mode are kept.",
+          "items": { "$ref": "#/$defs/userDescribed" }
+        },
+        "warnings": {
+          "type": "array",
+          "description": "Items of ~/.claude that were skipped or could not be read, sorted like the top-level warnings. source is fs for a read that safe-fs refused (for example outside-root or too-large) and user-layer for a parse or shape problem in a file that was read.",
+          "items": {
+            "type": "object",
+            "required": ["source", "path", "reason"],
+            "properties": {
+              "source": { "enum": ["fs", "user-layer"] },
+              "path": { "type": "string", "pattern": "^~/\\.claude/" },
+              "reason": { "type": "string" },
+              "detail": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "notes": {
+          "type": "array",
+          "description": "Fixed codes of what the measure does not do with part of the user layer, in code order. default-mode-not-applied: the user defaultMode is recorded, not applied. hooks-not-evaluated: the user hooks are counted, not evaluated. imports-not-followed: the @imports of the user's files are not followed. layer-precedence-not-verified: how the user, project and local permission rules combine is not verified by a note; the scan takes their union, deny first, then ask, then allow. Empty when found is false.",
+          "items": {
+            "enum": ["default-mode-not-applied", "hooks-not-evaluated", "imports-not-followed", "layer-precedence-not-verified"]
+          }
+        }
+      }
+    },
     "context": {
       "type": "object",
       "description": "Context that Claude Code loads at the start of a session. Measures add items to the shared lists; the core sets the total and the method.",
@@ -167,13 +275,31 @@
       "properties": {
         "ancestors": {
           "type": "array",
-          "description": "Memory files of the parent folders of the target that exist, by existence and size only: their content is never read. Paths are relative to the target (for example ../CLAUDE.md). Not in the inventory and not in the budget.",
+          "description": "Memory files of the parent folders of the target that exist, by existence and size. Their content is read only with --include-ancestors, and then only for the counts (read, lines, estTokens, loadMode and loadReason); the text is never kept. Paths are relative to the target (for example ../CLAUDE.md). Not in the inventory and not in the budget.",
           "items": {
             "type": "object",
             "required": ["path", "bytes"],
             "properties": {
               "path": { "type": "string" },
-              "bytes": { "type": "integer", "minimum": 0 }
+              "bytes": { "type": "integer", "minimum": 0 },
+              "read": {
+                "type": "boolean",
+                "description": "Present only with --include-ancestors. true: the file was read for its counts. false: it was not read, and reason says why."
+              },
+              "lines": { "type": "integer", "minimum": 0, "description": "Present only when read is true." },
+              "estTokens": { "type": "integer", "minimum": 0, "description": "Present only when read is true. Estimate with chars/4." },
+              "reason": {
+                "enum": ["outside-root", "not-found", "not-a-file", "too-large", "binary", "read-error", "user-layer"],
+                "description": "Present only when read is false: the safe-fs reason that the read refused, or user-layer for a file under the home folder's .claude, which the walk never reads (the user layer reads it with --include-user-layer)."
+              },
+              "loadMode": {
+                "enum": ["always", "not-loaded"],
+                "description": "Present only with --include-ancestors, and not on a file under the home folder's .claude (read false, reason user-layer). A CLAUDE file is always, as a root CLAUDE file is. An AGENTS file gets the state of a root AGENTS file without its imports (imports of ancestor files are not followed)."
+              },
+              "loadReason": {
+                "type": "string",
+                "description": "Present only where loadMode is. A short English reason, as in the inventory."
+              }
             }
           }
         },
@@ -431,7 +557,7 @@
                   "outcome": { "enum": ["blocked", "asks", "passes", "undeterminable"] },
                   "decidedBy": {
                     "type": ["object", "null"],
-                    "description": "What decides the outcome: { kind: rule, list, rule, source }, { kind: mode, mode, ignoredMode? } or { kind: critical-path }. Null when nothing does."
+                    "description": "What decides the outcome: { kind: rule, list, rule, source, layer? }, { kind: mode, mode, ignoredMode? } or { kind: critical-path }. Null when nothing does. layer is user when the rule comes from the user's settings (~/.claude/settings.json), and it is absent for a rule of the project."
                   },
                   "reason": { "type": "string", "description": "Fixed code from permissions.mjs." },
                   "preToolUseHook": { "enum": ["runs", "none", "undeterminable"], "description": "Whether at least one PreToolUse hook runs for the command." },
@@ -944,14 +1070,37 @@
       "pattern": "^(/[^/]+)+$",
       "description": "RFC 6901 JSON pointer into this file. The scanner writes only keys and array indexes, so no escape is needed. The value it names exists in the same measurements.json."
     },
+    "userRuleList": {
+      "type": "array",
+      "description": "The rules of one permission list of ~/.claude/settings.json: redacted, sorted by rule and then by source.",
+      "items": {
+        "type": "object",
+        "required": ["rule", "source"],
+        "properties": {
+          "rule": { "type": "string" },
+          "source": { "const": "~/.claude/settings.json" }
+        }
+      }
+    },
+    "userDescribed": {
+      "type": "object",
+      "description": "A skill or a subagent of ~/.claude. name is null for a subagent without a name in its frontmatter. loadMode is null when its frontmatter is broken or unsupported.",
+      "required": ["path", "name", "loadMode"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^~/\\.claude/" },
+        "name": { "type": ["string", "null"] },
+        "loadMode": { "enum": ["always", "not-loaded", null] }
+      }
+    },
     "evidence": {
       "type": "object",
-      "description": "A place in the target that the finding cites. file is a POSIX path relative to the target (a folder when the entry is a folder, or a settings or hook file that holds the harness setting). line and endLine are present only for a copy or a memory line that has them.",
+      "description": "A place that the finding cites. file is a POSIX path relative to the target (a folder when the entry is a folder, or a settings or hook file that holds the harness setting). line and endLine are present only for a copy or a memory line that has them. With layer, file is outside the target: a file of ~/.claude/ or of a parent folder (../), and it is never a file of the target.",
       "required": ["file"],
       "properties": {
         "file": { "type": "string" },
         "line": { "type": "integer", "minimum": 1 },
-        "endLine": { "type": "integer", "minimum": 1 }
+        "endLine": { "type": "integer", "minimum": 1 },
+        "layer": { "enum": ["user", "ancestor"], "description": "Only for a file outside the target: user for a file of ~/.claude/ (the settings that decided a command), ancestor for a file of a parent folder that the scan read. Without layer, the file is in the target." }
       },
       "additionalProperties": false
     },
@@ -1010,24 +1159,26 @@
     },
     "verdict": {
       "type": "object",
-      "description": "What the permission rules decide for one Read (docs: permissions). rule and source are null when no rule decides.",
+      "description": "What the permission rules decide for one Read (docs: permissions). rule and source are null when no rule decides. layer is present only when the rule comes from the user's settings (~/.claude/settings.json), with the value user; a project verdict has no layer.",
       "required": ["decision", "rule", "source", "reason"],
       "properties": {
         "decision": { "enum": ["deny", "ask", "allow", "default", "undeterminable"] },
         "rule": { "type": ["string", "null"] },
         "source": { "type": ["string", "null"] },
-        "reason": { "type": "string", "description": "Fixed code from permissions.mjs." }
+        "reason": { "type": "string", "description": "Fixed code from permissions.mjs." },
+        "layer": { "enum": ["user"], "description": "Only when the deciding rule is a user rule: the user's settings file." }
       }
     },
     "protection": {
       "type": "object",
-      "description": "What the permission rules decide for one tool (Read or Edit) on an entry. A file gives its own verdict. A folder gives the verdict of its files when they all agree; when the rules differ but the decision is the same, rule and source are null and reason is several-rules; when the decisions differ, decision is mixed and counts gives the number of files per decision.",
+      "description": "What the permission rules decide for one tool (Read or Edit) on an entry. A file gives its own verdict. A folder gives the verdict of its files when they all agree; when the rules differ but the decision is the same, rule and source are null and reason is several-rules; when the decisions differ, decision is mixed and counts gives the number of files per decision. layer is present only when the rule that decides is a user rule (value user), as in verdict.",
       "required": ["decision", "rule", "source", "reason"],
       "properties": {
         "decision": { "enum": ["deny", "ask", "allow", "default", "undeterminable", "mixed"] },
         "rule": { "type": ["string", "null"] },
         "source": { "type": ["string", "null"] },
         "reason": { "type": "string", "description": "Fixed code from permissions.mjs, or several-rules or several-decisions (structure only)." },
+        "layer": { "enum": ["user"], "description": "Only when the deciding rule is a user rule: the user's settings file. Absent for several-rules and mixed." },
         "counts": {
           "type": "object",
           "description": "Only when decision is mixed: the number of files with each decision. Undeterminable files are counted, never guessed.",

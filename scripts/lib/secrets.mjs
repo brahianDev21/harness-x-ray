@@ -10,7 +10,7 @@
 import { loadClaudeConfig } from "./claude-config.mjs";
 import { UNDETERMINABLE, coveredTools, hookRunState } from "./hook-matcher.mjs";
 import { isPlainObject } from "./json-out.mjs";
-import { decide } from "./permissions.mjs";
+import { USER_LAYER, decide, decisionRules } from "./permissions.mjs";
 import { createRedactor } from "./redact.mjs";
 import {
   findGenericSecrets,
@@ -41,7 +41,7 @@ export const secretsMeasure = Object.freeze({ id: MEASURE_ID, collect: collectSe
 // Reads the target through ctx only. Returns the section that the scan core merges.
 function collectSecrets(ctx) {
   const config = loadClaudeConfig(ctx);
-  const rules = { allow: config.permissions.allow, ask: config.permissions.ask, deny: config.permissions.deny };
+  const rules = decisionRules(config.permissions, ctx.outside);
   const redact = createRedactor({ root: ctx.root });
   const literals = [];
   for (const { path, data } of config.parsedFiles.settings) literals.push(...settingsLiterals(ctx, path, data, redact));
@@ -97,9 +97,11 @@ function readProtectionOf(config, rules) {
   };
 }
 
-// The four fields of a verdict that the output shows.
+// The four fields of a verdict that the output shows. The layer is kept only when the rule comes from the user's settings, so
+// a project verdict has the same four fields as before.
 function verdictOf(verdict) {
-  return { decision: verdict.decision, rule: verdict.rule, source: verdict.source, reason: verdict.reason };
+  const shown = { decision: verdict.decision, rule: verdict.rule, source: verdict.source, reason: verdict.reason };
+  return verdict.layer === USER_LAYER ? { ...shown, layer: USER_LAYER } : shown;
 }
 
 // ---------------------------------------------------------------------------------------------------

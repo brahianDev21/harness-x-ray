@@ -2,7 +2,9 @@
 // they weigh. It finds CLAUDE.md, .claude/CLAUDE.md, CLAUDE.local.md, AGENTS.md and .claude/AGENTS.md at
 // the root, the rules of .claude/rules/ (with and without paths), and the files that the loaded memory
 // files import with @path. The CLAUDE.md and AGENTS.md files of subfolders are listed and never read.
-// The parent folders of the target are checked by existence and size only.
+// The parent folders of the target are checked by existence and size only. With includeAncestors, their
+// memory files are also read, for the line and token counts only: their text is never kept, and they are
+// never in the inventory, the budget, ctx.memory or the limits. Their imports are not followed.
 //
 // The target is read only through ctx.fs and ctx.readText, with root-relative paths. An import that
 // leaves the target, or that points to the home folder, is recorded as external: it is never read and
@@ -25,6 +27,7 @@
 // The secrets measure still scans an excluded file for secret values, on purpose: Claude's Read can open it. This measure
 // does not read it.
 
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadClaudeConfig } from "./claude-config.mjs";
@@ -32,7 +35,7 @@ import { parseFrontmatter } from "./frontmatter.mjs";
 import { closesFence, maskCodeSpans, opensFence } from "./markdown.mjs";
 import { matchPathGlob } from "./permissions.mjs";
 import { createRedactor } from "./redact.mjs";
-import { DEFAULT_MAX_BYTES, statOutside } from "./safe-fs.mjs";
+import { createTargetFs, DEFAULT_MAX_BYTES, statOutside } from "./safe-fs.mjs";
 import { estimateTokens } from "./tokens.mjs";
 
 export const MEASURE_ID = "memory";
@@ -59,11 +62,20 @@ const SUBFOLDER_NAMES = new Set(["CLAUDE.md", "AGENTS.md"]);
 const CONFIG_FOLDERS = [".claude/agents/", ".claude/commands/"];
 
 const ROOT_REASON = "memory file at the root, loaded at session start";
+// A CLAUDE file of a parent folder loads at the start, as a root CLAUDE file does. It is not at
+// the root, so ROOT_REASON does not fit.
+const ANCESTOR_REASON = "memory file of a parent folder, loaded at session start";
+const ANCESTOR_CLAUDE = Object.freeze({ loadMode: "always", reason: ANCESTOR_REASON });
+// The read reason of a parent-folder file under the home folder's .claude. The walk never opens it: that folder is the user
+// layer, which user-layer.mjs reads with its own flag. The item is listed with read false and this reason.
+const USER_LAYER_READ_REASON = "user-layer";
 const NO_CLAUDE_REASON = "no CLAUDE.md in the target or its ancestors";
 const NOT_LOADED_REASON = "a CLAUDE.md exists and does not import it";
 const RULE_ALWAYS_REASON = "rule without paths, loaded at session start";
 const RULE_PATHS_REASON = "rule with paths, loaded when a matching file is read";
-const RULE_INVALID_REASON = "rule with invalid frontmatter, loaded at session start";
+// The loadReason of a rule whose frontmatter is broken, or whose paths value has the wrong type.
+// The caller reports it as a warning.
+export const RULE_INVALID_REASON = "rule with invalid frontmatter, loaded at session start";
 const SUBFOLDER_REASON = "subfolder memory, loaded when a file in its folder is read";
 const TOO_LARGE_REASON = "not read: larger than 4 MiB";
 
@@ -84,16 +96,19 @@ export const memoryMeasure = createMemoryMeasure();
  *   inclusive. It must be the target or one of its parents. Default: walk up to the file system root.
  * @param {string} [options.home] Home folder. Its .claude/CLAUDE.md is user memory and is not counted.
  *   Default: os.homedir().
+ * @param {boolean} [options.includeAncestors] Also read the memory files of the parent folders, for their counts.
+ *   Default: false, and then they are only listed by existence and size.
  * @returns {{ id: string, collect: (ctx: object) => object }}
  */
-export function createMemoryMeasure({ ancestorLimit, home = os.homedir() } = {}) {
+export function createMemoryMeasure({ ancestorLimit, home = os.homedir(), includeAncestors = false } = {}) {
   if (ancestorLimit !== undefined && (typeof ancestorLimit !== "string" || !path.isAbsolute(ancestorLimit))) {
     throw new TypeError("ancestorLimit must be an absolute folder");
   }
   if (typeof home !== "string" || !path.isAbsolute(home)) throw new TypeError("home must be an absolute folder");
+  if (typeof includeAncestors !== "boolean") throw new TypeError("includeAncestors must be a boolean");
   return Object.freeze({
     id: MEASURE_ID,
-    collect: (ctx) => collectMemory(ctx, { ancestorLimit, home }),
+    collect: (ctx) => collectMemory(ctx, { ancestorLimit, home, includeAncestors }),
   });
 }
 
@@ -119,10 +134,11 @@ function collectMemory(ctx, options) {
   }
   traverse(state);
 
-  // 2. The AGENTS files of the root. Ancestors are checked by existence only. An AGENTS file that a
-  // loaded file imports has already been admitted above, so it is loaded once. The root CLAUDE files that
-  // claudeMdExcludes matches are not CLAUDE files for this rule: they are not loaded, so they do not keep AGENTS.md from
-  // loading. Their absence leaves the case unverified, which the loadReason says.
+  // 2. The AGENTS files of the root. Ancestors are checked by existence only, or also read with
+  // includeAncestors. An AGENTS file that a loaded file imports has already been admitted above, so it is
+  // loaded once. The root CLAUDE files that claudeMdExcludes matches are not CLAUDE files for this rule: they are
+  // not loaded, so they do not keep AGENTS.md from loading. Their absence leaves the case unverified, which the
+  // loadReason says.
   const ancestors = collectAncestors(root, options);
   const claudeAtRoot = rootClaude.some((rel) => exclusionOf(state, rel) === null);
   const claudeAtRootExcluded = rootClaude.length > 0 && !claudeAtRoot;
@@ -170,7 +186,7 @@ function collectMemory(ctx, options) {
     warnings: state.warnings,
     context: {
       alwaysLoaded: { byComponent: [budgetOf(nodes)] },
-      ancestors: ancestors.entries,
+      ancestors: ancestorItems(ancestors.found, agents, options),
       imports: state.imports.sort(compareImports),
       limits: limitsOf(nodes),
     },
@@ -227,8 +243,9 @@ function admit(state, rel, spec) {
   }
   node.text = read.text;
   node.bytes = read.bytes;
-  node.lines = countLines(read.text);
-  node.estTokens = estimateTokens(read.text).estTokens;
+  const counts = countsOf(read.text);
+  node.lines = counts.lines;
+  node.estTokens = counts.estTokens;
   if (node.kind === "rule") applyRuleMode(state, node);
   if (node.kind === "memory" && node.loadMode === "always") state.queue.push(node);
   return node;
@@ -241,20 +258,28 @@ function skip(state, node, reason, loadReason) {
   if (reason === TOO_LARGE) state.warnings.push({ path: node.path, reason: TOO_LARGE });
 }
 
-// The mode of a rule comes from its frontmatter: a rule with paths loads when a matching file is read,
-// any other rule loads at the start. Broken frontmatter, or a paths value of the wrong type, is a
-// warning, and the rule is treated as a rule without paths.
+// The mode of a rule comes from its frontmatter (see ruleModeOf). Broken frontmatter, or a paths value of the
+// wrong type, is a warning, and the rule is treated as a rule without paths.
 function applyRuleMode(state, node) {
-  const parsed = parseFrontmatter(node.text);
+  const mode = ruleModeOf(node.text);
+  if (mode.loadReason === RULE_INVALID_REASON) state.warnings.push({ path: node.path, reason: "invalid-frontmatter" });
+  setMode(node, mode.loadMode, mode.loadReason);
+}
+
+/**
+ * The load mode of a rule file, from its text. A rule with paths loads when a matching file is read; any other
+ * rule loads at the start. Broken frontmatter, or a paths value of the wrong type, loads at the start with
+ * loadReason RULE_INVALID_REASON, which the caller reports as a warning. Pure: nothing is read or written.
+ * The rules of the target and the user's rules both use it.
+ * @param {unknown} text The file text.
+ * @returns {{ loadMode: "always" | "on-demand", loadReason: string }}
+ */
+export function ruleModeOf(text) {
+  const parsed = parseFrontmatter(text);
   const paths = parsed.data?.paths;
-  if (parsed.error !== undefined || isInvalidPaths(paths)) {
-    state.warnings.push({ path: node.path, reason: "invalid-frontmatter" });
-    setMode(node, "always", RULE_INVALID_REASON);
-  } else if (paths === undefined || paths === null) {
-    setMode(node, "always", RULE_ALWAYS_REASON);
-  } else {
-    setMode(node, "on-demand", RULE_PATHS_REASON);
-  }
+  if (parsed.error !== undefined || isInvalidPaths(paths)) return { loadMode: "always", loadReason: RULE_INVALID_REASON };
+  if (paths === undefined || paths === null) return { loadMode: "always", loadReason: RULE_ALWAYS_REASON };
+  return { loadMode: "on-demand", loadReason: RULE_PATHS_REASON };
 }
 
 // A string, or a list of strings, is a valid paths value. Anything else that is set is not.
@@ -427,24 +452,60 @@ function isSubfolderMemory(rel) {
 // ---------------------------------------------------------------------------------------------------
 // Parent folders
 
-// The memory files of the parent folders, by existence and size. The .claude/CLAUDE.md of the home
-// folder is user memory, so it is skipped. claudePresent tells whether a CLAUDE file exists in any
-// parent folder, which the AGENTS rule needs. Ancestors are not checked against claudeMdExcludes (NOT VERIFIED by a note),
-// so an ancestor CLAUDE file counts here even when a pattern would match it.
+// The memory files of the parent folders, sorted by path, by existence and size. The .claude/CLAUDE.md of the home folder is
+// user memory, so it is skipped. The rest of the home folder's .claude is the user layer: it is listed with userLayer true,
+// and it is never read (see ancestorItems). The home folder and each parent are compared by their real paths, so a home
+// that is reached through a link is the same folder. claudePresent tells whether a CLAUDE file exists in any parent folder,
+// which the AGENTS rule needs. Ancestors are not checked against claudeMdExcludes (NOT VERIFIED by a note), so an
+// ancestor CLAUDE file counts here even when a pattern would match it.
 function collectAncestors(root, { ancestorLimit, home }) {
-  const entries = [];
-  let claudePresent = false;
+  const found = [];
+  const homeFolder = realPathOf(home);
   for (const folder of ancestorFolders(root, ancestorLimit)) {
+    const underHome = samePath(realPathOf(folder), homeFolder);
     for (const rel of ROOT_FILES) {
-      if (rel === ".claude/CLAUDE.md" && samePath(folder, home)) continue;
+      if (underHome && rel === ".claude/CLAUDE.md") continue;
       const abs = path.join(folder, rel);
       const stat = statOutside(abs);
       if (!stat.exists || stat.type === "dir") continue;
-      entries.push({ path: toPosix(path.relative(root, abs)), bytes: stat.bytes });
-      if (CLAUDE_FILES.includes(rel)) claudePresent = true;
+      const userLayer = underHome && rel.startsWith(".claude/");
+      found.push({ folder, rel, path: toPosix(path.relative(root, abs)), bytes: stat.bytes, userLayer });
     }
   }
-  return { entries: entries.sort(byPath), claudePresent };
+  return { found: found.sort(byPath), claudePresent: found.some((entry) => CLAUDE_FILES.includes(entry.rel)) };
+}
+
+// The context.ancestors items. Without includeAncestors an item is { path, bytes }. With it the file is also read, and the
+// item gets its counts. loadMode and loadReason come from the file name and the other memory files, not from the read, so
+// they are set even when the read fails. A CLAUDE file loads as a root CLAUDE file does; an AGENTS file gets the same
+// spec as a root AGENTS file. A file under the home folder's .claude is user layer, so it is not read here: its item says
+// read false with reason USER_LAYER_READ_REASON, and it has no load mode, because the walk does not decide how the user
+// layer loads.
+function ancestorItems(found, agents, { includeAncestors }) {
+  const readers = new Map();
+  return found.map((entry) => {
+    const item = { path: entry.path, bytes: entry.bytes };
+    if (!includeAncestors) return item;
+    if (entry.userLayer) return { ...item, read: false, reason: USER_LAYER_READ_REASON };
+    const spec = CLAUDE_FILES.includes(entry.rel) ? ANCESTOR_CLAUDE : agents;
+    return { ...item, ...readAncestor(readerOf(readers, entry.folder), entry.rel, spec) };
+  });
+}
+
+// Reads one parent-folder file through the view of its folder. The text is only counted, never kept. A file that cannot be
+// read gets the safe-fs reason code and no counts.
+function readAncestor(view, rel, spec) {
+  const mode = { loadMode: spec.loadMode, loadReason: spec.reason };
+  const read = view.readText(rel, { maxBytes: DEFAULT_MAX_BYTES });
+  if (!read.ok) return { read: false, reason: read.reason, ...mode };
+  return { read: true, ...countsOf(read.text), ...mode };
+}
+
+// One safe-fs view per parent folder, rooted at that folder and never above it. It is created when the folder first has a
+// file, so a folder without memory files is never opened.
+function readerOf(readers, folder) {
+  if (!readers.has(folder)) readers.set(folder, createTargetFs(folder));
+  return readers.get(folder);
 }
 
 // The parent folders of the target, nearest first, up to and including the limit. Without a limit the
@@ -466,6 +527,15 @@ function ancestorFolders(root, limit) {
 
 function samePath(a, b) {
   return path.relative(a, b) === "";
+}
+
+// The real path of a folder, or the folder as given when it cannot be resolved (it does not exist, for example).
+function realPathOf(folder) {
+  try {
+    return fs.realpathSync.native(folder);
+  } catch {
+    return folder;
+  }
 }
 
 function toPosix(text) {
@@ -524,6 +594,16 @@ function limitsOf(nodes) {
     }
   }
   return limits;
+}
+
+/**
+ * The line and token counts of a memory text. Root files and parent-folder files both count this way: the lines of
+ * the text as read, and the estimate of the text without its HTML comments (see tokens.mjs).
+ * @param {string} text The text as read, with LF line endings.
+ * @returns {{ lines: number, estTokens: number }}
+ */
+export function countsOf(text) {
+  return { lines: countLines(text), estTokens: estimateTokens(text).estTokens };
 }
 
 function countLines(text) {

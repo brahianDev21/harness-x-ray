@@ -125,6 +125,34 @@ test("generated: a versioned dist folder and a 2 MB file are both listed, with d
   ]);
 });
 
+test("protection: a user deny that covers a generated folder gives its verdict the layer user (positive control: the project deny above has none)", async (t) => {
+  const fixture = freshFixture(t, { files: { "dist/app.js": "built\n", "data/dump.bin": twoMebibytes() } });
+  // A measure that puts a user deny for dist in ctx.outside, as the user layer measure does.
+  const userDeny = {
+    id: "user-lists",
+    collect(ctx) {
+      const deny = [{ rule: "Read(./dist/**)", shown: "Read(./dist/**)", source: "~/.claude/settings.json" }];
+      ctx.outside.set("user", { permissions: { allow: [], ask: [], deny } });
+      return {};
+    },
+  };
+  const result = await scan({
+    root: fixture.root,
+    measures: [createMemoryMeasure({ ancestorLimit: fixture.base, home: path.join(fixture.base, "no-home") }), userDeny, structureMeasure],
+    now: FIXED_NOW,
+  });
+  const userDenied = {
+    decision: "deny",
+    rule: "Read(./dist/**)",
+    source: "~/.claude/settings.json",
+    reason: "deny-rule",
+    layer: "user",
+  };
+
+  assert.deepEqual(entryAt(result.structure.generatedFiles, "dist").protection, { read: userDenied, edit: userDenied });
+  assert.deepEqual(entryAt(result.structure.largeFiles, "data/dump.bin").protection, UNPROTECTED, "positive control: an entry no rule covers has no layer");
+});
+
 test("minimal-good: no large or generated entries", async (t) => {
   const fixture = copyOf(t, "minimal-good");
   const result = await structureScan(fixture);
@@ -471,5 +499,7 @@ test("the measurements schema documents every structure field and the protection
 
   assert.ok(schema.$defs.protection.properties.decision.enum.includes("mixed"));
   assert.ok(schema.$defs.protection.properties.counts, "counts is documented for mixed verdicts");
+  assert.deepEqual(schema.$defs.protection.properties.layer.enum, ["user"], "layer is documented for a verdict of a user rule");
+  assert.deepEqual(schema.$defs.verdict.properties.layer.enum, ["user"], "layer is documented on the secrets verdicts too");
   assert.deepEqual([...schema.$defs.entryMemory.required].sort(), ["marked", "mentions"]);
 });

@@ -258,6 +258,47 @@ test("secrets: the project's deny rule for .env at the root is reported, and its
   });
 });
 
+test("secrets: a user deny for .env is the read decision when the layer is read, and the project alone gives the default", async (t) => {
+  // A measure that puts a user deny for .env in ctx.outside, as the user layer measure does.
+  const userDeny = {
+    id: "user-lists",
+    collect(ctx) {
+      const deny = [{ rule: "Read(.env)", source: "~/.claude/settings.json" }];
+      ctx.outside.set("user", { permissions: { allow: [], ask: [], deny } });
+      return {};
+    },
+  };
+  const fixture = copyOfSecrets(t);
+  const measures = [claudeConfigMeasure, userDeny, destructiveCommandsMeasure, secretsMeasure];
+  const withUser = await scan({ root: fixture.root, measures, now: FIXED_NOW });
+  const plain = await scanSecrets(fixture.root);
+
+  assert.deepEqual(withUser.security.secrets.readProtection.envAtRoot, {
+    decision: "deny",
+    rule: "Read(.env)",
+    source: "~/.claude/settings.json",
+    reason: "deny-rule",
+    layer: "user",
+  });
+  const envFile = withUser.security.secrets.files.find((file) => file.path === ".env");
+  assert.equal(envFile.readDecision.decision, "deny", "the file list uses the same rules");
+  assert.deepEqual(envFile.readDecision.layer, "user", "the file list keeps the layer of its verdict");
+  assert.equal(plain.security.secrets.readProtection.envAtRoot.decision, "default", "positive control: without the user layer, no rule covers .env");
+  assert.equal("layer" in plain.security.secrets.readProtection.envAtRoot, false, "positive control: a default verdict has no layer");
+});
+
+test("secrets: a project deny for .env gives a verdict with no layer, as before (positive control for the user layer)", async (t) => {
+  const fixture = copyOfSecrets(t, { ".claude/settings.json": json({ permissions: { deny: ["Read(.env)"] } }) });
+  const result = await scanSecrets(fixture.root);
+
+  assert.deepEqual(result.security.secrets.readProtection.envAtRoot, {
+    decision: "deny",
+    rule: "Read(.env)",
+    source: ".claude/settings.json",
+    reason: "deny-rule",
+  });
+});
+
 test("secrets: each PreToolUse hook that covers Read is listed, with whether it runs for .env", async (t) => {
   const hook = (matcher, command, extra = {}) => ({ matcher, hooks: [{ type: "command", command, ...extra }] });
   const fixture = copyOfSecrets(t, {

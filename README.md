@@ -22,14 +22,19 @@ The findings are grouped in six axes: instructions, context, security, verificat
 
 ## Scripts
 
-- `node scripts/scan.mjs <target> [--out <dir>]`: scans a target and writes `<runDir>/measurements.json`. Without `--out`, `<runDir>` is a new folder under `runs/`. `--out` must lie inside `runs/` or the system temp folder (exit 2 otherwise).
+- `node scripts/scan.mjs <target> [--out <dir>] [--include-user-layer] [--include-ancestors]`: scans a target and writes `<runDir>/measurements.json`. Without `--out`, `<runDir>` is a new folder under `runs/`. `--out` must lie inside `runs/` or the system temp folder (exit 2 otherwise). `--include-user-layer` also reads the user's Claude files in `~/.claude`, and `--include-ancestors` also reads the memory files of the parent folders of the target. Both are opt-in: without them, nothing outside the target is read.
+
+Privacy: with these flags, home paths are written as `~/...`, never as the home folder itself; the strings copied from the user's files are redacted, and the parent-folder files give only their counts.
 - `node scripts/render-report.mjs <runDir>`: validates `<runDir>/findings.json` against the rule catalog, the scan and the target, then writes `<runDir>/report.md`. Exit 0 when written, 1 when validation fails (nothing is written), 2 for a usage or input error. `<runDir>` must lie inside `runs/` or the system temp folder (exit 2 otherwise).
 - `npm test`: runs the test suite.
 - `npm run check`: validates the rule catalog, the `data/` files and the measured rules.
 
 ## Limits
 
-- The scan reads the target's project files only. It does not read the user layer (memory and settings in the user's Claude folder) or the parent folders of the target.
+- The scan reads the target's project files only, unless a flag is given. `--include-user-layer` reads the user's `CLAUDE.md`, rules, `settings.json`, skills and subagents in `~/.claude`. `--include-ancestors` reads the memory files of the parent folders, for their counts only. Managed settings are never read.
+- Not verified by a note: how the user, project and local permission rules combine. With `--include-user-layer`, the scan takes the union of the three lists and checks deny first, then ask, then allow.
+- With `--include-user-layer`, the user's `defaultMode` is recorded but not applied, and the user's hooks are counted but not evaluated.
+- The `@imports` in the user's files and in the parent folders are not followed.
 - Tokens are estimated from characters, never counted.
 - The destructive-command checks assume the project's `defaultMode`, or `default` when the project sets none. A real session may start in another mode, which is not verified against the documentation. The report's limits section shows each command's outcome in each mode (the matrix, as context).
 - The thresholds in `scripts/lib/thresholds.mjs` are provisional and not yet calibrated.

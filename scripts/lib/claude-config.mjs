@@ -274,7 +274,7 @@ function sandboxOf(value, rel, { redact, warn }) {
 
 // The hook groups of a settings file, one entry per handler. A group or handler of the wrong shape is
 // a warning and is skipped.
-function hookEntriesOf(hooks, rel, warn) {
+export function hookEntriesOf(hooks, rel, warn) {
   if (hooks === undefined) return [];
   if (!isPlainObject(hooks)) {
     warn(rel, "unexpected-shape", "hooks");
@@ -381,7 +381,7 @@ function optionalBoolean(value, rel, detail, warn) {
   return null;
 }
 
-function scalarOf(value, rel, detail, { redact, warn }) {
+export function scalarOf(value, rel, detail, { redact, warn }) {
   if (value === undefined) return null;
   if (typeof value !== "string") {
     warn(rel, "unexpected-shape", detail);
@@ -392,7 +392,7 @@ function scalarOf(value, rel, detail, { redact, warn }) {
 
 // The strings of a list. A list that is not a list, or items that are not strings, are warnings, and
 // the strings that are fine are kept.
-function stringsOf(value, rel, detail, warn) {
+export function stringsOf(value, rel, detail, warn) {
   if (value === undefined) return [];
   if (!Array.isArray(value)) {
     warn(rel, "unexpected-shape", detail);
@@ -439,7 +439,7 @@ function isAbsoluteExclude(pattern) {
 
 // Reads a JSON file whose top level must be an object. Returns null after a warning when it is not.
 // The warning has no detail: the parser's message could quote the file.
-function parseObject(text, rel, warn) {
+export function parseObject(text, rel, warn) {
   let data;
   try {
     data = JSON.parse(text);
@@ -541,7 +541,7 @@ function isNestedSkill(rel) {
 
 // What the listing of one skill, command or subagent costs. The description is what Claude Code keeps
 // in context; the body loads only when the file is invoked.
-function describeMarkdown(kind, rel, text, { redact, warn }) {
+export function describeMarkdown(kind, rel, text, { redact, warn }) {
   const parsed = parseFrontmatter(text);
   const broken = parsed.error !== undefined;
   const fields = broken ? {} : (parsed.data ?? {});
@@ -633,7 +633,7 @@ function budgetOf(component, items) {
 
 // The files of a folder whose names pass accept, found by walking the folder. Symbolic links to
 // folders are not followed; a link to a file counts when it points to a file.
-function findFiles(ctx, base, accept) {
+export function findFiles(ctx, base, accept) {
   const found = [];
   const visit = (dir, depth) => {
     const listing = ctx.fs.listDir(dir);
@@ -671,7 +671,7 @@ function configInventory(rel, kind, read) {
   };
 }
 
-function countLines(text) {
+export function countLines(text) {
   if (text === "") return 0;
   const lines = text.split("\n").length;
   return text.endsWith("\n") ? lines - 1 : lines;

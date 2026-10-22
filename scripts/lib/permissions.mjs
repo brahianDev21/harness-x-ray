@@ -52,6 +52,8 @@ const NONE = Object.freeze({ state: "none" });
 const MATCH = Object.freeze({ state: "match" });
 // A `!` path rule that covers the path: it makes the whole list undeterminable (see scanList).
 const NEGATION_UNKNOWN = Object.freeze({ state: "unknown", reason: "negation-rule", neg: true });
+// The layer of the rules that the user layer adds (see decisionRules). The key of the user data in ctx.outside too.
+export const USER_LAYER = "user";
 
 /**
  * Parses one permission rule, `Tool` or `Tool(specifier)`. The specifier starts at the first "(" and ends at the
@@ -99,58 +101,88 @@ function classify(tool, specifier) {
  * @returns {boolean}
  */
 export function matchBash(pattern, command, options = {}) {
+  const caseInsensitive = options.caseInsensitive === true;
   const text = pattern.endsWith(":*") ? `${pattern.slice(0, -2)} *` : pattern;
+  if (wildcardMatches(text, command, { caseInsensitive })) return true;
   const stars = text.split("*").length - 1;
-  const source =
-    stars === 1 && text.endsWith(" *")
-      ? `^${escapeRegex(text.slice(0, -2))}(?: [\\s\\S]*)?$`
-      : `^${text.split("*").map(escapeRegex).join("[\\s\\S]*")}$`;
-  return new RegExp(source, options.caseInsensitive === true ? "i" : "").test(command);
+  return stars === 1 && text.endsWith(" *") && wildcardMatches(text.slice(0, -2), command, { caseInsensitive });
 }
 
-// Escapes literal text for a regular expression.
-function escapeRegex(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-// A gitignore pattern as a regular expression over a POSIX path relative to the project root. `*` stays in one
-// segment, `?` is one character and `**` spans segments. Null when a segment is empty or a dot segment.
-function gitignoreRegex(body, anchored) {
-  const segments = body.split("/");
-  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) return null;
-  let source = "";
-  segments.forEach((segment, index) => {
-    const last = index === segments.length - 1;
-    if (segment === "**") source += last ? ".*" : "(?:.*/)?";
-    else source += `${segmentRegex(segment)}${last ? "" : "/"}`;
-  });
-  return new RegExp(`^${anchored ? "" : "(?:.*/)?"}${source}$`);
-}
-
-// One path segment: `*` is any run of characters inside it, `?` is one character.
-function segmentRegex(segment) {
-  return segment
-    .split("")
-    .map((char) => (char === "*" ? "[^/]*" : char === "?" ? "[^/]" : escapeRegex(char)))
-    .join("");
-}
-
-// Whether a pattern covers the path or one of its folders, as gitignore does: a folder matched by the pattern
-// covers everything under it. Null when the pattern is not usable.
-function patternCovers(body, anchored, path) {
-  const regex = gitignoreRegex(body, anchored);
-  if (regex === null) return null;
-  const parts = path.split("/");
-  for (let end = 1; end <= parts.length; end += 1) {
-    if (regex.test(parts.slice(0, end).join("/"))) return true;
+// Matches a pattern against text, where `*` is any run of characters, the empty run included. With questionMark, `?` is
+// exactly one character; any other character matches itself, or its case-folded form when caseInsensitive is set. On a
+// mismatch the last `*` takes one more character, as in the classic iterative wildcard algorithm, so no backtracking
+// happens and the time is O(pattern * text) at worst. Patterns from a scanned settings file are hostile, so this is the
+// only matcher of wildcards here: a regular expression with one `[\s\S]*` per `*` takes exponential time.
+function wildcardMatches(pattern, text, { questionMark = false, caseInsensitive = false } = {}) {
+  let p = 0;
+  let t = 0;
+  let star = -1;
+  let retry = 0;
+  while (t < text.length) {
+    const want = p < pattern.length ? pattern[p] : null;
+    if (want === "*") {
+      star = p;
+      retry = t;
+      p += 1;
+    } else if (want !== null && ((questionMark && want === "?") || sameChar(want, text[t], caseInsensitive))) {
+      p += 1;
+      t += 1;
+    } else if (star !== -1) {
+      retry += 1;
+      p = star + 1;
+      t = retry;
+    } else {
+      return false;
+    }
   }
-  return false;
+  while (p < pattern.length && pattern[p] === "*") p += 1;
+  return p === pattern.length;
 }
 
-// The most runs of `*` (a `**` counts as one run) that a glob may have in matchPathGlob. The regular expression backtracks
-// in the number of runs: measured on a 40-segment path, four runs take about 4 ms, six take about 140 ms and seven about
-// 660 ms. A settings file of the target can hold any pattern, so a pattern over this limit is unsupported.
-const MAX_WILDCARD_RUNS = 3;
+// Whether two single characters match. With caseInsensitive, they match when their folded forms are equal, folded as
+// a regular expression with the i flag does (ECMAScript Canonicalize without the u flag).
+function sameChar(a, b, caseInsensitive) {
+  return a === b || (caseInsensitive && foldCase(a) === foldCase(b));
+}
+
+function foldCase(char) {
+  const upper = char.toUpperCase();
+  if (upper.length !== 1) return char;
+  return char.charCodeAt(0) >= 128 && upper.charCodeAt(0) < 128 ? char : upper;
+}
+
+// Whether a gitignore pattern covers the path or one of its folders, as gitignore does: a folder matched by the pattern
+// covers everything under it. Null when a segment of the pattern is empty or a dot segment. The pattern and the path are
+// split at "/", and a table records which path prefixes each pattern prefix matches, so there is no backtracking and the
+// work is bounded by the pattern length times the path length. An anchored pattern starts at the first folder, and an
+// unanchored one may start at any folder. `*` and `?` stay inside one folder, a `**` in the middle matches zero or more
+// folders and a `**` at the end matches one or more. Unlike a regular expression with `.`, `*` and `**` also match a folder
+// name that contains a line terminator.
+function patternCovers(body, anchored, path) {
+  const pattern = body.split("/");
+  if (pattern.some((segment) => segment === "" || segment === "." || segment === "..")) return null;
+  const folders = path.split("/");
+  // matched[end] says whether the pattern segments read so far match the first `end` folders of the path.
+  let matched = Array.from({ length: folders.length + 1 }, (_, end) => !anchored || end === 0);
+  for (const [index, segment] of pattern.entries()) {
+    const last = index === pattern.length - 1;
+    const next = [];
+    let absorbed = false;
+    for (let end = 0; end <= folders.length; end += 1) {
+      if (segment !== "**") {
+        next.push(end > 0 && matched[end - 1] && wildcardMatches(segment, folders[end - 1], { questionMark: true }));
+      } else if (last) {
+        next.push(absorbed);
+        absorbed ||= matched[end];
+      } else {
+        absorbed ||= matched[end];
+        next.push(absorbed);
+      }
+    }
+    matched = next;
+  }
+  return matched.slice(1).includes(true);
+}
 
 // Whether a gitignore-style glob matches a path: `*` stays in one segment, `?` is one character, `**` spans segments, and
 // a folder that matches covers its contents. A pattern with a `/` before its end is anchored at the root; otherwise it
@@ -158,26 +190,33 @@ const MAX_WILDCARD_RUNS = 3;
 // passes it (absolute or root-relative). That reading is not the one the Read and Edit rules give a leading `/`, so the
 // sentence "as the Read and Edit rules read it" does not hold for it; claudeMdExcludes refuses such patterns before they
 // reach this matcher (claude-config.mjs). Returns true, false, or "unsupported" for a pattern this matcher cannot read: a
-// negation (a leading "!"), the characters [ ] { } and \, an empty, "." or ".." segment, or more than MAX_WILDCARD_RUNS
-// runs of `*`. NOT VERIFIED for claudeMdExcludes: no note states its pattern syntax, so using these semantics there is a
-// repo choice.
+// negation (a leading "!"), the characters [ ] { } and \, or an empty, "." or ".." segment. The number of `*` is not
+// limited, because the matcher takes polynomial time. NOT VERIFIED for claudeMdExcludes: no note states its pattern
+// syntax, so using these semantics there is a repo choice.
 export function matchPathGlob(pattern, path) {
   if (typeof pattern !== "string" || typeof path !== "string") return "unsupported";
   if (pattern.startsWith("!") || /[[\]{}\\]/.test(pattern)) return "unsupported";
-  if ((pattern.match(/\*+/g) ?? []).length > MAX_WILDCARD_RUNS) return "unsupported";
   const absolute = pattern.startsWith("/");
-  const body = (absolute ? pattern.slice(1) : pattern).replace(/\/+$/, "");
+  const body = trimTrailingSlashes(absolute ? pattern.slice(1) : pattern);
   if (body === "") return "unsupported";
   const subject = absolute ? path.replace(/^\/+/, "") : path;
   const cover = patternCovers(body, absolute || body.includes("/"), subject);
   return cover === null ? "unsupported" : cover;
 }
 
+// Removes the slashes at the end of a text. A loop, not a regular expression: `/\/+$/` takes quadratic time when a long run
+// of slashes is followed by another character, and a settings file can hold such a rule.
+function trimTrailingSlashes(text) {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === "/") end -= 1;
+  return text.slice(0, end);
+}
+
 // A relative pattern with no `/` before its end matches at any depth. A pattern with a `/` in the middle is anchored
 // at the project root. The exception from the docs: a single folder glob such as `src/**` is anchored in allow rules
 // and matches at any depth in deny and ask rules.
 function relativeAnchored(list, spec) {
-  const trimmed = spec.replace(/\/+$/, "");
+  const trimmed = trimTrailingSlashes(spec);
   if (!trimmed.includes("/")) return false;
   return list === "allow" || !/^[^/]+\/\*\*$/.test(trimmed);
 }
@@ -186,7 +225,7 @@ function relativeAnchored(list, spec) {
 // not inside the project (docs: Read and Edit, the /path row of the anchor table).
 function anchorDirectory(anchor) {
   if (typeof anchor !== "string") return null;
-  const dir = anchor.replace(/\/+$/, "");
+  const dir = trimTrailingSlashes(anchor);
   if (dir === "") return "";
   const unsafe = dir.startsWith("/") || dir.startsWith("~") || /^[A-Za-z]:/.test(dir);
   if (unsafe || dir.split("/").some((segment) => segment === "" || segment === "." || segment === "..")) return null;
@@ -195,7 +234,7 @@ function anchorDirectory(anchor) {
 
 // The state of a pattern that is usable as it is, with its anchoring decided by the caller.
 function covered(body, anchored, path) {
-  const cover = patternCovers(body.replace(/\/+$/, ""), anchored, path);
+  const cover = patternCovers(trimTrailingSlashes(body), anchored, path);
   if (cover === null) return unknown("unsupported-pattern");
   return cover ? MATCH : NONE;
 }
@@ -206,7 +245,7 @@ function negationState(list, inner, path) {
   if (list === "allow") return NONE;
   const body = inner.replace(/^\/+/, "");
   if (body.includes("[") || body.includes("\\")) return NEGATION_UNKNOWN;
-  const cover = patternCovers(body.replace(/\/+$/, ""), relativeAnchored(list, body), path);
+  const cover = patternCovers(trimTrailingSlashes(body), relativeAnchored(list, body), path);
   return cover === false ? NONE : NEGATION_UNKNOWN;
 }
 
@@ -244,11 +283,14 @@ function webfetchState(rule, domain) {
   const host = normalizeHost(domain);
   if (pattern === "" || host === "") return unknown("empty-domain");
   if (pattern === "*") return MATCH;
-  // A leading `*.` is one or more labels, at any depth, and it never matches the apex. Any other `*` is within one label.
-  const subdomains = pattern.startsWith("*.") ? "(?:[^.]+\\.)+" : "";
-  const rest = pattern.startsWith("*.") ? pattern.slice(2) : pattern;
-  const regex = new RegExp(`^${subdomains}${rest.split("*").map(escapeRegex).join("[^.]*")}$`);
-  return regex.test(host) ? MATCH : NONE;
+  // A leading `*.` is one or more labels, at any depth, and it never matches the apex. Any other `*` is within one label,
+  // so the labels of the pattern are matched one by one against the last labels of the host.
+  const leading = pattern.startsWith("*.");
+  const wanted = (leading ? pattern.slice(2) : pattern).split(".");
+  const labels = host.split(".");
+  const skip = labels.length - wanted.length;
+  if (leading ? skip < 1 || labels.slice(0, skip).includes("") : skip !== 0) return NONE;
+  return wanted.every((label, index) => wildcardMatches(label, labels[skip + index])) ? MATCH : NONE;
 }
 
 function normalizeHost(text) {
@@ -267,11 +309,7 @@ function mcpRuleMatches(ruleName, toolName) {
 // prefix, and otherwise approves nothing (docs: tool name wildcards).
 function toolGlobState(list, glob, toolName) {
   if (list === "allow" && !/^mcp__.+?__/.test(glob.slice(0, glob.indexOf("*")))) return NONE;
-  return toolGlobRegex(glob).test(toolName) ? MATCH : NONE;
-}
-
-function toolGlobRegex(glob) {
-  return new RegExp(`^${glob.split("*").map(escapeRegex).join("[\\s\\S]*")}$`);
+  return wildcardMatches(glob, toolName) ? MATCH : NONE;
 }
 
 // The first word of a command, as written.
@@ -340,7 +378,7 @@ function entryState(list, entry, call, unit) {
   if (!rule.ok) return unknown("malformed-rule");
   if (rule.kind === "tool-glob") return toolGlobState(list, rule.tool, call.tool);
   if (rule.kind === "unsupported") {
-    return toolGlobRegex(rule.tool).test(call.tool) ? unknown("unsupported-pattern") : NONE;
+    return wildcardMatches(rule.tool, call.tool) ? unknown("unsupported-pattern") : NONE;
   }
   if (rule.kind === "mcp") {
     return !rule.skipped && call.tool.startsWith("mcp__") && mcpRuleMatches(rule.tool, call.tool) ? MATCH : NONE;
@@ -358,26 +396,34 @@ function unknown(reason) {
 }
 
 // The state of one list for one call or one part. A rule that matches decides. A `!` rule that covers the path makes
-// the whole list undeterminable. Otherwise an undeterminable rule makes the list undeterminable.
+// the whole list undeterminable. Otherwise an undeterminable rule makes the list undeterminable. The layer of the
+// deciding entry is kept when it has one (only the user layer's rules have one).
 function scanList(list, entries, call, unit) {
   let match = null;
   let unresolved = null;
   for (const entry of entries) {
     const state = entryState(list, entry, call, unit);
-    if (state.neg === true) return { state: "unknown", rule: entry.rule, source: entry.source, reason: state.reason };
-    if (state.state === "match" && match === null) match = { state: "match", rule: entry.rule, source: entry.source };
+    if (state.neg === true) {
+      return { state: "unknown", rule: displayRule(entry), source: entry.source, reason: state.reason, ...layerField(entry) };
+    }
+    if (state.state === "match" && match === null) {
+      match = { state: "match", rule: displayRule(entry), source: entry.source, ...layerField(entry) };
+    }
     if (state.state === "unknown" && unresolved === null) {
-      unresolved = { state: "unknown", rule: entry.rule, source: entry.source, reason: state.reason };
+      unresolved = { state: "unknown", rule: displayRule(entry), source: entry.source, reason: state.reason, ...layerField(entry) };
     }
   }
   return match ?? unresolved ?? NONE;
 }
 
-// An allow rule approves a compound command only when every part is approved by some allow rule.
+// An allow rule approves a compound command only when every part is approved by some allow rule. When a part is approved
+// by a user rule, the result is a user decision: its layer and source are kept, so the attribution names the user layer.
 function allowAllParts(results) {
   if (results.some((result) => result.state === "none")) return NONE;
   if (results.every((result) => result.state === "match")) {
-    return { state: "match", rule: results.map((result) => result.rule).join(" && "), source: results[0].source };
+    const joined = { state: "match", rule: results.map((result) => result.rule).join(" && "), source: results[0].source };
+    const user = results.find((result) => result.layer === USER_LAYER);
+    return user === undefined ? joined : { ...joined, source: user.source, layer: USER_LAYER };
   }
   return results.find((result) => result.state === "unknown");
 }
@@ -390,17 +436,62 @@ function listResult(list, entries, call, units) {
   return results.find((result) => result.state === "match") ?? results.find((result) => result.state === "unknown") ?? NONE;
 }
 
-// Normalizes a list of rules: plain strings, or objects with rule, source and anchor. A missing anchor is the project
-// root (""); a null anchor means the folder is unknown.
+// Normalizes a list of rules: plain strings, or objects with rule, source, anchor, layer and shown. A missing anchor is the
+// project root (""); a null anchor means the folder is unknown. A missing layer is the project's.
 function entriesOf(list) {
   if (!Array.isArray(list)) return [];
   return list.map((item) => {
     const entry =
       typeof item === "string"
         ? { rule: item, source: null, anchor: "" }
-        : { rule: item?.rule, source: item?.source ?? null, anchor: item?.anchor === undefined ? "" : item.anchor };
+        : {
+            rule: item?.rule,
+            source: item?.source ?? null,
+            anchor: item?.anchor === undefined ? "" : item.anchor,
+            layer: item?.layer,
+            shown: item?.shown,
+          };
     return { ...entry, parsed: parseRule(entry.rule) };
   });
+}
+
+// The layer field of a result or entry: present only for a rule that has a layer, so project decisions keep their shape.
+function layerField(item) {
+  return item.layer === undefined ? {} : { layer: item.layer };
+}
+
+// The rule text that a result names. A user rule is matched by its raw text, and it has a shown text, the redacted one,
+// which is the only text a result may hold: the raw text can contain the home or target folder. A project rule has no
+// shown text, because its rule is already redacted.
+function displayRule(entry) {
+  return entry.shown ?? entry.rule;
+}
+
+/**
+ * The rules that decide a call: the project's lists, and the user layer's lists after them when the user layer was read
+ * (scan --include-user-layer). The user measure puts its lists in ctx.outside under USER_LAYER. A user rule is marked with
+ * layer "user", and its anchor is null, so a "/" path rule of it is undeterminable. Deny is checked before ask and allow
+ * over both layers (see decide). A user rule keeps its raw text for matching, and its redacted text as shown: a result
+ * names the shown text only.
+ * NOT VERIFIED: no note in rules/sources.json says how the user, project and local rules combine. This union is the repo's
+ * choice. security.permissions never holds the user rules, so SEC-01 does not read them.
+ * @param {{ allow: object[], ask: object[], deny: object[] }} permissions The project lists (claude-config, permissions).
+ * @param {Map<string, object>} outside ctx.outside: data that opt-in measures read from outside the target, by layer.
+ * @returns {{ allow: object[], ask: object[], deny: object[] }} New arrays, or the project's arrays when there is no user data.
+ */
+export function decisionRules(permissions, outside) {
+  const project = { allow: permissions.allow, ask: permissions.ask, deny: permissions.deny };
+  const user = outside.get(USER_LAYER)?.permissions;
+  if (user === undefined) return project;
+  return {
+    allow: [...project.allow, ...userEntries(user.allow)],
+    ask: [...project.ask, ...userEntries(user.ask)],
+    deny: [...project.deny, ...userEntries(user.deny)],
+  };
+}
+
+function userEntries(list) {
+  return list.map((item) => ({ rule: item.rule, shown: item.shown, source: item.source, anchor: null, layer: USER_LAYER }));
 }
 
 // The simple commands to match: the caller's parts when given, else the command itself when it has no operator.
@@ -437,7 +528,8 @@ function validPath(path) {
  * be trusted. The result names the rule that decided, or the undeterminable rule.
  * @param {{ allow?: Array<string | { rule: string, source?: string, anchor?: string | null }>, ask?: Array<string | object>, deny?: Array<string | object> }} rules
  * @param {{ tool: string, command?: string, parts?: string[], path?: string, domain?: string }} call
- * @returns {{ decision: "deny" | "ask" | "allow" | "default" | "undeterminable", rule: string | null, source: string | null, reason: string, list: "deny" | "ask" | "allow" | null }}
+ * @returns {{ decision: "deny" | "ask" | "allow" | "default" | "undeterminable", rule: string | null, source: string | null, reason: string, list: "deny" | "ask" | "allow" | null, layer?: "user" }}
+ *   layer is present only when the deciding entry is a user rule.
  */
 export function decide(rules, call) {
   const invalid = invalidCall(call);
@@ -447,10 +539,17 @@ export function decide(rules, call) {
   for (const list of ["deny", "ask", "allow"]) {
     const result = listResult(list, lists[list], call, units);
     if (result.state === "match") {
-      return { decision: list, rule: result.rule, source: result.source, reason: LIST_REASON[list], list };
+      return { decision: list, rule: result.rule, source: result.source, reason: LIST_REASON[list], list, ...layerField(result) };
     }
     if (result.state === "unknown") {
-      return { decision: "undeterminable", rule: result.rule, source: result.source, reason: result.reason, list };
+      return {
+        decision: "undeterminable",
+        rule: result.rule,
+        source: result.source,
+        reason: result.reason,
+        list,
+        ...layerField(result),
+      };
     }
   }
   return { decision: "default", rule: null, source: null, reason: "no-rule-matched", list: null };
@@ -615,7 +714,8 @@ function removesFiles(call, units) {
 }
 
 function ruleBy(decided) {
-  return decided.list === null ? null : { kind: "rule", list: decided.list, rule: decided.rule, source: decided.source };
+  if (decided.list === null) return null;
+  return { kind: "rule", list: decided.list, rule: decided.rule, source: decided.source, ...layerField(decided) };
 }
 
 function modeBy(mode, ignoredMode) {

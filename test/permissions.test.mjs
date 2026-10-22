@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MATRIX_MODES, decide, evaluate, evaluateInSessionMode, matchBash, matchPathGlob, parseRule } from "../scripts/lib/permissions.mjs";
+import {
+  MATRIX_MODES,
+  decide,
+  decisionRules,
+  evaluate,
+  evaluateInSessionMode,
+  matchBash,
+  matchPathGlob,
+  parseRule,
+} from "../scripts/lib/permissions.mjs";
 
 // Documentation URLs cited in test names. Each example is copied from the Claude Code permission docs.
 const PERMISSIONS = "https://code.claude.com/docs/en/permissions";
@@ -560,11 +569,228 @@ test("matchPathGlob: a pattern this matcher cannot read is unsupported, and a su
   assert.equal(matchPathGlob(42, "a.md"), "unsupported", "a non-string pattern is unsupported");
 });
 
-test("matchPathGlob: more than three runs of * is unsupported, and three runs still match on a deep path", () => {
+test("matchPathGlob: many runs of * are matched, not refused, and a pattern that does not match stays false", () => {
   const deep = `${Array.from({ length: 60 }, () => "a").join("/")}/x`;
   const pairs = (count) => `${Array.from({ length: count }, () => "**/a").join("/")}/x`;
-  assert.equal(matchPathGlob(pairs(10), deep), "unsupported", "ten runs are over the limit");
-  assert.equal(matchPathGlob(pairs(4), deep), "unsupported", "four runs are over the limit");
+  assert.equal(matchPathGlob(pairs(10), deep), true, "ten runs of **/a match a deep path (the old cap called this unsupported)");
+  assert.equal(matchPathGlob(pairs(4), deep), true, "four runs match too");
   assert.equal(matchPathGlob(pairs(3), deep), true, "positive control: three runs still match");
-  assert.equal(matchPathGlob("*a*a*a*a*", "aaaa.md"), "unsupported", "in-segment stars count as runs too");
+  assert.equal(matchPathGlob("*a*a*a*a*", "aaaa.md"), true, "in-segment stars match without a limit");
+  assert.equal(matchPathGlob("*a*a*a*a*b", "aaaa.md"), false, "positive control: the same stars with a b that is missing do not match");
+});
+
+// Hostile patterns, as a settings file of a scanned repository can hold them. The regular expressions that this matcher
+// replaced took seconds on such inputs, so the limit is generous; the matcher takes well under a millisecond.
+const HOSTILE_LIMIT_MS = 2000;
+
+function timed(fn) {
+  const start = performance.now();
+  const result = fn();
+  return { result, ms: performance.now() - start };
+}
+
+test("hostile glob: five runs of * in a Read rule finish quickly through decide and matchPathGlob (positive control: a matching folder is denied)", () => {
+  const folders = Array.from({ length: 40 }, () => "x".repeat(30));
+  const hostile = "Read(**/*x*x*x*x*x*y/**)";
+  const miss = timed(() => decide(rules([hostile]), read(`${folders.join("/")}/notes.md`)));
+  assert.equal(miss.result.decision, "default", "no folder has a y");
+  assert.ok(miss.ms < HOSTILE_LIMIT_MS, `decide took ${miss.ms} ms`);
+  const hit = timed(() => decide(rules([hostile]), read(`${folders.join("/")}/xxxxxy/notes.md`)));
+  assert.equal(hit.result.decision, "deny", "positive control: a folder of five x and a y is denied");
+  assert.ok(hit.ms < HOSTILE_LIMIT_MS, `decide took ${hit.ms} ms`);
+  const glob = timed(() => matchPathGlob("**/*x*x*x*x*x*y/**", `${folders.join("/")}/notes.md`));
+  assert.equal(glob.result, false);
+  assert.ok(glob.ms < HOSTILE_LIMIT_MS, `matchPathGlob took ${glob.ms} ms`);
+  assert.equal(matchPathGlob("**/*x*x*x*x*x*y/**", `${folders.join("/")}/xxxxxy/notes.md`), true, "positive control: the same glob matches");
+});
+
+test("hostile glob: many runs of * in a Bash, tool-name or WebFetch rule finish quickly (positive control: a matching input is matched)", () => {
+  const stars = "*a".repeat(30);
+  const bash = timed(() => matchBash(`${stars}b`, "a".repeat(60)));
+  assert.equal(bash.result, false);
+  assert.ok(bash.ms < HOSTILE_LIMIT_MS, `matchBash took ${bash.ms} ms`);
+  assert.equal(matchBash(`${stars}b`, `${"a".repeat(30)}b`), true, "positive control: a matching command");
+  const tool = timed(() => decide(rules([`${stars}b`]), { tool: `mcp__${"a".repeat(55)}` }));
+  assert.equal(tool.result.decision, "default");
+  assert.ok(tool.ms < HOSTILE_LIMIT_MS, `the tool-name glob took ${tool.ms} ms`);
+  assert.equal(decide(rules([`${stars}b`]), { tool: `mcp__${"a".repeat(30)}b` }).decision, "deny", "positive control: a matching tool name");
+  const web = timed(() => decide(rules([`WebFetch(domain:${stars}b)`]), fetchDomain(`${"a".repeat(60)}.com`)));
+  assert.equal(web.result.decision, "default");
+  assert.ok(web.ms < HOSTILE_LIMIT_MS, `the WebFetch domain took ${web.ms} ms`);
+  assert.equal(decide(rules([`WebFetch(domain:${stars}b)`]), fetchDomain(`${"a".repeat(30)}b`)).decision, "deny", "positive control: a matching domain");
+});
+
+test("hostile slashes: 200,000 slashes before another character, or at the end, of a rule finish quickly (positive control: src/ covers src/a.md)", () => {
+  const slashes = "/".repeat(200000);
+  const inner = timed(() => decide(rules([`Read(a${slashes}x)`]), read("a.md")));
+  assert.equal(inner.result.decision, "undeterminable", "an empty folder makes the pattern unusable");
+  assert.equal(inner.result.reason, "unsupported-pattern");
+  assert.ok(inner.ms < HOSTILE_LIMIT_MS, `decide took ${inner.ms} ms`);
+  const innerGlob = timed(() => matchPathGlob(`a${slashes}x`, "a.md"));
+  assert.equal(innerGlob.result, "unsupported");
+  assert.ok(innerGlob.ms < HOSTILE_LIMIT_MS, `matchPathGlob took ${innerGlob.ms} ms`);
+  const end = timed(() => decide(rules([`Read(src${slashes})`]), read("src/a.md")));
+  assert.equal(end.result.decision, "deny", "the trailing slashes are dropped, so src covers its files");
+  assert.ok(end.ms < HOSTILE_LIMIT_MS, `decide took ${end.ms} ms`);
+  assert.equal(decide(rules(["Read(src/)"]), read("src/a.md")).decision, "deny", "positive control: src/ covers src/a.md");
+  assert.equal(decide(rules(["Read(src/)"]), read("lib/a.md")).decision, "default", "positive control: another folder is not covered");
+  assert.equal(matchPathGlob("src/", "src/a.md"), true, "positive control: a trailing slash is dropped");
+});
+
+test("a ** and an unanchored prefix cross a folder name that holds a line terminator (positive control: a folder without one matches as before)", () => {
+  assert.equal(decide(rules(["Read(**/.env)"]), read("a\nb/.env")).decision, "deny", "the folder name holds a newline");
+  assert.equal(decide(rules(["Read(**/.env)"]), read("a/b/.env")).decision, "deny", "positive control: no newline");
+  assert.equal(matchPathGlob("src/**", "src/a\r\nb/x.md"), true, "a trailing ** crosses a carriage return and a line feed");
+  assert.equal(matchPathGlob("src/**", "lib/a\nb/x.md"), false, "positive control: another folder does not match");
+});
+
+test("normal patterns keep their results: secrets/* stays in one folder, a /folder rule is anchored by its settings folder, and ? is one UTF-16 code unit", () => {
+  assert.equal(decide(rules(["Read(secrets/*)"]), read("secrets/key.pem")).decision, "deny");
+  assert.equal(decide(rules(["Read(secrets/*)"]), read("secrets/a/key.pem")).decision, "deny", "a matching folder covers its contents");
+  assert.equal(decide(rules(["Read(secrets/*.pem)"]), read("secrets/a/key.pem")).decision, "default", "* does not cross a folder");
+  assert.equal(decide(rules(["Read(secrets/*)"]), read("app/secrets/key.pem")).decision, "default", "a pattern with a slash is anchored");
+  const anchored = { deny: [{ rule: "Read(/secret/**)", source: "settings", anchor: "config" }], ask: [], allow: [] };
+  assert.equal(decide(anchored, read("config/secret/a.txt")).decision, "deny");
+  assert.equal(decide(anchored, read("secret/a.txt")).decision, "default", "positive control: the same folder at the root is not covered");
+  assert.equal(matchPathGlob("a?c", "a\u{1F600}c"), false, "an emoji is two UTF-16 code units, so one ? does not match it");
+  assert.equal(matchPathGlob("a??c", "a\u{1F600}c"), true);
+});
+
+// A user rule in the shape decisionRules gives it (its raw text, and the shown text, which is the same unless given), and a
+// project rule in the shape of security.permissions.
+const USER_SOURCE = "~/.claude/settings.json";
+const userRule = (rule, shown = rule) => ({ rule, shown, source: USER_SOURCE, anchor: null, layer: "user" });
+const projectRule = (rule) => ({ rule, source: ".claude/settings.json" });
+
+test("a decision names layer user only when the deciding rule is a user rule; project decisions keep their shape", () => {
+  const userDeny = decide({ deny: [userRule("Bash(rm:*)")] }, bash("rm -rf build"));
+  assert.deepEqual(userDeny, {
+    decision: "deny",
+    rule: "Bash(rm:*)",
+    source: USER_SOURCE,
+    reason: "deny-rule",
+    list: "deny",
+    layer: "user",
+  });
+
+  const projectDeny = decide({ deny: [projectRule("Bash(rm:*)")] }, bash("rm -rf build"));
+  assert.deepEqual(projectDeny, {
+    decision: "deny",
+    rule: "Bash(rm:*)",
+    source: ".claude/settings.json",
+    reason: "deny-rule",
+    list: "deny",
+  });
+  assert.equal("layer" in projectDeny, false, "positive control: a project decision has no layer key");
+
+  const verdict = evaluate({ allow: [userRule("Bash(rm:*)")] }, bash("rm -rf build"), { mode: "default", insideProject: true, criticalPath: false });
+  assert.equal(verdict.outcome, "passes");
+  assert.deepEqual(verdict.decidedBy, { kind: "rule", list: "allow", rule: "Bash(rm:*)", source: USER_SOURCE, layer: "user" });
+  const projectVerdict = evaluate({ allow: ["Bash(rm:*)"] }, bash("rm -rf build"), { mode: "default", insideProject: true, criticalPath: false });
+  assert.deepEqual(projectVerdict.decidedBy, { kind: "rule", list: "allow", rule: "Bash(rm:*)", source: null }, "string rules keep today's shape");
+});
+
+test("across the layers, a deny beats an allow whichever layer it is in, because deny is checked first", () => {
+  const projectDenied = decide({ allow: [userRule("Bash(git push:*)")], deny: [projectRule("Bash(git push:*)")] }, bash("git push origin main"));
+  assert.equal(projectDenied.decision, "deny");
+  assert.equal("layer" in projectDenied, false, "the project deny decides, so the decision has no user layer");
+
+  const userDenied = decide({ allow: [projectRule("Bash(npm publish:*)")], deny: [userRule("Bash(npm publish:*)")] }, bash("npm publish"));
+  assert.deepEqual(userDenied, {
+    decision: "deny",
+    rule: "Bash(npm publish:*)",
+    source: USER_SOURCE,
+    reason: "deny-rule",
+    list: "deny",
+    layer: "user",
+  });
+
+  const projectAllowOnly = decide({ allow: [projectRule("Bash(npm publish:*)")] }, bash("npm publish"));
+  assert.equal(projectAllowOnly.decision, "allow", "positive control: without the user deny, the project allow passes");
+});
+
+test("a compound command approved partly by a user rule is a user decision, and one approved by project rules only is not", () => {
+  const user = decide(
+    { allow: [projectRule("Bash(ls)"), userRule("Bash(rm:*)")] },
+    { tool: "Bash", command: "ls && rm -rf build", parts: ["ls", "rm -rf build"] },
+  );
+  assert.deepEqual(user, {
+    decision: "allow",
+    rule: "Bash(ls) && Bash(rm:*)",
+    source: USER_SOURCE,
+    reason: "allow-rule",
+    list: "allow",
+    layer: "user",
+  });
+
+  const project = decide(
+    { allow: [projectRule("Bash(ls)"), projectRule("Bash(cat)")] },
+    { tool: "Bash", command: "ls && cat", parts: ["ls", "cat"] },
+  );
+  assert.equal(project.decision, "allow");
+  assert.equal("layer" in project, false, "positive control: project parts only give no layer");
+});
+
+test("a user Read rule with a leading slash is undeterminable, because its anchor is unknown (conservative reading)", () => {
+  const verdict = decide({ deny: [userRule("Read(/secrets/**)")] }, read("secrets/a.txt"));
+  assert.equal(verdict.decision, "undeterminable");
+  assert.equal(verdict.reason, "anchor-unknown");
+  assert.equal(verdict.layer, "user");
+  const projectVerdict = decide({ deny: [{ rule: "Read(/secrets/**)", source: "settings", anchor: "" }] }, read("secrets/a.txt"));
+  assert.equal(projectVerdict.decision, "deny", "positive control: a project rule with a known anchor still decides");
+});
+
+test("a user rule matches its raw text, and every result names its shown text, also in the join of a compound command", () => {
+  // The raw rule names an absolute folder; its shown text is the redacted one. Only the shown text may reach a result.
+  const userAllow = userRule("Bash(cat /abs/proj/x)", "Bash(cat <target>/x)");
+  const rules = { allow: [userAllow, projectRule("Bash(echo ok)")] };
+
+  const compound = decide(rules, { tool: "Bash", command: "cat /abs/proj/x && echo ok", parts: ["cat /abs/proj/x", "echo ok"] });
+  assert.deepEqual(compound, {
+    decision: "allow",
+    rule: "Bash(cat <target>/x) && Bash(echo ok)",
+    source: USER_SOURCE,
+    reason: "allow-rule",
+    list: "allow",
+    layer: "user",
+  });
+  const verdict = evaluate(rules, { tool: "Bash", command: "cat /abs/proj/x && echo ok", parts: ["cat /abs/proj/x", "echo ok"] }, {
+    mode: "default",
+    insideProject: true,
+    criticalPath: false,
+  });
+  assert.deepEqual(verdict.decidedBy, {
+    kind: "rule",
+    list: "allow",
+    rule: "Bash(cat <target>/x) && Bash(echo ok)",
+    source: USER_SOURCE,
+    layer: "user",
+  });
+  assert.equal(JSON.stringify([compound, verdict]).includes("/abs/proj"), false, "the raw path is not in a result");
+
+  const projectOnly = decide(rules, { tool: "Bash", command: "echo ok" });
+  assert.deepEqual(projectOnly, { decision: "allow", rule: "Bash(echo ok)", source: ".claude/settings.json", reason: "allow-rule", list: "allow" }, "positive control: a project rule names its own text, with no layer");
+});
+
+test("decisionRules: the user lists come after the project's, with layer user and no anchor, and nothing changes without user data", () => {
+  const permissions = { allow: [projectRule("Bash(npm test)")], ask: [], deny: [] };
+  const outside = new Map([
+    [
+      "user",
+      {
+        permissions: {
+          allow: [{ rule: "Bash(rm:*)", shown: "Bash(rm:*)", source: USER_SOURCE }],
+          ask: [],
+          deny: [{ rule: "Read(.env)", shown: "Read(.env)", source: USER_SOURCE }],
+        },
+      },
+    ],
+  ]);
+
+  assert.deepEqual(decisionRules(permissions, outside), {
+    allow: [projectRule("Bash(npm test)"), userRule("Bash(rm:*)")],
+    ask: [],
+    deny: [userRule("Read(.env)")],
+  });
+  assert.deepEqual(decisionRules(permissions, new Map()), permissions, "positive control: no user data gives the project lists");
 });
