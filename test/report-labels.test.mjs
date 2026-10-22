@@ -151,6 +151,21 @@ function buildScenarios() {
     probeFinding("mf-10", "/probe/nothing", "probe-null"),
     probeFinding("mf-11", "/probe/list", "probe-list"),
     probeFinding("mf-12", "/probe/label", "probe-text"),
+    {
+      id: "mf-13",
+      rule: "SEC-02",
+      axis: "security",
+      impact: "low",
+      measurementRef: "/security/destructiveCoverage/commands/0",
+      evidence: [{ file: ".claude/settings.json" }],
+      triggers: [
+        {
+          trigger: "hook-not-verified",
+          impact: "low",
+          measurementRef: "/security/destructiveCoverage/commands/0",
+        },
+      ],
+    },
   );
   for (let index = 0; index < 52; index += 1) {
     m.measuredFindings.push({

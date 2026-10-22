@@ -38,6 +38,8 @@ const COMPONENT_LABELS = Object.freeze({
   memory: "component.memory",
 });
 const STATUS_LABELS = Object.freeze({ provisional: "status.provisional" });
+// A trigger whose name does not say the state it stands for: its label is shown in brackets after the name.
+const TRIGGER_NOTES = Object.freeze({ "hook-not-verified": "trigger.hookNotVerified" });
 // The fields of measurements.json that the report reads. Their presence is checked before anything is rendered.
 const REQUIRED_FIELDS = Object.freeze([
   "/meta/tool",
@@ -294,7 +296,10 @@ function triggerRow(ctx, group) {
           value: valueText(ctx, group.threshold.value, true),
           status: statusText(ctx),
         });
-  return [ctx.tableCode(group.trigger), ctx.num(group.count), t(`impact.${group.impact}`), value, threshold];
+  const name = Object.hasOwn(TRIGGER_NOTES, group.trigger)
+    ? `${ctx.tableCode(group.trigger)} (${ctx.tableText(t(TRIGGER_NOTES[group.trigger]))})`
+    : ctx.tableCode(group.trigger);
+  return [name, ctx.num(group.count), t(`impact.${group.impact}`), value, threshold];
 }
 
 function isObjectValue(value) {
@@ -550,6 +555,8 @@ function renderLimits(ctx) {
   blocks.push(t("limits.thresholds", { status: statusText(ctx) }));
   const mode = usedMode(m);
   blocks.push(t("limits.sec02", { mode: ctx.code(mode ?? t("mode.default")) }));
+  const matrix = renderMatrix(ctx);
+  if (matrix !== null) blocks.push(matrix);
   if (m.warnings.length === 0) {
     blocks.push(t("limits.noWarnings"));
   } else {
@@ -572,6 +579,22 @@ function renderLimits(ctx) {
     blocks.push(t("limits.undeterminable"), table([t("table.rule"), t("table.reference"), t("table.reason")], rows));
   }
   return blocks.join("\n\n");
+}
+
+// The SEC-02 permission matrix, as context: one row per command, one column per session mode in the order the scan
+// wrote them. Nothing is rendered when the scan has no matrixModes (a measurements.json of an older scan). A command
+// without a value for a mode shows the empty value, never an invented outcome.
+function renderMatrix(ctx) {
+  const { t, measurements: m } = ctx;
+  const coverage = m.security.destructiveCoverage;
+  if (!Array.isArray(coverage.matrixModes)) return null;
+  const modes = coverage.matrixModes;
+  const headers = [t("table.command"), ...modes.map((mode) => ctx.tableCode(mode))];
+  const rows = coverage.commands.map((command) => [
+    ctx.tableCode(command.id),
+    ...modes.map((mode) => (command.modes?.[mode] === undefined ? t("value.empty") : ctx.tableCode(command.modes[mode]))),
+  ]);
+  return [t("limits.matrix"), table(headers, rows), t("limits.matrixLegend")].join("\n\n");
 }
 
 // Sources ----------------------------------------------------------------------------------------------

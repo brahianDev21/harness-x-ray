@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { classifyGitFailure, listFiles } from "../scripts/lib/safe-git.mjs";
@@ -8,6 +9,9 @@ import { makeFixture, runGit, symlinkSupport } from "./helpers/make-fixture.mjs"
 
 const support = symlinkSupport();
 const symlinkSkip = support.supported ? false : support.reason;
+
+// The stand-in for git in the timeout test is a POSIX shell script.
+const POSIX_SHELL_SKIP = process.platform === "win32" ? "the stand-in for git is a POSIX shell script" : false;
 
 const FULL_COMMIT = /^[0-9a-f]{40}$/;
 
@@ -179,15 +183,46 @@ test("git not installed: falls back to the walk with the git-not-found detail", 
   assert.deepEqual(result.warnings, [{ path: ".", reason: "file-list-from-walk", detail: "git-not-found" }]);
 });
 
-test("git command over its time limit: falls back to the walk with the timeout detail", async (t) => {
+// A stand-in for git that never answers: it sleeps far longer than the time limit of the test. It
+// ignores its arguments. "exec" makes sleep replace the shell, so the timeout kills the sleeping
+// process itself, and execFile settles only after that process has exited.
+const NEVER_ANSWERS_GIT = "#!/bin/sh\nexec sleep 60\n";
+
+// Writes the stand-in into a new folder of the system temp folder and returns its path. The folder
+// is removed when the test ends.
+function neverAnsweringGit(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hxr-git-stand-in-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const executable = path.join(dir, "git");
+  fs.writeFileSync(executable, NEVER_ANSWERS_GIT);
+  fs.chmodSync(executable, 0o755);
+  return executable;
+}
+
+// The limit is 300 ms and git never answers, so the timeout always fires. A limit of 1 ms was a
+// race: git ls-files on a small repository usually finishes in about 2 ms, so it sometimes won.
+test("git command over its time limit: falls back to the walk with the timeout detail", { skip: POSIX_SHELL_SKIP }, async (t) => {
   const fixture = makeFixture({ git: true, files: { "a.txt": "a\n" } });
   t.after(fixture.cleanup);
 
-  const result = await listFiles(fixture.root, { timeoutMs: 1 });
+  const result = await listFiles(fixture.root, { gitExecutable: neverAnsweringGit(t), timeoutMs: 300 });
 
   assert.equal(result.fileListSource, "walk");
+  assert.equal(result.commit, null);
   assert.deepEqual(pathsOf(result), ["a.txt"]);
   assert.deepEqual(result.warnings, [{ path: ".", reason: "file-list-from-walk", detail: "timeout" }]);
+});
+
+test("git command within its time limit: its list is used and the walk is not", async (t) => {
+  const fixture = makeFixture({ git: true, files: { "a.txt": "a\n" } });
+  t.after(fixture.cleanup);
+  fs.writeFileSync(path.join(fixture.root, "on-disk.txt"), "n\n");
+
+  const result = await listFiles(fixture.root, { timeoutMs: 60_000 });
+
+  assert.equal(result.fileListSource, "git");
+  assert.deepEqual(pathsOf(result), ["a.txt"]);
+  assert.deepEqual(result.warnings, []);
 });
 
 test("classifyGitFailure maps errors to fixed detail codes", () => {

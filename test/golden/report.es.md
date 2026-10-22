@@ -5,7 +5,7 @@
 - **Fecha del escaneo (UTC):** 2026-10-18
 - **Ejes revisados:** Instrucciones, Contexto, Seguridad, Verificación, Estructura, Código
 - **Herramienta:** `harness-x-ray@0.0.0`
-- **Catálogo:** 16 reglas, SHA-256 `4bfe477a8935`
+- **Catálogo:** 16 reglas, SHA-256 `47bd793f7516`
 
 ---
 
@@ -106,7 +106,7 @@ Medido en `/security/permissions/allow/0`: objeto con 2 claves
 | `.claude/settings.json:3` | `"allow": ["Bash(git *)"]` |
 | `.claude/settings.json:4` | `"defaultMode": "acceptEdits"` |
 
-Medido en `/security/destructiveCoverage/commands/0`: objeto con 12 claves
+Medido en `/security/destructiveCoverage/commands/0`: objeto con 13 claves
 
 | Disparador | Cantidad | Impacto | Valor | Umbral |
 | --- | --- | --- | --- | --- |
@@ -116,6 +116,7 @@ Medido en `/security/destructiveCoverage/commands/0`: objeto con 12 claves
 
 - [Configure permissions](https://code.claude.com/docs/en/permissions), documentación oficial
 - [Choose a permission mode](https://code.claude.com/docs/en/permission-modes), documentación oficial
+- [Choose a permission mode: boundaries you state in conversation](https://code.claude.com/docs/en/permission-modes#boundaries-you-state-in-conversation), documentación oficial
 - [Choose a permission mode: critical paths](https://code.claude.com/docs/en/permission-modes#critical-paths), documentación oficial
 - [Hooks reference](https://code.claude.com/docs/en/hooks), documentación oficial
 - [Security](https://code.claude.com/docs/en/security), documentación oficial
@@ -250,7 +251,30 @@ Los tokens son estimados, nunca contados. Método: chars/4.
 
 Los valores de los umbrales son de carácter provisional: cada uno es un supuesto que la calibración todavía no confirmó.
 
-SEC-02 supuso el modo de permisos: el `defaultMode` del proyecto, o `default` cuando el proyecto no fija ninguno. El escaneo usó `acceptEdits`. Desde Claude Code v2.1.283, las sesiones interactivas arrancan en modo `auto`, así que una sesión real puede comportarse de otra forma.
+Los disparadores de SEC-02 suponen el `defaultMode` del proyecto, o `default` cuando el proyecto no fija ninguno. El escaneo usó `acceptEdits`. Una sesión puede arrancar en otro modo (no verificado contra la documentación). La matriz muestra cada modo.
+
+Resultado de cada comando destructivo para una sesión iniciada en cada modo. Es contexto, no un disparador: los hallazgos de SEC-02 no lo usan.
+
+| Comando | `default` | `acceptEdits` | `auto` | `bypassPermissions` |
+| --- | --- | --- | --- | --- |
+| `rm-recursive-force` | `asks` | `passes` | `classifier` | `passes` |
+| `git-push-force-long` | `passes` | `passes` | `passes` | `passes` |
+| `git-push-force-short` | `passes` | `passes` | `passes` | `passes` |
+| `git-reset-hard` | `passes` | `passes` | `passes` | `passes` |
+| `git-clean-force` | `passes` | `passes` | `passes` | `passes` |
+| `git-checkout-discard` | `passes` | `passes` | `passes` | `passes` |
+| `git-restore-discard` | `passes` | `passes` | `passes` | `passes` |
+| `git-branch-force-delete` | `passes` | `passes` | `passes` | `passes` |
+| `curl-pipe-shell` | `asks` | `asks` | `classifier` | `passes` |
+| `wget-pipe-bash` | `asks` | `asks` | `classifier` | `passes` |
+| `chmod-recursive-777` | `asks` | `asks` | `classifier` | `passes` |
+| `npm-publish` | `asks` | `asks` | `classifier` | `passes` |
+| `docker-system-prune` | `asks` | `asks` | `classifier` | `passes` |
+| `remove-item-recurse-force` | `asks` | `passes` | `classifier` | `passes` |
+| `cmd-rd-recurse-quiet` | `asks` | `asks` | `classifier` | `passes` |
+| `cmd-del-recurse-quiet` | `asks` | `asks` | `classifier` | `passes` |
+
+`auto` = lo decide un clasificador de modelo, no se simula; las reglas decidan antes que el modo, no verificado para `auto` ni `bypassPermissions` (solo deny se afirma en todos los modos); no se usan hooks; `dontAsk` y `plan` no se muestran.
 
 Elementos saltados o ilegibles:
 
@@ -296,7 +320,7 @@ No quedó ningún caso sin decidir.
 | Hallazgo | Regla | Referencia | Valor |
 | --- | --- | --- | --- |
 | `mf-1` | SEC-01 | `/security/permissions/allow/0` | objeto con 2 claves |
-| `mf-2` | SEC-02 | `/security/destructiveCoverage/commands/0` | objeto con 12 claves |
+| `mf-2` | SEC-02 | `/security/destructiveCoverage/commands/0` | objeto con 13 claves |
 | `mf-3` | SEC-03 | `/security/secrets/readProtection/envAtRoot/decision` | `default` |
 
 ### Valores principales

@@ -14,6 +14,7 @@ import {
   validateDestructiveData,
 } from "../scripts/lib/destructive-commands.mjs";
 import { toStableJson } from "../scripts/lib/json-out.mjs";
+import { MATRIX_MODES } from "../scripts/lib/permissions.mjs";
 import { scan } from "../scripts/lib/scanner.mjs";
 import { makeFixture } from "./helpers/make-fixture.mjs";
 
@@ -451,4 +452,87 @@ test("the measurements schema documents destructiveCoverage and the hook and sub
   assert.deepEqual([...documented.properties.commands.items.required].sort(), Object.keys(coverage.commands[0]).sort());
   assert.ok(schema.properties.claudeConfig.properties.hooks.items.required.includes("if"));
   assert.ok(schema.properties.claudeConfig.properties.subagents.items.properties.disallowedTools);
+});
+
+// A fixture whose project has a settings file with the given content, and nothing else.
+function settingsFixture(t, settings) {
+  const fixture = makeFixture({ files: { ".claude/settings.json": JSON.stringify(settings) } });
+  t.after(fixture.cleanup);
+  return fixture;
+}
+
+// A fixture with no file at all.
+function emptyFixture(t) {
+  const fixture = makeFixture({});
+  t.after(fixture.cleanup);
+  return fixture;
+}
+
+// The same outcome for each matrix mode, keyed by mode.
+const allModes = (outcome) => Object.fromEntries(MATRIX_MODES.map((mode) => [mode, outcome]));
+
+test("a broad allow passes every command in every matrix mode, and matrixModes lists the modes (permission-modes docs)", async (t) => {
+  const coverage = await coverageOf(settingsFixture(t, { permissions: { allow: ["Bash", "PowerShell"] } }).root);
+
+  assert.deepEqual(coverage.matrixModes, MATRIX_MODES);
+  assert.deepEqual(coverage.commands.map((command) => command.id), ALL_IDS);
+  for (const command of coverage.commands) {
+    assert.deepEqual(command.modes, allModes("passes"), command.id);
+  }
+});
+
+test("a deny rule blocks every command in every matrix mode, bypassPermissions included", async (t) => {
+  const coverage = await coverageOf(copyOf(t, "guarded").root);
+
+  for (const command of coverage.commands) {
+    assert.deepEqual(command.modes, allModes("blocked"), command.id);
+  }
+});
+
+test("a deny rule beats a broad allow in every mode, and the commands it does not match keep their allow (positive control)", async (t) => {
+  const settings = { permissions: { allow: ["Bash", "PowerShell"], deny: ["Bash(npm publish *)"] } };
+  const coverage = await coverageOf(settingsFixture(t, settings).root);
+
+  for (const command of coverage.commands) {
+    const expected = command.id === "npm-publish" ? allModes("blocked") : allModes("passes");
+    assert.deepEqual(command.modes, expected, command.id);
+  }
+});
+
+test("with no settings, auto is a classifier for every command, and the other modes follow their own rules", async (t) => {
+  const coverage = await coverageOf(emptyFixture(t).root);
+
+  assert.equal(coverage.mode, null);
+  // acceptEdits approves the file commands inside the project: rm and Remove-Item (both insideProject) pass.
+  // NOT VERIFIED for Remove-Item: the cited acceptEdits note names only mkdir, touch, rm, rmdir, mv, cp and sed, so the
+  // Remove-Item pass is pending verification.
+  const acceptEditsPasses = ["rm-recursive-force", "remove-item-recurse-force"];
+  for (const command of coverage.commands) {
+    assert.equal(command.modes.auto, "classifier", command.id);
+    assert.equal(command.modes.default, "asks", command.id);
+    assert.equal(command.modes.acceptEdits, acceptEditsPasses.includes(command.id) ? "passes" : "asks", command.id);
+    assert.equal(command.modes.bypassPermissions, "passes", command.id);
+  }
+});
+
+test("the schema documents modes on each command and matrixModes on destructiveCoverage, and the output matches it", async (t) => {
+  const schema = JSON.parse(fs.readFileSync(SCHEMA_FILE, "utf8"));
+  const documented = schema.properties.security.properties.destructiveCoverage;
+  const outcomes = ["blocked", "asks", "passes", "classifier", "undeterminable"];
+
+  assert.ok(documented.required.includes("matrixModes"));
+  assert.deepEqual(documented.properties.matrixModes.items.enum, MATRIX_MODES);
+  const command = documented.properties.commands.items;
+  assert.ok(command.required.includes("modes"));
+  assert.deepEqual(command.properties.modes.required, MATRIX_MODES);
+  assert.deepEqual(Object.keys(command.properties.modes.properties), MATRIX_MODES);
+  for (const mode of MATRIX_MODES) {
+    assert.deepEqual(command.properties.modes.properties[mode].enum, outcomes, mode);
+  }
+  // Positive control: the measure writes exactly the documented keys, with documented values.
+  const coverage = await coverageOf(copyOf(t, "permissive").root);
+  for (const item of coverage.commands) {
+    assert.deepEqual(Object.keys(item.modes), MATRIX_MODES, item.id);
+    for (const mode of MATRIX_MODES) assert.ok(outcomes.includes(item.modes[mode]), `${item.id} ${mode}`);
+  }
 });

@@ -402,7 +402,7 @@
         "destructiveCoverage": {
           "type": "object",
           "description": "The commands of data/destructive-commands.json simulated against the project rules, defaultMode and PreToolUse hooks (permissions.mjs). Nothing runs: an outcome says what the configuration decides, not what a hook would do.",
-          "required": ["mode", "commands", "preToolUseHooks", "subagents"],
+          "required": ["mode", "commands", "preToolUseHooks", "subagents", "matrixModes"],
           "properties": {
             "mode": {
               "type": ["object", "null"],
@@ -413,7 +413,7 @@
               "description": "One item per command of the data file, in the order of the file.",
               "items": {
                 "type": "object",
-                "required": ["id", "shell", "tool", "command", "category", "insideProject", "criticalPath", "builtInProtection", "outcome", "decidedBy", "reason", "preToolUseHook"],
+                "required": ["id", "shell", "tool", "command", "category", "insideProject", "criticalPath", "builtInProtection", "outcome", "decidedBy", "reason", "preToolUseHook", "modes"],
                 "properties": {
                   "id": { "type": "string" },
                   "shell": { "enum": ["bash", "powershell", "cmd"] },
@@ -430,7 +430,19 @@
                     "description": "What decides the outcome: { kind: rule, list, rule, source }, { kind: mode, mode, ignoredMode? } or { kind: critical-path }. Null when nothing does."
                   },
                   "reason": { "type": "string", "description": "Fixed code from permissions.mjs." },
-                  "preToolUseHook": { "enum": ["runs", "none", "undeterminable"], "description": "Whether at least one PreToolUse hook runs for the command." }
+                  "preToolUseHook": { "enum": ["runs", "none", "undeterminable"], "description": "Whether at least one PreToolUse hook runs for the command." },
+                  "modes": {
+                    "type": "object",
+                    "description": "The outcome of the command in a session started in each mode of matrixModes (permissions.mjs evaluateInSessionMode). The session mode is not the project defaultMode, and hooks are not taken into account. A deny rule blocks in every mode, as the cited docs state. An ask or allow rule decides in every mode too, which is not verified for auto and bypassPermissions. Without a rule, a compound command without parts or a read-only command is undeterminable in every mode, and each other command follows its mode as its key says. classifier means a model classifier decides, so no result is invented.",
+                    "required": ["default", "acceptEdits", "auto", "bypassPermissions"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "default": { "enum": ["blocked", "asks", "passes", "classifier", "undeterminable"], "description": "No rule: asks." },
+                      "acceptEdits": { "enum": ["blocked", "asks", "passes", "classifier", "undeterminable"], "description": "No rule: passes for an acceptEdits-approved command inside the project, asks for another command." },
+                      "auto": { "enum": ["blocked", "asks", "passes", "classifier", "undeterminable"], "description": "No rule: classifier." },
+                      "bypassPermissions": { "enum": ["blocked", "asks", "passes", "classifier", "undeterminable"], "description": "No rule: passes, unless the command removes files (rm or rmdir) and its criticalPath is true or unknown." }
+                    }
+                  }
                 }
               }
             },
@@ -458,6 +470,12 @@
                   }
                 }
               }
+            },
+            "matrixModes": {
+              "type": "array",
+              "description": "The session modes of the matrix, in fixed order: default, acceptEdits, auto, bypassPermissions (permissions.mjs MATRIX_MODES). Each command's modes has exactly these keys. dontAsk and plan are not in the matrix: no cited note says what dontAsk approves, and treating plan as session-dependent is a repo choice.",
+              "uniqueItems": true,
+              "items": { "enum": ["default", "acceptEdits", "auto", "bypassPermissions"] }
             },
             "subagents": {
               "type": "array",
