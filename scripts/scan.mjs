@@ -1,8 +1,10 @@
 // Command line entry point of the scanner: node scripts/scan.mjs <target> [--out <dir>].
 //
 // It checks the arguments and the target, runs the measures and writes measurements.json to the
-// output folder, then prints a short summary. Exit codes: 0 when the scan ran, even if it found
-// problems; 2 for an invalid target or invalid usage; 1 for anything unexpected.
+// output folder, then prints a short summary. The output folder must lie inside runs/ of
+// harness-x-ray or inside the system temp folder (see lib/run-dir.mjs); by default it is a new folder
+// under runs/. Exit codes: 0 when the scan ran, even if it found problems; 2 for an invalid target,
+// an output folder that is not allowed, or invalid usage; 1 for anything unexpected.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -15,6 +17,7 @@ import { writeStableJson } from "./lib/json-out.mjs";
 import { countByAxis, deriveMeasuredOutput } from "./lib/measured-findings.mjs";
 import { memoryMeasure } from "./lib/memory.mjs";
 import { referencesMeasure } from "./lib/references.mjs";
+import { checkRunDir, checkRunFile } from "./lib/run-dir.mjs";
 import { scan } from "./lib/scanner.mjs";
 import { secretsMeasure } from "./lib/secrets.mjs";
 import { structureMeasure } from "./lib/structure.mjs";
@@ -48,10 +51,22 @@ async function main(argv) {
         ? defaultOutputDir({ harnessRoot: HARNESS_ROOT, targetName: target.name, now: new Date() })
         : path.resolve(out);
     checkOutputDir(outDir, target.root);
+    // First check, before the scan: a folder that is not allowed fails at once, not after the scan.
+    checkRunDir(outDir, HARNESS_ROOT);
 
     const measurements = await scan({ root: target.root, measures: MEASURES, derive: deriveMeasuredOutput });
+    // Second check, right before mkdir: the scan takes time, and a link put into runs/ meanwhile must be
+    // refused before mkdir could create folders behind it. A link swapped in after this check can still
+    // get past it, which is why the check after mkdir below is needed.
+    checkRunDir(outDir, HARNESS_ROOT);
     fs.mkdirSync(outDir, { recursive: true });
+    // Third check, after mkdir: the folder exists now, so its real path is settled. If a link was swapped in
+    // before mkdir, the folder it made lies outside runs/, and this check refuses the run before
+    // measurements.json is written there.
+    checkRunDir(outDir, HARNESS_ROOT);
     const file = path.join(outDir, "measurements.json");
+    // Refuses a measurements.json that is a link, a folder or a hard link, so no other file is written.
+    checkRunFile(file);
     writeStableJson(file, measurements);
     printSummary(measurements, file);
     return 0;

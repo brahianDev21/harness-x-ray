@@ -1,11 +1,12 @@
 // Command line entry point of the report: node scripts/render-report.mjs <runDir>.
 //
 // It reads <runDir>/measurements.json and <runDir>/findings.json, validates the findings against the rule catalog,
-// the scan and the target, and writes <runDir>/report.md. Warnings go to stderr; a measured finding that findings.json
-// does not cite is one of them. Exit codes: 0 when the report is written; 2 for a usage error, or for an input file that
-// is missing, is not JSON, or is not a scan of this tool; 1 when validation fails or anything unexpected happens.
-// A failed run writes nothing and leaves an existing report.md untouched. Nothing from the target is executed, and the
-// target is read only by the validator.
+// the scan and the target, and writes <runDir>/report.md. The run folder must lie inside runs/ of harness-x-ray or inside
+// the system temp folder (see lib/run-dir.mjs). Warnings go to stderr; a measured finding that findings.json does not cite
+// is one of them. Exit codes: 0 when the report is written; 2 for a usage error, for a run folder that is not allowed or is
+// not a folder, for a report.md that exists and is not a regular file with one name, or for an input file that is missing,
+// is not JSON, or is not a scan of this tool; 1 when validation fails or anything unexpected happens. A failed run writes nothing and leaves an existing
+// report.md untouched. Nothing from the target is executed, and the target is read only by the validator.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -15,6 +16,7 @@ import { formatIssue, loadRules, validateFindings } from "./lib/findings-validat
 import { readCatalog } from "./lib/report-catalog.mjs";
 import { loadLabels } from "./lib/report-labels.mjs";
 import { missingField, renderReport } from "./lib/report.mjs";
+import { checkRunDir, checkRunFile } from "./lib/run-dir.mjs";
 import { UsageError } from "./lib/target.mjs";
 
 const HARNESS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -26,8 +28,11 @@ process.exitCode = await main(process.argv.slice(2));
 async function main(argv) {
   try {
     const runDir = path.resolve(parseCommandLine(argv));
+    checkRunDir(runDir, HARNESS_ROOT);
     const { measurements, findings } = readInputs(runDir);
     const reportFile = path.join(runDir, REPORT_NAME);
+    // Checked before validation, so a link in the way is reported as the usage error it is, and nothing is written.
+    checkRunFile(reportFile);
 
     const rules = loadRules(HARNESS_ROOT);
     const result = validateFindings({

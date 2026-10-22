@@ -1,6 +1,8 @@
 // Checks where a scan reads from and writes to. The target must be a folder outside harness-x-ray,
 // and the output folder must lie outside the target, so the scanner never writes into the repository
 // it audits. Containment compares path segments, not text, and ignores letter case on Windows.
+// Which folders a run may use (runs/ or the system temp folder) is checked in run-dir.mjs, with
+// the helpers of this module.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -85,19 +87,37 @@ function realpathOrNull(target) {
   }
 }
 
-// Real path of the nearest existing ancestor, with the names that do not exist yet appended. A
-// folder that is not created yet has no real path of its own, so this is how it is compared.
-function realpathOfNearest(target) {
+/**
+ * Real path of the nearest existing ancestor, with the names that do not exist yet appended. A
+ * folder that is not created yet has no real path of its own, so this is how it is compared.
+ * A link that cannot be followed (a dangling link, or a loop) is refused: its target is unknown,
+ * so the folder below it cannot be compared, and mkdir would follow the link.
+ * @param {string} target Absolute path.
+ * @returns {string}
+ * @throws {UsageError} If a link on the way is broken.
+ */
+export function realpathOfNearest(target) {
   const missing = [];
   let current = target;
   for (;;) {
     try {
       return path.join(fs.realpathSync.native(current), ...missing);
     } catch (error) {
+      if (!["ENOENT", "ENOTDIR", "ELOOP"].includes(error?.code)) throw error;
+      if (isSymbolicLink(current)) throw new UsageError(`folder goes through a broken symbolic link: ${current}`);
       const parent = path.dirname(current);
-      if (parent === current || !["ENOENT", "ENOTDIR"].includes(error?.code)) throw error;
+      if (parent === current) throw error;
       missing.unshift(path.basename(current));
       current = parent;
     }
+  }
+}
+
+// True when the name is a symbolic link, whether or not its target exists.
+function isSymbolicLink(file) {
+  try {
+    return fs.lstatSync(file).isSymbolicLink();
+  } catch {
+    return false;
   }
 }

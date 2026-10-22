@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,8 +17,11 @@ import {
   readGoldenFindings,
   runRender,
 } from "./helpers/report-run.mjs";
+import { symlinkSupport } from "./helpers/make-fixture.mjs";
 
 const REPORT = "report.md";
+const support = symlinkSupport();
+const symlinkSkip = support.supported ? false : support.reason;
 
 let run;
 
@@ -255,5 +259,80 @@ describe("the renderer function", () => {
       () => renderReport({ measurements, findings: readGoldenFindings("findings.en.json"), catalog, labels, template }),
       /does not resolve in measurements\.json/,
     );
+  });
+});
+
+describe("run folders", () => {
+  const RUNS_DIR = path.join(HARNESS_ROOT, "runs");
+  const TEMPLATES_DIR = path.join(HARNESS_ROOT, "templates");
+
+  // A random name, so that a test never reuses a folder of an earlier run.
+  const randomName = (prefix) => `${prefix}-${randomUUID().slice(0, 8)}`;
+
+  test("a run folder outside runs/ and the temp folder exits 2 with the new message, and nothing in it changes", async () => {
+    const names = fs.readdirSync(TEMPLATES_DIR).sort();
+    const template = fs.readFileSync(path.join(TEMPLATES_DIR, REPORT));
+
+    const result = await runRender([TEMPLATES_DIR]);
+
+    assert.equal(result.code, 2, result.stderr);
+    assert.match(result.stderr, /^error: folder must be inside runs\/ or the system temp folder: /m);
+    assert.deepEqual(fs.readdirSync(TEMPLATES_DIR).sort(), names);
+    assert.deepEqual(fs.readFileSync(path.join(TEMPLATES_DIR, REPORT)), template);
+  });
+
+  test("a run folder that does not exist outside runs/ and the temp folder exits 2 and is not created", async (t) => {
+    const missing = path.join(HARNESS_ROOT, "test", randomName("hxr-not-allowed"));
+    t.after(() => fs.rmSync(missing, { recursive: true, force: true }));
+
+    const result = await runRender([missing]);
+
+    assert.equal(result.code, 2, result.stderr);
+    assert.match(result.stderr, /must be inside runs\//);
+    assert.equal(fs.existsSync(missing), false);
+  });
+
+  test("a run folder inside runs/ renders to the golden report (positive control)", async (t) => {
+    const dir = path.join(RUNS_DIR, randomName("hxr-render"));
+    fs.mkdirSync(dir, { recursive: true });
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    writeStableJson(path.join(dir, "measurements.json"), run.measurements);
+    fs.writeFileSync(path.join(dir, "findings.json"), `${JSON.stringify(readGoldenFindings("findings.en.json"), null, 2)}\n`);
+
+    const result = await runRender([dir]);
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(reportOf(dir), readGolden("report.en.md"));
+  });
+
+  test("a run folder inside runs/ that is a link to a folder outside exits 2 and writes nothing", { skip: symlinkSkip }, async (t) => {
+    fs.mkdirSync(RUNS_DIR, { recursive: true });
+    const link = path.join(RUNS_DIR, randomName("hxr-render-link"));
+    fs.symlinkSync(TEMPLATES_DIR, link, "dir");
+    t.after(() => fs.unlinkSync(link));
+    const names = fs.readdirSync(TEMPLATES_DIR).sort();
+
+    const result = await runRender([link]);
+
+    assert.equal(result.code, 2, result.stderr);
+    assert.match(result.stderr, /must be inside runs\//);
+    assert.deepEqual(fs.readdirSync(TEMPLATES_DIR).sort(), names);
+  });
+
+  test("a report.md that is a link exits 2, and the file it points to is left alone", { skip: symlinkSkip }, async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    const target = path.join(run.fixture.base, "kept.md");
+    fs.writeFileSync(target, "kept\n");
+    fs.symlinkSync(target, path.join(dir, REPORT), "file");
+
+    const result = await runRender([dir]);
+
+    assert.equal(result.code, 2, result.stderr);
+    assert.match(result.stderr, /not a regular file/);
+    assert.equal(fs.readFileSync(target, "utf8"), "kept\n");
+
+    // Positive control: the same run folder without the link renders.
+    const plain = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    assert.equal((await runRender([plain])).code, 0);
   });
 });

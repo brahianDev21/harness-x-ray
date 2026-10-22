@@ -22,8 +22,8 @@ The findings are grouped in six axes: instructions, context, security, verificat
 
 ## Scripts
 
-- `node scripts/scan.mjs <target> [--out <dir>]`: scans a target and writes `<runDir>/measurements.json`. Without `--out`, `<runDir>` is a new folder under `runs/`.
-- `node scripts/render-report.mjs <runDir>`: validates `<runDir>/findings.json` against the rule catalog, the scan and the target, then writes `<runDir>/report.md`. Exit 0 when written, 1 when validation fails (nothing is written), 2 for a usage or input error.
+- `node scripts/scan.mjs <target> [--out <dir>]`: scans a target and writes `<runDir>/measurements.json`. Without `--out`, `<runDir>` is a new folder under `runs/`. `--out` must lie inside `runs/` or the system temp folder (exit 2 otherwise).
+- `node scripts/render-report.mjs <runDir>`: validates `<runDir>/findings.json` against the rule catalog, the scan and the target, then writes `<runDir>/report.md`. Exit 0 when written, 1 when validation fails (nothing is written), 2 for a usage or input error. `<runDir>` must lie inside `runs/` or the system temp folder (exit 2 otherwise).
 - `npm test`: runs the test suite.
 - `npm run check`: validates the rule catalog, the `data/` files and the measured rules.
 
@@ -33,6 +33,7 @@ The findings are grouped in six axes: instructions, context, security, verificat
 - Tokens are estimated from characters, never counted.
 - The destructive-command checks assume the project's `defaultMode`, or `default` when the project sets none. A real session may start in another mode.
 - The thresholds in `scripts/lib/thresholds.mjs` are provisional and not yet calibrated.
+- The scanner and the renderer write only inside `runs/` or the system temp folder, checked on real paths. Any other folder is refused with exit code 2, and nothing is written.
 
 `examples/harness-x-ray/review.md` records a scan of this repository's own harness.
 
