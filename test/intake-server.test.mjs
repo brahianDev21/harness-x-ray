@@ -12,10 +12,14 @@ import {
   DEPTHS,
   INTAKE_SCHEMA_VERSION,
   LANGUAGES,
+  parseAnswerForm,
   parseForm,
+  QUESTIONS_MAX_BODY_BYTES,
   startIntake,
+  startQuestions,
   validateIntake,
 } from "../scripts/lib/intake-server.mjs";
+import { MAX_ANSWER_LENGTH } from "../scripts/lib/questions.mjs";
 import { makeFixture } from "./helpers/make-fixture.mjs";
 import { schemaProblems } from "./helpers/schema-check.mjs";
 
@@ -158,8 +162,9 @@ function getPage(started, headers = {}) {
 }
 
 // A POST whose body is sent in two parts: the first part now, the rest when finish() is called. The response resolves with the
-// status and the text, so that a test can keep one submission in flight while another one completes.
-function openPost(started, body) {
+// status and the text, so that a test can keep one submission in flight while another one completes. The route is /intake unless
+// the test gives the questions route.
+function openPost(started, body, route = "/intake") {
   const payload = Buffer.from(body, "utf8");
   const cut = Math.floor(payload.length / 2);
   let req;
@@ -169,7 +174,7 @@ function openPost(started, body) {
         host: "127.0.0.1",
         port: started.port,
         method: "POST",
-        path: `/intake?token=${started.token}`,
+        path: `${route}?token=${started.token}`,
         agent: false,
         headers: { Origin: origin(started.port), "Content-Type": FORM_TYPE, "Content-Length": payload.length },
       },
@@ -702,4 +707,522 @@ test("the real page module renders the form, the page of an invalid form and the
   assert.match(done.headers["content-security-policy"], /frame-ancestors 'none'/);
   assert.equal((await started.done).code, 0);
   assert.deepEqual(readIntake(path.join(runDir, "intake.json")), VALID_INTAKE);
+});
+
+// The questions form (startQuestions) ---------------------------------------------------------------
+// The same HTTP core as the intake form, so these tests check what differs: the route, the questions and their answers, the
+// output file (answers.json, never intake.json), and the checks before the server listens. The pages are the stubs above, except
+// in the last test.
+
+const QUESTIONS_SCHEMA = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "schemas", "questions.schema.json"), "utf8"));
+const ANSWERS_SCHEMA = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "schemas", "answers.schema.json"), "utf8"));
+
+// A questions.json with one question of each type. Its texts hold no folder of this machine, so redaction changes nothing.
+const QUESTIONS_DOC = {
+  schemaVersion: 1,
+  questions: [
+    {
+      id: "contradiction",
+      type: "single",
+      text: "Which instruction file is right?",
+      why: "CLAUDE.md and AGENTS.md give opposite test commands.",
+      source: { file: "CLAUDE.md", line: 3 },
+      options: [
+        { id: "keep-claude", label: "Keep CLAUDE.md" },
+        { id: "keep-agents", label: "Keep AGENTS.md" },
+      ],
+    },
+    {
+      id: "folders",
+      type: "multi",
+      text: "Which folders hold the frontend?",
+      why: "The manifests do not say.",
+      source: { file: "apps/web/package.json", line: 1 },
+      options: [
+        { id: "web", label: "apps/web" },
+        { id: "admin", label: "apps/admin" },
+      ],
+    },
+    {
+      id: "generated",
+      type: "text",
+      text: "Is this file generated?",
+      why: "It has no generator marker.",
+      source: { file: "src/gen.ts", line: 1 },
+    },
+  ],
+};
+
+// A valid answer. The folders are sent admin first: the answer keeps the order of the question, so web comes first.
+const ANSWER_PAIRS = [
+  ["q-contradiction", "keep-claude"],
+  ["q-folders", "admin"],
+  ["q-folders", "web"],
+  ["q-generated", "Yes, it is generated."],
+];
+const VALID_ANSWERS = formOf(ANSWER_PAIRS);
+const EXPECTED_ANSWERS = {
+  schemaVersion: 1,
+  answers: [
+    {
+      id: "contradiction",
+      type: "single",
+      question: "Which instruction file is right?",
+      why: "CLAUDE.md and AGENTS.md give opposite test commands.",
+      source: { file: "CLAUDE.md", line: 3 },
+      selected: [{ id: "keep-claude", label: "Keep CLAUDE.md" }],
+    },
+    {
+      id: "folders",
+      type: "multi",
+      question: "Which folders hold the frontend?",
+      why: "The manifests do not say.",
+      source: { file: "apps/web/package.json", line: 1 },
+      selected: [
+        { id: "web", label: "apps/web" },
+        { id: "admin", label: "apps/admin" },
+      ],
+    },
+    {
+      id: "generated",
+      type: "text",
+      question: "Is this file generated?",
+      why: "It has no generator marker.",
+      source: { file: "src/gen.ts", line: 1 },
+      value: "Yes, it is generated.",
+    },
+  ],
+};
+
+// A run folder with the given files (questions.json by default), in a fixture of the temp folder removed at the end of the test.
+function makeQuestionsRun(t, files = { "questions.json": JSON.stringify(QUESTIONS_DOC) }) {
+  const fixture = makeFixture({ files });
+  t.after(fixture.cleanup);
+  return fixture.root;
+}
+
+// Starts the questions server on a new run folder, with the stub pages. The server is closed in t.after.
+async function startQuestionsRun(t, { files, maxBodyBytes, timeoutMs = 60_000 } = {}) {
+  const runDir = makeQuestionsRun(t, files);
+  const options = { runDir, harnessRoot: HARNESS_ROOT, renderPage: stubPage, renderDone: stubDone, renderError: stubError, timeoutMs };
+  if (maxBodyBytes !== undefined) options.maxBodyBytes = maxBodyBytes;
+  const started = await startQuestions(options);
+  t.after(() => started.close());
+  return { ...started, runDir, answersFile: path.join(runDir, "answers.json") };
+}
+
+// The questions page, with a GET of the token address, from this server's origin.
+function getQuestions(started, headers = {}) {
+  return request(started.port, { path: `/questions?token=${started.token}`, headers: { Origin: origin(started.port), ...headers } });
+}
+
+// A POST of the answers to the token address, from this server's origin, unless the test gives other headers.
+function postAnswers(started, body, headers = {}) {
+  return request(started.port, {
+    method: "POST",
+    path: `/questions?token=${started.token}`,
+    body,
+    headers: { Origin: origin(started.port), "Content-Type": FORM_TYPE, ...headers },
+  });
+}
+
+// Reads an answers.json that a test has written, and checks it against schemas/answers.schema.json at the value level.
+function readAnswers(file) {
+  const value = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.deepEqual(schemaProblems(ANSWERS_SCHEMA, value), [], `${file} passes schemas/answers.schema.json`);
+  return value;
+}
+
+test("parseAnswerForm keeps the repeated names in order, and leaves the names to validateAnswers", () => {
+  const form = parseAnswerForm("q-folders=admin&q-folders=web&q-generated=a+b&unknown=1");
+  assert.ok(form instanceof Map);
+  assert.deepEqual([...form.entries()], [
+    ["q-folders", ["admin", "web"]],
+    ["q-generated", ["a b"]],
+    ["unknown", ["1"]],
+  ]);
+  assert.deepEqual([...parseAnswerForm(Buffer.from("q-x=1", "utf8")).keys()], ["q-x"]);
+  assert.throws(() => parseAnswerForm(42), TypeError);
+});
+
+test("parseAnswerForm reads the bytes strictly: a name or a value that is not UTF-8 gives null, and a valid form reads as URLSearchParams reads it", () => {
+  assert.equal(parseAnswerForm("q-x=%E9"), null, "a percent-encoded byte that is not UTF-8");
+  assert.equal(parseAnswerForm(Buffer.from([0x71, 0x2d, 0x78, 0x3d, 0xe9])), null, "a raw byte that is not UTF-8");
+  assert.equal(parseAnswerForm("%E9=1"), null, "a name that is not UTF-8");
+  assert.equal(parseAnswerForm("q-x=%C3%A9").get("q-x")[0], "é", "positive control: the UTF-8 bytes of e-acute are read");
+  const valid = "q-a=one+two&q-b=%2B%26&&q-c=100%&q-d=%zz&q-e=%EF%BB%BFbom&q-f=%F0%9F%98%80&q-g";
+  const strict = parseAnswerForm(valid);
+  const expected = new Map();
+  for (const [name, value] of new URLSearchParams(valid)) expected.set(name, [...(expected.get(name) ?? []), value]);
+  assert.deepEqual([...strict.entries()], [...expected.entries()]);
+  assert.equal(strict.get("q-b")[0], "+&", "an escaped plus and ampersand");
+  assert.equal(strict.get("q-e")[0], "﻿bom", "a byte order mark is kept, as URLSearchParams keeps it");
+});
+
+test("the questions and answers documents of the tests pass their schemas, and a question with an extra field fails", () => {
+  assert.deepEqual(schemaProblems(QUESTIONS_SCHEMA, QUESTIONS_DOC), [], "positive control: the fixture is valid");
+  assert.deepEqual(schemaProblems(ANSWERS_SCHEMA, EXPECTED_ANSWERS), [], "positive control: the expected answers are valid");
+  const broken = { schemaVersion: 1, questions: [{ ...QUESTIONS_DOC.questions[2], extra: true }] };
+  assert.notDeepEqual(schemaProblems(QUESTIONS_SCHEMA, broken), [], "a question with an extra field fails");
+});
+
+test("startQuestions refuses a missing or invalid questions.json, more than five questions, and an answered run, and starts no server", async (t) => {
+  const six = {
+    schemaVersion: 1,
+    questions: Array.from({ length: 6 }, (_, index) => ({
+      id: `text-${index}`,
+      type: "text",
+      text: "A question",
+      why: "A reason",
+      source: { file: "README.md", line: 1 },
+    })),
+  };
+  const cases = [
+    [{}, /questions\.json is missing/],
+    [{ "questions.json": "{" }, /questions\.json is not valid JSON/],
+    [{ "questions.json": JSON.stringify(six) }, /holds 6 questions; the most is 5/],
+    [{ "questions.json": JSON.stringify(QUESTIONS_DOC), "answers.json": "previous\n" }, /already answered; remove it to ask again/],
+  ];
+  for (const [files, pattern] of cases) {
+    const runDir = makeQuestionsRun(t, files);
+    await assert.rejects(
+      startQuestions({ runDir, harnessRoot: HARNESS_ROOT, renderPage: stubPage, renderDone: stubDone, renderError: stubError }),
+      (error) => error instanceof UsageError && pattern.test(error.message),
+      pattern.source,
+    );
+    // Only the answered run has an answers.json, and it is left as it is.
+    const answers = path.join(runDir, "answers.json");
+    assert.equal(fs.existsSync(answers), "answers.json" in files, `answers.json is not written for ${pattern.source}`);
+  }
+  // Positive control: the valid run starts, and it needs no layer plan.
+  const started = await startQuestionsRun(t);
+  assert.match(started.url, /^http:\/\/127\.0\.0\.1:\d+\/questions\?token=[A-Za-z0-9_-]+$/);
+  assert.equal(fs.existsSync(path.join(started.runDir, "layer-plan.json")), false, "no layer plan is needed");
+});
+
+test("the questions form is served at /questions only: another path gets 404, another method 405, and GET gets the page", async (t) => {
+  const started = await startQuestionsRun(t);
+  for (const target of ["/", "/intake", `/intake?token=${started.token}`, `/questions/?token=${started.token}`]) {
+    assert.equal((await request(started.port, { path: target })).status, 404, target);
+  }
+  for (const method of ["PUT", "DELETE", "OPTIONS"]) {
+    const response = await request(started.port, {
+      method,
+      path: `/questions?token=${started.token}`,
+      body: method === "PUT" ? VALID_ANSWERS : undefined,
+      headers: method === "PUT" ? { "Content-Type": FORM_TYPE } : {},
+    });
+    assert.equal(response.status, 405, method);
+    assert.equal(response.headers.allow, "GET, HEAD, POST");
+  }
+  const page = await getQuestions(started);
+  assert.equal(page.status, 200, "positive control: the page is served at the route");
+  assert.equal(page.headers["content-security-policy"], "default-src 'none'; form-action 'self'; frame-ancestors 'none'");
+});
+
+test("an invalid token gets 403 on the page and on the form, nothing is written, and the right token still works", async (t) => {
+  const started = await startQuestionsRun(t);
+  const wrong = `/questions?token=${"B".repeat(43)}`;
+  assert.equal((await request(started.port, { path: wrong, headers: { Origin: origin(started.port) } })).status, 403);
+  const posted = await request(started.port, {
+    method: "POST",
+    path: wrong,
+    body: VALID_ANSWERS,
+    headers: { Origin: origin(started.port), "Content-Type": FORM_TYPE },
+  });
+  assert.equal(posted.status, 403);
+  assert.equal(fs.existsSync(started.answersFile), false, "a refused request writes nothing");
+  assert.equal((await getQuestions(started)).status, 200, "positive control: the right token gets the page");
+});
+
+test("a wrong Host or a wrong Origin gets 403, nothing is written, and the right Host and Origin pass", async (t) => {
+  const started = await startQuestionsRun(t);
+  const target = `/questions?token=${started.token}`;
+  for (const host of [`localhost:${started.port}`, "evil.example"]) {
+    assert.equal((await request(started.port, { path: target, headers: { Host: host } })).status, 403, host);
+  }
+  const foreignHost = await request(started.port, {
+    method: "POST",
+    path: target,
+    body: VALID_ANSWERS,
+    headers: { Host: "evil.example", Origin: origin(started.port), "Content-Type": FORM_TYPE },
+  });
+  assert.equal(foreignHost.status, 403, "a POST with a foreign Host is refused too");
+  for (const value of [`http://localhost:${started.port}`, "https://evil.example", "null"]) {
+    assert.equal((await postAnswers(started, VALID_ANSWERS, { Origin: value })).status, 403, value);
+  }
+  assert.equal(fs.existsSync(started.answersFile), false, "nothing is written");
+  assert.equal((await postAnswers(started, VALID_ANSWERS)).status, 200, "positive control: the right Host and Origin are accepted");
+});
+
+test("a body over the cap gets 413 and nothing is written; a body of exactly the cap is accepted", async (t) => {
+  const size = Buffer.byteLength(VALID_ANSWERS);
+  const over = await startQuestionsRun(t, { maxBodyBytes: size - 1 });
+  const refused = await postAnswers(over, VALID_ANSWERS);
+  assert.equal(refused.status, 413);
+  assert.equal(refused.headers.connection, "close", "the connection is closed after the 413");
+  assert.equal(fs.existsSync(over.answersFile), false, "nothing is written for a body over the cap");
+
+  const exact = await startQuestionsRun(t, { maxBodyBytes: size });
+  assert.equal((await postAnswers(exact, VALID_ANSWERS)).status, 200, "positive control: a body of exactly the cap is accepted");
+  assert.equal(fs.existsSync(exact.answersFile), true);
+});
+
+test("an invalid form gets the error page with 400 and nothing is written, and the server keeps waiting for a valid one", async (t) => {
+  const started = await startQuestionsRun(t);
+  const invalid = [
+    [formOf([["q-contradiction", "keep-nothing"], ["q-folders", "web"]]), "/q-contradiction: is not an option of this question"],
+    [formOf([["q-folders", "web"], ["q-generated", "x"]]), "/q-contradiction: needs an answer: choose one option"],
+    [formOf([...ANSWER_PAIRS, ["q-extra", "1"]]), "/q-extra: unknown field: no question has this id"],
+    [formOf([...ANSWER_PAIRS.filter(([name]) => name !== "q-generated"), ["q-generated", "x".repeat(MAX_ANSWER_LENGTH + 1)]]), `/q-generated: is longer than ${MAX_ANSWER_LENGTH} characters`],
+  ];
+  for (const [body, expected] of invalid) {
+    const response = await postAnswers(started, body);
+    assert.equal(response.status, 400, body.slice(0, 80));
+    assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+    assert.ok(response.text.includes(expected), `${expected} in the page`);
+    assert.ok(response.text.includes(`href="/questions?token=${started.token}"`), "a link back to the form");
+    assert.equal(fs.existsSync(started.answersFile), false, "nothing is written");
+    assert.equal(fs.existsSync(path.join(started.runDir, "intake.json")), false, "intake.json is never written");
+  }
+  const accepted = await postAnswers(started, VALID_ANSWERS);
+  assert.equal(accepted.status, 200, "positive control: the server still answers and accepts the corrected form");
+  assert.equal((await started.done).code, 0);
+  assert.deepEqual(readAnswers(started.answersFile), EXPECTED_ANSWERS);
+});
+
+test("a valid form writes answers.json with the expected content, answers the done page, stops, and writes no intake.json", async (t) => {
+  const started = await startQuestionsRun(t);
+  const response = await postAnswers(started, VALID_ANSWERS);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+  assert.ok(response.text.includes("done"), "the answer is the done page");
+  const result = await started.done;
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.answers, EXPECTED_ANSWERS);
+  assert.deepEqual(readAnswers(started.answersFile), EXPECTED_ANSWERS);
+  assert.equal(fs.readFileSync(started.answersFile, "utf8").endsWith("\n"), true, "the file is written with writeStableJson");
+  assert.deepEqual(fs.readdirSync(started.runDir).sort(), ["answers.json", "questions.json"], "no temporary file and no intake.json");
+  await assert.rejects(getQuestions(started), (error) => error.code === "ECONNREFUSED", "the server is closed, so the token is dead");
+});
+
+test("the timeout stops the questions server with code 4 and writes nothing; a longer wait for the same form is answered", async (t) => {
+  const timed = await startQuestionsRun(t, { timeoutMs: 50 });
+  const result = await timed.done;
+  assert.equal(result.code, 4);
+  assert.equal(fs.existsSync(timed.answersFile), false, "nothing is written");
+  await assert.rejects(getQuestions(timed), (error) => error.code === "ECONNREFUSED");
+
+  const waiting = await startQuestionsRun(t, { timeoutMs: 60_000 });
+  assert.equal((await postAnswers(waiting, VALID_ANSWERS)).status, 200, "positive control: the same form is answered in time");
+  assert.equal((await waiting.done).code, 0);
+});
+
+test("the real questions page renders the questions, and an invalid answer gets its error page in the page language", async (t) => {
+  const runDir = makeQuestionsRun(t);
+  const started = await startQuestions({ runDir, harnessRoot: HARNESS_ROOT, language: "es", timeoutMs: 60_000 });
+  t.after(() => started.close());
+  const page = await getQuestions(started);
+  assert.equal(page.status, 200);
+  assert.match(page.headers["content-type"], /^text\/html/);
+  assert.match(page.headers["content-security-policy"], /frame-ancestors 'none'/);
+  assert.ok(page.text.includes(`/questions?token=${started.token}`), "the form posts to the token address");
+  assert.ok(page.text.includes('name="q-contradiction" value="keep-claude" required'), "a single question is required radio buttons");
+  assert.ok(page.text.includes("Elige una opción."), "the hint is in the page language");
+  const invalid = await postAnswers(started, formOf([["q-folders", "web"]]));
+  assert.equal(invalid.status, 400);
+  assert.ok(invalid.text.includes("El formulario no se aceptó"), "the error page is in the page language");
+  const done = await postAnswers(started, VALID_ANSWERS);
+  assert.equal(done.status, 200);
+  assert.match(done.headers["content-security-policy"], /frame-ancestors 'none'/);
+  assert.equal((await started.done).code, 0);
+  assert.deepEqual(readAnswers(path.join(runDir, "answers.json")), EXPECTED_ANSWERS);
+});
+
+// The questions form, the rest of it: the body cap, the UTF-8 check, the content type, the repeated fields, the exclusive write,
+// the submissions in flight at once, and the redaction of the written answers ----------------------------------------------
+
+// Five written questions, the most a form asks, and the largest answers they take: MAX_ANSWER_LENGTH characters of four bytes each,
+// which the browser sends as twelve bytes a character. The default cap of the form must accept them.
+const FIVE_TEXT_FILES = {
+  "questions.json": JSON.stringify({
+    schemaVersion: 1,
+    questions: Array.from({ length: 5 }, (_, index) => ({
+      id: `text-${index}`,
+      type: "text",
+      text: "A question",
+      why: "A reason",
+      source: { file: "README.md", line: index + 1 },
+    })),
+  }),
+};
+const FOUR_BYTE_CHARACTER = "\u{1F600}";
+const LARGEST_ANSWERS = formOf(Array.from({ length: 5 }, (_, index) => [`q-text-${index}`, FOUR_BYTE_CHARACTER.repeat(MAX_ANSWER_LENGTH)]));
+
+test("five written answers of the largest size are accepted by the default cap, and answers.json holds them", async (t) => {
+  assert.equal(QUESTIONS_MAX_BODY_BYTES, 131_072, "2^17 bytes, the power of two above the question caps");
+  assert.ok(Buffer.byteLength(LARGEST_ANSWERS) < QUESTIONS_MAX_BODY_BYTES, "the largest form fits the cap");
+  const started = await startQuestionsRun(t, { files: FIVE_TEXT_FILES });
+  const response = await postAnswers(started, LARGEST_ANSWERS);
+  assert.equal(response.status, 200, `positive control: ${response.text.slice(0, 200)}`);
+  assert.equal((await started.done).code, 0);
+  const written = readAnswers(started.answersFile);
+  assert.equal(written.answers.length, 5);
+  for (const answer of written.answers) assert.equal([...answer.value].length, MAX_ANSWER_LENGTH);
+});
+
+test("one written answer of 2001 characters gets 400 that names its field, not 413, and the largest form is accepted after it", async (t) => {
+  const started = await startQuestionsRun(t, { files: FIVE_TEXT_FILES });
+  const pairs = Array.from({ length: 5 }, (_, index) => [`q-text-${index}`, FOUR_BYTE_CHARACTER.repeat(MAX_ANSWER_LENGTH)]);
+  pairs[0][1] = FOUR_BYTE_CHARACTER.repeat(MAX_ANSWER_LENGTH + 1);
+  const refused = await postAnswers(started, formOf(pairs));
+  assert.equal(refused.status, 400, "the check refuses the answer, the cap does not");
+  assert.ok(refused.text.includes("/q-text-0: is longer than 2000 characters"), refused.text);
+  assert.equal(fs.existsSync(started.answersFile), false, "nothing is written");
+  const accepted = await postAnswers(started, LARGEST_ANSWERS);
+  assert.equal(accepted.status, 200, "positive control: the form with answers of the right length is accepted");
+});
+
+test("a body of exactly the default cap is accepted, and a body one byte larger gets 413 with nothing written", async (t) => {
+  const started = await startQuestionsRun(t, { files: FIVE_TEXT_FILES });
+  // Empty pairs are ignored by the form, and each "&" is one byte of the body.
+  const size = Buffer.byteLength(LARGEST_ANSWERS);
+  const over = await postAnswers(started, `${LARGEST_ANSWERS}${"&".repeat(QUESTIONS_MAX_BODY_BYTES + 1 - size)}`);
+  assert.equal(over.status, 413);
+  assert.equal(over.headers.connection, "close", "the connection is closed after the 413");
+  assert.equal(fs.existsSync(started.answersFile), false, "nothing is written for a body over the cap");
+  const exact = await postAnswers(started, `${LARGEST_ANSWERS}${"&".repeat(QUESTIONS_MAX_BODY_BYTES - size)}`);
+  assert.equal(exact.status, 200, "positive control: a body of exactly the cap is accepted");
+  assert.equal(fs.existsSync(started.answersFile), true);
+});
+
+test("a questions form whose value is not valid UTF-8 gets 400 with nothing written, and the server keeps waiting; the same character as UTF-8 is accepted", async (t) => {
+  const started = await startQuestionsRun(t);
+  const head = formOf(ANSWER_PAIRS.slice(0, 3));
+  const broken = await postAnswers(started, `${head}&q-generated=%E9`);
+  assert.equal(broken.status, 400);
+  assert.ok(broken.text.includes("the form is not valid UTF-8"), broken.text);
+  assert.equal(fs.existsSync(started.answersFile), false, "nothing is written");
+  const accepted = await postAnswers(started, `${head}&q-generated=%C3%A9`);
+  assert.equal(accepted.status, 200, "positive control: the same value as UTF-8, e-acute, is accepted");
+  assert.equal(readAnswers(started.answersFile).answers[2].value, "é");
+});
+
+// Makes the output file appear once, between the check and the link, as another process would: the first link finds it there. A
+// rename would have replaced it. The answer is then 500, the file that appeared is kept, no temporary file is left, the token is
+// live again, and the next valid form is written once that file is gone.
+async function checkExclusiveWrite(t, { started, outputFile, post, get }) {
+  const realLink = fs.linkSync;
+  let calls = 0;
+  t.mock.method(fs, "linkSync", (source, destination) => {
+    calls += 1;
+    if (calls === 1) fs.writeFileSync(destination, "written by another process\n");
+    return realLink(source, destination);
+  });
+  const failed = await post();
+  assert.equal(failed.status, 500, failed.text);
+  assert.equal(calls, 1, "the write is one link");
+  assert.equal(fs.readFileSync(outputFile, "utf8"), "written by another process\n", "the file that appeared is kept");
+  assert.deepEqual(fs.readdirSync(started.runDir).filter((name) => name.endsWith(".tmp")), [], "the temporary file is removed");
+  assert.equal((await get()).status, 200, "the token is live again after the 500");
+  fs.rmSync(outputFile);
+  const accepted = await post();
+  assert.equal(accepted.status, 200, "positive control: once the file is gone, the form is written");
+  assert.equal((await started.done).code, 0);
+}
+
+test("the intake.json write is exclusive: a file that appears after the check is kept, the answer is 500, and the next valid form is written", async (t) => {
+  const started = await start(t);
+  await checkExclusiveWrite(t, {
+    started,
+    outputFile: started.intakeFile,
+    post: () => postForm(started, variant()),
+    get: () => getPage(started),
+  });
+  assert.deepEqual(readIntake(started.intakeFile), VALID_INTAKE);
+});
+
+test("the answers.json write is exclusive, as the intake's is: a file that appears after the check is kept, and the next valid answer is written", async (t) => {
+  const started = await startQuestionsRun(t);
+  await checkExclusiveWrite(t, {
+    started,
+    outputFile: started.answersFile,
+    post: () => postAnswers(started, VALID_ANSWERS),
+    get: () => getQuestions(started),
+  });
+  assert.deepEqual(readAnswers(started.answersFile), EXPECTED_ANSWERS);
+  assert.equal(fs.existsSync(path.join(started.runDir, "intake.json")), false, "no intake.json is written");
+});
+
+test("a questions form whose Content-Type is not the form type gets 415, and nothing is written; the form type passes", async (t) => {
+  const started = await startQuestionsRun(t);
+  const missing = await request(started.port, {
+    method: "POST",
+    path: `/questions?token=${started.token}`,
+    body: VALID_ANSWERS,
+    headers: { Origin: origin(started.port) },
+  });
+  assert.equal(missing.status, 415, "no Content-Type");
+  for (const type of ["text/plain", "application/json", "multipart/form-data; boundary=x"]) {
+    const response = await postAnswers(started, VALID_ANSWERS, { "Content-Type": type });
+    assert.equal(response.status, 415, type);
+  }
+  assert.equal(fs.existsSync(started.answersFile), false, "nothing is written");
+  const accepted = await postAnswers(started, VALID_ANSWERS, { "Content-Type": `${FORM_TYPE}; charset=UTF-8` });
+  assert.equal(accepted.status, 200, "positive control: the form type with a charset is accepted");
+});
+
+test("a single question sent twice gets 400 that names it, a text question sent twice does too, and nothing is written; a multi question sent twice is valid", async (t) => {
+  const started = await startQuestionsRun(t);
+  const singleTwice = formOf([
+    ["q-contradiction", "keep-claude"],
+    ["q-contradiction", "keep-agents"],
+    ["q-folders", "admin"],
+    ["q-generated", "Yes."],
+  ]);
+  const single = await postAnswers(started, singleTwice);
+  assert.equal(single.status, 400);
+  assert.ok(single.text.includes("/q-contradiction: takes one value; found 2"), single.text);
+  const textTwice = await postAnswers(started, formOf([...ANSWER_PAIRS, ["q-generated", "Second."]]));
+  assert.equal(textTwice.status, 400);
+  assert.ok(textTwice.text.includes("/q-generated: takes one value; found 2"), textTwice.text);
+  assert.equal(fs.existsSync(started.answersFile), false, "nothing is written");
+  const accepted = await postAnswers(started, VALID_ANSWERS);
+  assert.equal(accepted.status, 200, "positive control: the form where the multi question is sent twice is the valid form");
+  assert.equal((await started.done).code, 0);
+});
+
+test("two valid answers in flight at once: one is written and answered 200, the other is refused with 403, and answers.json is written once", async (t) => {
+  const started = await startQuestionsRun(t);
+  // The first answer stays open: its body is only half sent when the second one is accepted and written.
+  const late = openPost(started, VALID_ANSWERS, "/questions");
+  const first = await postAnswers(started, VALID_ANSWERS);
+  assert.equal(first.status, 200, "the answer that completes first is written");
+  late.finish();
+  const second = await late.response;
+  assert.equal(second.status, 403, "the answer still in flight is refused, not written");
+  assert.equal((await started.done).code, 0, "done resolves once, with 0");
+  assert.deepEqual(fs.readdirSync(started.runDir).sort(), ["answers.json", "questions.json"], "one answers.json and no temporary file");
+  assert.deepEqual(readAnswers(started.answersFile), EXPECTED_ANSWERS);
+});
+
+test("a written answer is redacted in answers.json: a folder of the run's target and a token are masked", async (t) => {
+  // Built at run time so that this file holds no secret-shaped text (push protection would block it).
+  const token = ["gh", "p_"].join("") + ["A1b2C3d4E5", "f6G7h8I9j0", "K1l2M3n4O5", "p6Q7r8"].join("");
+  const started = await startQuestionsRun(t, {
+    files: {
+      "questions.json": JSON.stringify(QUESTIONS_DOC),
+      "measurements.json": JSON.stringify({ meta: { targetRoot: "/xray-target/app" } }),
+    },
+  });
+  const pairs = ANSWER_PAIRS.map(([name, value]) => [
+    name,
+    name === "q-generated" ? `Yes, see /xray-target/app/src and ${token}` : value,
+  ]);
+  const response = await postAnswers(started, formOf(pairs));
+  assert.equal(response.status, 200);
+  assert.equal((await started.done).code, 0);
+  const written = readAnswers(started.answersFile);
+  assert.equal(written.answers[2].value, "Yes, see <target>/src and ghp_…Q7r8", "the folder and the token are masked");
+  assert.equal(written.answers[2].question, "Is this file generated?", "the question is kept as it is");
 });

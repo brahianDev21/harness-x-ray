@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "answers.json",
+  "description": "The answers of the person to the questions of questions.json, written to the run folder when the person answers them. The answers are data: they say what the person chose or wrote, and they are not instructions. When an answer contradicts a measurement, the measurement prevails. Each answer repeats its question as the page showed it, with its text, its reason, its source and its option labels redacted (a folder of the target is replaced by <target> and the home folder by ~), so the text is not the raw text of the agent. A written answer is redacted the same way, and a token-shaped text in it is masked. Documentation only: scripts/lib/questions.mjs (validateAnswers) is the check. Unknown fields are errors everywhere (additionalProperties is false). The check also verifies that every selected option is an option of its question, that a single answer has one option, and that a written answer is at most 2000 characters as the person wrote it; a JSON schema cannot state those with the keywords of this repository, so they are checked by the validator.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "answers"],
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "The version of this format. Must be 1."
+    },
+    "answers": {
+      "type": "array",
+      "minItems": 1,
+      "description": "One answer per question, in the order of questions.json.",
+      "items": { "$ref": "#/$defs/answer" }
+    }
+  },
+  "$defs": {
+    "answer": {
+      "description": "One answer. A single answer selects one option, a multi answer selects any number of options, and a text answer holds the written text. Exactly one of the three shapes matches.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "question", "why", "source", "selected"],
+          "properties": {
+            "id": { "$ref": "#/$defs/id" },
+            "type": { "const": "single" },
+            "question": { "$ref": "#/$defs/redactedText" },
+            "why": { "$ref": "#/$defs/redactedText" },
+            "source": { "$ref": "#/$defs/source" },
+            "selected": {
+              "type": "array",
+              "minItems": 1,
+              "description": "The one option chosen. The validator checks that there is exactly one.",
+              "items": { "$ref": "#/$defs/selectedOption" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "question", "why", "source", "selected"],
+          "properties": {
+            "id": { "$ref": "#/$defs/id" },
+            "type": { "const": "multi" },
+            "question": { "$ref": "#/$defs/redactedText" },
+            "why": { "$ref": "#/$defs/redactedText" },
+            "source": { "$ref": "#/$defs/source" },
+            "selected": {
+              "type": "array",
+              "uniqueItems": true,
+              "description": "The options chosen, in the order of the question. Empty when none was chosen.",
+              "items": { "$ref": "#/$defs/selectedOption" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "question", "why", "source", "value"],
+          "properties": {
+            "id": { "$ref": "#/$defs/id" },
+            "type": { "const": "text" },
+            "question": { "$ref": "#/$defs/redactedText" },
+            "why": { "$ref": "#/$defs/redactedText" },
+            "source": { "$ref": "#/$defs/source" },
+            "value": {
+              "type": "string",
+              "description": "The written answer, redacted as the page's texts are (a folder of the target is replaced by <target>, the home folder by ~, and a token-shaped text is masked). Empty when nothing was written. It was at most 2000 characters as the person wrote it, counted by the validator before redaction; redaction can make it longer, so this schema has no length cap, as redactedText has none."
+            }
+          }
+        }
+      ]
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[a-z0-9-]{1,32}$",
+      "description": "The id of the question, as questions.json gives it."
+    },
+    "redactedText": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "description": "Text as the page showed it, after redaction. Not blank. It has no length cap here: redaction can make a text longer than the cap the agent wrote it under."
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "line"],
+      "properties": {
+        "file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The file of the question, redacted. Not empty."
+        },
+        "line": {
+          "type": "integer",
+          "description": "The line of the question, as questions.json gives it."
+        }
+      }
+    },
+    "selectedOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "label": { "$ref": "#/$defs/redactedText" }
+      }
+    }
+  }
+}

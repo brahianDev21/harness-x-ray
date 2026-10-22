@@ -1,13 +1,15 @@
 // The intake page: the form that the person answers before the report, the page that follows the answers, and the page that
-// answers an invalid form. The pages are built from templates/intake.html, intake-done.html and intake-error.html, with the
-// shared stylesheet of templates/theme.css.
+// answers an invalid form. The questions page is the form of the agent's questions, which the person answers after a scan. The
+// pages are built from templates/intake.html, intake-done.html, intake-error.html and questions.html, with the shared stylesheet
+// of templates/theme.css. The done and error pages serve both forms.
 // No page has a script. The form posts, so the policy allows no script, no image and no other resource, and the only
-// style is the one the policy names by its hash. Every text from the plan is escaped where it is inserted.
+// style is the one the policy names by its hash. Every text from the plan or the questions is escaped where it is inserted.
 
 import fs from "node:fs";
 import path from "node:path";
 import { cspHash, escapeHtml, loadTheme } from "./html.mjs";
 import { isPlainObject } from "./json-out.mjs";
+import { FIELD_PREFIX, MAX_ANSWER_LENGTH, QUESTION_TYPES } from "./questions.mjs";
 import { createLabeller, loadLabels } from "./report-labels.mjs";
 
 const LANGUAGES = Object.freeze(["en", "es"]);
@@ -32,6 +34,15 @@ const INTAKE_CSS = `
   margin: 0 0 0 1.75rem;
   color: var(--color-muted);
   font-size: 0.875rem;
+}
+`;
+
+// The rules of the questions page, after the intake rules: a written answer fills the width of the form.
+const QUESTIONS_CSS = `${INTAKE_CSS}
+textarea {
+  box-sizing: border-box;
+  width: 100%;
+  font: inherit;
 }
 `;
 
@@ -131,6 +142,41 @@ export function renderIntakeError({ harnessRoot, language = "en", action, errors
   return { html: fillTemplate(readTemplate(harnessRoot, "intake-error.html"), values, "intake-error.html"), csp };
 }
 
+/**
+ * Renders the questions form: one fieldset per question, with its text as the legend, its reason as a paragraph and its source
+ * as file:line in code. A single question is a group of radio buttons (one is required), a multi question is a group of
+ * checkboxes, and a text question is a text box of at most MAX_ANSWER_LENGTH characters. The controls send option ids, never
+ * option labels, and the text box sends the written text.
+ * @param {object} options
+ * @param {string} options.harnessRoot The absolute folder of this repository.
+ * @param {object[]} options.questions The questions, as readQuestions returns them: checked, and redacted for the page.
+ * @param {string} [options.language="en"] "en" or "es": the language of the page and of its labels.
+ * @param {string} options.action The form action, a path such as "/questions?token=...".
+ * @returns {{ html: string, csp: string }} csp is the Content-Security-Policy of the page, as renderIntakePage gives it.
+ * @throws {TypeError} If an argument has the wrong shape.
+ */
+export function renderQuestionsPage({ harnessRoot, questions, language = "en", action }) {
+  checkRoot(harnessRoot);
+  checkLanguage(language);
+  checkAction(action);
+  checkQuestions(questions);
+  const t = labeller(harnessRoot, language);
+  const style = pageStyle(harnessRoot, QUESTIONS_CSS);
+  const csp = policyOf(style);
+  const values = {
+    lang: language,
+    title: escapeHtml(t("intake.questions.title")),
+    csp,
+    style,
+    heading: escapeHtml(t("intake.questions.heading")),
+    intro: escapeHtml(t("intake.questions.intro")),
+    action: escapeHtml(action),
+    questions: questions.map((question) => questionFieldset(t, question)).join("\n"),
+    submit: escapeHtml(t("intake.submit")),
+  };
+  return { html: fillTemplate(readTemplate(harnessRoot, "questions.html"), values, "questions.html"), csp };
+}
+
 // The policy: nothing loads unless it is named. The one style is the hash of the style element, and the form may post
 // to this server only.
 function policyOf(style) {
@@ -221,11 +267,37 @@ function accessFieldset(t) {
 
 // Markup helpers ---------------------------------------------------------------------------------
 
+// One question of the questions form. Its controls are named "q-<id>", and each value is an option id, or the text box has no value.
+function questionFieldset(t, question) {
+  const field = `${FIELD_PREFIX}${question.id}`;
+  const source = `${question.source.file}:${question.source.line}`;
+  const parts = [
+    `<p>${escapeHtml(question.why)}</p>`,
+    `<p class="muted">${escapeHtml(t("intake.questions.source"))}: <code>${escapeHtml(source)}</code></p>`,
+    note(t(`intake.questions.${question.type}`)),
+  ];
+  if (question.type === "text") {
+    // The text box has no visible label of its own: the legend names the group, and aria-label names the box.
+    parts.push(
+      `<textarea name="${escapeHtml(field)}" maxlength="${MAX_ANSWER_LENGTH}" rows="4" aria-label="${escapeHtml(question.text)}"></textarea>`,
+    );
+  } else {
+    const single = question.type === "single";
+    for (const option of question.options) {
+      parts.push(
+        choice({ type: single ? "radio" : "checkbox", name: field, value: option.id, text: option.label, required: single }),
+      );
+    }
+  }
+  return fieldset(question.text, parts);
+}
+
 // One choice: an input inside its label, then the text and the help lines. Every text is escaped here, so a layer name or
 // a reason from the plan is inert in the page.
-function choice({ type, name, value, checked = false, text, help = [] }) {
+function choice({ type, name, value, checked = false, required = false, text, help = [] }) {
   const attributes = [`type="${type}"`, `name="${escapeHtml(name)}"`, `value="${escapeHtml(String(value))}"`];
   if (checked) attributes.push("checked");
+  if (required) attributes.push("required");
   const helpHtml = help.map((line) => `<span class="help">${escapeHtml(line)}</span>`).join("");
   return `<label class="option"><input ${attributes.join(" ")}> ${escapeHtml(text)}${helpHtml}</label>`;
 }
@@ -302,4 +374,22 @@ function checkPlan(plan) {
 
 function isStringList(value) {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+// The shape only: readQuestions has checked the questions and redacted them. The texts are escaped where they are written.
+function checkQuestions(questions) {
+  const shaped = Array.isArray(questions) && questions.length > 0 && questions.every(isQuestionShape);
+  if (!shaped) throw new TypeError("questions must be a non-empty list of questions, as readQuestions returns them");
+}
+
+function isQuestionShape(question) {
+  if (!isPlainObject(question) || typeof question.id !== "string" || !QUESTION_TYPES.includes(question.type)) return false;
+  if (typeof question.text !== "string" || typeof question.why !== "string") return false;
+  const { source } = question;
+  if (!isPlainObject(source) || typeof source.file !== "string" || !Number.isSafeInteger(source.line)) return false;
+  if (question.type === "text") return true;
+  return (
+    Array.isArray(question.options) &&
+    question.options.every((option) => isPlainObject(option) && typeof option.id === "string" && typeof option.label === "string")
+  );
 }

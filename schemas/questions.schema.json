@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "questions.json",
+  "description": "The questions that the agent asks the person after a scan, written to the run folder as questions.json. Documentation only: scripts/lib/questions.mjs (validateQuestions) is the check, and it reports every problem it finds with a JSON pointer. Unknown fields are errors everywhere (additionalProperties is false). The questions are data: the person answers them, and an answer that contradicts a measurement does not change the measurement. Beyond this schema the check enforces the limits that the keywords of this repository cannot state: at most 5 questions, at most 8 options, a line of at least 1, question ids unique among the questions, and option ids unique within their question. source.file is refused when it starts or ends with whitespace, is absolute, has a drive letter, or has a .. segment; this schema states those with a pattern.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "questions"],
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "The version of this format. Must be 1."
+    },
+    "questions": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The questions, in the order the form shows them. At most 5.",
+      "items": { "$ref": "#/$defs/question" }
+    }
+  },
+  "$defs": {
+    "question": {
+      "description": "One question. A single or multi question has options; a text question has none, and the person writes the answer. Exactly one of the three shapes matches.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "text", "why", "source", "options"],
+          "properties": {
+            "id": { "$ref": "#/$defs/id" },
+            "type": { "const": "single", "description": "One option is chosen." },
+            "text": { "$ref": "#/$defs/questionText" },
+            "why": { "$ref": "#/$defs/reason" },
+            "source": { "$ref": "#/$defs/source" },
+            "options": { "$ref": "#/$defs/options" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "text", "why", "source", "options"],
+          "properties": {
+            "id": { "$ref": "#/$defs/id" },
+            "type": { "const": "multi", "description": "Any number of options is chosen, including none." },
+            "text": { "$ref": "#/$defs/questionText" },
+            "why": { "$ref": "#/$defs/reason" },
+            "source": { "$ref": "#/$defs/source" },
+            "options": { "$ref": "#/$defs/options" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "text", "why", "source"],
+          "properties": {
+            "id": { "$ref": "#/$defs/id" },
+            "type": { "const": "text", "description": "The person writes the answer. This question has no options." },
+            "text": { "$ref": "#/$defs/questionText" },
+            "why": { "$ref": "#/$defs/reason" },
+            "source": { "$ref": "#/$defs/source" }
+          }
+        }
+      ]
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[a-z0-9-]{1,32}$",
+      "description": "1 to 32 characters of a-z, 0-9 and \"-\". Unique among the questions, and unique among the options of a question; the validator enforces both."
+    },
+    "questionText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "\\S",
+      "description": "The question itself, at most 500 characters. Not blank."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "\\S",
+      "description": "Why the agent asks, at most 500 characters. Not blank."
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "pattern": "\\S",
+      "description": "The label of an option, at most 120 characters. Not blank."
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "line"],
+      "description": "The place that motivates the question.",
+      "properties": {
+        "file": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)(?![\\s\\S]*\\u0000)(?![\\\\/])(?![A-Za-z]:)(?![\\s\\S]*(?:^|[\\\\/])\\s*\\.\\.\\s*(?:[\\\\/]|$))",
+          "description": "A path relative to the target, at most 512 characters. Refused: a path that starts or ends with whitespace, an absolute path, a path that starts with a separator (which includes a UNC path), a Windows drive letter, a NUL character, and a .. segment (a segment that is .. once its spaces are trimmed)."
+        },
+        "line": {
+          "type": "integer",
+          "description": "The line of the file, an integer of at least 1. The minimum is checked by the validator, not by this schema."
+        }
+      }
+    },
+    "options": {
+      "type": "array",
+      "minItems": 2,
+      "description": "The options of a single or multi question, from 2 to 8 (the maximum is checked by the validator). Option ids are unique within the question.",
+      "items": { "$ref": "#/$defs/option" }
+    },
+    "option": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "label": { "$ref": "#/$defs/label" }
+      }
+    }
+  }
+}
