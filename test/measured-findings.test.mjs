@@ -16,6 +16,7 @@ import {
 } from "../scripts/lib/measured-findings.mjs";
 import { loadRules, validateFindings } from "../scripts/lib/findings-validate.mjs";
 import { scan } from "../scripts/lib/scanner.mjs";
+import { verificationMeasure } from "../scripts/lib/verification.mjs";
 import { THRESHOLDS, THRESHOLDS_STATUS } from "../scripts/lib/thresholds.mjs";
 import { makeFixture, symlinkSupport } from "./helpers/make-fixture.mjs";
 
@@ -203,7 +204,7 @@ test("countByAxis: a count for every axis, in axis order", () => {
   ]);
 });
 
-const MEMORY_RULES = ["RUL-01", "RUL-02", "RUL-03", "VER-01", "SEC-04", "SEC-05", "STR-01", "COD-04"];
+const MEMORY_RULES = ["RUL-01", "RUL-02", "RUL-03", "VER-01", "SEC-04", "SEC-05", "STR-01", "STR-03", "COD-04"];
 
 // ---------------------------------------------------------------------------------------------------
 // RUL-04
@@ -414,6 +415,32 @@ test("CTX-04 acceptance: skills with long descriptions give the finding, and ski
 
   const short = await skillScan(t, ["Deploys the app to staging.", "Formats the code."]);
   assert.deepEqual(short.measuredFindings.filter((item) => item.rule === "CTX-04"), []);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// STR-03 and RUL-02: the same instruction line, with and without a tool that enforces it. Both are judgment rules, so the scan
+// gives no finding for either. It gives what the reviewer needs to tell them apart: the memory-file candidate lists both rules,
+// and structure.enforcementTools lists the dependency checker only when the repository has one. With the checker, a covered
+// line is RUL-02 and never STR-03 (see examples/layered).
+
+async function layeringScan(t, files) {
+  const fixture = makeFixture({ files: { "CLAUDE.md": "# Layers\n\n- Controllers never import repositories.\n", ...files } });
+  t.after(fixture.cleanup);
+  const measures = [createMemoryMeasure({ ancestorLimit: fixture.base, home: path.join(fixture.base, "no-home") }), verificationMeasure];
+  return scan({ root: fixture.root, measures, derive: deriveMeasuredOutput, now: FIXED_NOW });
+}
+
+test("STR-03: the memory candidate lists RUL-02 and STR-03, and the tools say whether a dependency checker covers the line", async (t) => {
+  const covered = await layeringScan(t, { ".dependency-cruiser.cjs": "module.exports = { forbidden: [] };\n" });
+  const uncovered = await layeringScan(t, {});
+  for (const measurements of [covered, uncovered]) {
+    const [candidate] = measurements.candidates.filter((item) => item.kind === "memory-file");
+    assert.equal(candidate.file, "CLAUDE.md");
+    assert.ok(candidate.rules.includes("RUL-02") && candidate.rules.includes("STR-03"), candidate.rules.join(", "));
+    assert.deepEqual(measurements.measuredFindings.filter((finding) => ["RUL-02", "STR-03"].includes(finding.rule)), []);
+  }
+  assert.deepEqual(covered.structure.enforcementTools, [{ tool: "dependency-cruiser", path: ".dependency-cruiser.cjs" }]);
+  assert.deepEqual(uncovered.structure.enforcementTools, [], "positive control: no tool, so the line can be STR-03");
 });
 
 // ---------------------------------------------------------------------------------------------------
@@ -1547,7 +1574,7 @@ test("candidates: other agents' instruction files and the settings or hooks that
   assert.deepEqual(candidates[1], {
     id: "cand-2",
     kind: "agent-instructions",
-    rules: ["RUL-01", "RUL-02", "RUL-03", "SEC-04", "SEC-05"],
+    rules: ["RUL-01", "RUL-02", "RUL-03", "SEC-04", "SEC-05", "STR-03"],
     file: ".cursorrules",
     agents: ["cursor"],
     measurementRef: `/agentHarness/files/${indexOf(".cursorrules")}`,
