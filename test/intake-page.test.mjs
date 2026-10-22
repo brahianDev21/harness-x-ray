@@ -5,16 +5,18 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { renderIntakeDone, renderIntakeError, renderIntakePage } from "../scripts/lib/intake-page.mjs";
+import { renderIntakeDone, renderIntakeError, renderIntakePage, renderQuestionsPage } from "../scripts/lib/intake-page.mjs";
+import { MAX_ANSWER_LENGTH } from "../scripts/lib/questions.mjs";
 import { loadLabels } from "../scripts/lib/report-labels.mjs";
 
 const HARNESS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ACTION = "/intake?token=abc123-XYZ_.~";
+const QUESTIONS_ACTION = "/questions?token=abc123-XYZ_.~";
 const AXES = ["instructions", "context", "security", "verification", "structure", "code"];
 // The tags that the pages use. A tag that the escaping does not stop would show up as another name here.
 const ALLOWED_TAGS = new Set([
   "html", "head", "meta", "title", "style", "body", "main", "h1", "p", "form", "fieldset", "legend",
-  "label", "input", "span", "strong", "button", "a", "ul", "li",
+  "label", "input", "span", "strong", "button", "a", "ul", "li", "code", "textarea",
 ]);
 
 // A normal plan: three layers, one of them with a sub-folder that the person may narrow to.
@@ -47,6 +49,56 @@ const HOSTILE_PLAN = {
     { name: "database", folders: ["db"], reason: "the folder is named db" },
   ],
 };
+
+// The questions as readQuestions returns them: one of each type, with the texts as the agent wrote them (redacted already).
+const QUESTIONS = [
+  {
+    id: "contradiction",
+    type: "single",
+    text: "Which instruction file is right?",
+    why: "CLAUDE.md and AGENTS.md give opposite test commands.",
+    source: { file: "CLAUDE.md", line: 3 },
+    options: [
+      { id: "keep-claude", label: "Keep CLAUDE.md" },
+      { id: "keep-agents", label: "Keep AGENTS.md" },
+    ],
+  },
+  {
+    id: "folders",
+    type: "multi",
+    text: "Which folders hold the frontend?",
+    why: "The manifests do not say.",
+    source: { file: "apps/web/package.json", line: 1 },
+    options: [
+      { id: "web", label: "apps/web" },
+      { id: "admin", label: "apps/admin" },
+    ],
+  },
+  {
+    id: "generated",
+    type: "text",
+    text: "Is this file generated?",
+    why: "It has no generator marker.",
+    source: { file: "src/gen.ts", line: 1 },
+  },
+];
+
+// The same shape with the hostile texts of the brief: a script in the text, an image in the reason, an attribute that would
+// autofocus and run code in a label, and an SVG that runs code on load in a second label. The ids are valid, as the check requires.
+const HOSTILE_QUESTIONS = [
+  {
+    id: "hostile",
+    type: "single",
+    text: "<script>alert(1)</script>",
+    why: "<img src=x onerror=alert(1)>",
+    source: { file: '"><svg onload=alert(1)>.md', line: 2 },
+    options: [
+      { id: "first-option", label: '" autofocus onfocus="alert(1)' },
+      { id: "second-option", label: "'><svg onload=alert(1)>" },
+    ],
+  },
+  { id: "note", type: "text", text: "Anything else?", why: "No marker.", source: { file: "README.md", line: 1 } },
+];
 
 let pseudoRoot;
 let labelsEn;
@@ -81,13 +133,19 @@ function styleText(html) {
   return html.slice(open + "<style>".length, close);
 }
 
-// The name, the value and the checked state of each input, in page order.
+// The name, the value, and the checked and required states of each input, in page order.
 function controls(html) {
   return [...html.matchAll(/<input\b[^>]*>/g)].map(([tag]) => {
     const attributes = Object.fromEntries(
       [...tag.slice("<input".length).matchAll(/([a-zA-Z-]+)(?:="([^"]*)")?/g)].map(([, name, value]) => [name, value ?? true]),
     );
-    return { type: attributes.type, name: attributes.name, value: attributes.value, checked: attributes.checked === true };
+    return {
+      type: attributes.type,
+      name: attributes.name,
+      value: attributes.value,
+      checked: attributes.checked === true,
+      required: attributes.required === true,
+    };
   });
 }
 
@@ -332,8 +390,111 @@ describe("the error page", () => {
   });
 });
 
+describe("the questions form", () => {
+  test("the page keeps the policy with the hash of its own stylesheet, and has no script, no image and no http reference", () => {
+    const { html, csp } = renderQuestionsPage({ harnessRoot: HARNESS_ROOT, questions: QUESTIONS, action: QUESTIONS_ACTION });
+    assert.equal(metaCsp(html), csp);
+    assert.equal(csp, `default-src 'none'; style-src ${cspOf(styleText(html))}; img-src 'none'; form-action 'self'; base-uri 'none'`);
+    assert.ok(html.indexOf('http-equiv="Content-Security-Policy"') < html.indexOf("<style>"), "policy before the style");
+    assert.ok(styleText(html).includes(".help {"), "the shared rules and the page rules are in the one style");
+    assert.equal(/<script|<img|https?:/i.test(html), false, "a script, an image or an http reference");
+    assert.ok(html.includes(`<form method="post" action="${QUESTIONS_ACTION}">`), "the form posts to the action given");
+    assertInert(html);
+  });
+
+  test("each question is a fieldset: its text is the legend, its reason a paragraph, its source file:line in code", () => {
+    const { html } = renderQuestionsPage({ harnessRoot: HARNESS_ROOT, questions: QUESTIONS, action: QUESTIONS_ACTION });
+    assert.ok(html.includes("<legend>Which instruction file is right?</legend>"));
+    assert.ok(html.includes("<p>CLAUDE.md and AGENTS.md give opposite test commands.</p>"));
+    assert.ok(html.includes("<code>CLAUDE.md:3</code>"));
+    assert.ok(html.includes("<code>apps/web/package.json:1</code>"));
+    assert.equal(html.split("<fieldset>").length - 1, QUESTIONS.length, "one fieldset per question");
+  });
+
+  test("the controls send option ids: single is required radio buttons, multi is checkboxes, text is a box of the cap", () => {
+    const found = controls(renderQuestionsPage({ harnessRoot: HARNESS_ROOT, questions: QUESTIONS, action: QUESTIONS_ACTION }).html);
+    assert.deepEqual(found.filter((control) => control.name === "q-contradiction").map((control) => [control.type, control.value, control.required]), [
+      ["radio", "keep-claude", true],
+      ["radio", "keep-agents", true],
+    ]);
+    assert.deepEqual(found.filter((control) => control.name === "q-folders").map((control) => [control.type, control.value, control.required]), [
+      ["checkbox", "web", false],
+      ["checkbox", "admin", false],
+    ]);
+    assert.deepEqual(found.filter((control) => control.name === "q-generated"), [], "a text question has no input");
+    assert.equal(found.length, 4, "the four option controls, and no other input");
+    const html = renderQuestionsPage({ harnessRoot: HARNESS_ROOT, questions: QUESTIONS, action: QUESTIONS_ACTION }).html;
+    assert.ok(
+      html.includes(`<textarea name="q-generated" maxlength="${MAX_ANSWER_LENGTH}" rows="4" aria-label="Is this file generated?"></textarea>`),
+      "the text box, with the cap",
+    );
+  });
+
+  test("positive control: a normal question keeps its text and labels unchanged, and its inputs carry the option ids", () => {
+    const { html } = renderQuestionsPage({ harnessRoot: HARNESS_ROOT, questions: QUESTIONS, action: QUESTIONS_ACTION });
+    assert.ok(html.includes("Keep CLAUDE.md</label>") && html.includes("Keep AGENTS.md</label>"), "the labels, as text");
+    assert.ok(html.includes("apps/admin</label>"));
+    assert.deepEqual(
+      controls(html).map((control) => control.value).sort(),
+      ["admin", "keep-agents", "keep-claude", "web"],
+    );
+    assertInert(html);
+  });
+
+  test("a hostile question shows its texts as inert text, and every input has an option id as its value", () => {
+    const { html } = renderQuestionsPage({ harnessRoot: HARNESS_ROOT, questions: HOSTILE_QUESTIONS, action: QUESTIONS_ACTION });
+    assertInert(html);
+    assert.equal(/<svg/i.test(html), false, "an svg element");
+    assert.equal(/<img/i.test(html), false, "an image");
+    assert.equal(/<[^>]*\sautofocus/i.test(html), false, "an autofocus attribute on a tag");
+    assert.ok(html.includes("<legend>&lt;script&gt;alert(1)&lt;/script&gt;</legend>"), "the question text, as text");
+    assert.ok(html.includes("<p>&lt;img src=x onerror=alert(1)&gt;</p>"), "the reason, as text");
+    assert.ok(html.includes("<code>&quot;&gt;&lt;svg onload=alert(1)&gt;.md:2</code>"), "the file, as text");
+    assert.ok(html.includes("&quot; autofocus onfocus=&quot;alert(1)"), "the first label, as text");
+    assert.ok(html.includes("&#39;&gt;&lt;svg onload=alert(1)&gt;"), "the second label, as text");
+    const ids = new Set(["first-option", "second-option"]);
+    const inputs = controls(html);
+    assert.equal(inputs.length, 2);
+    for (const control of inputs) assert.ok(ids.has(control.value), `an input value that is an option id: ${control.value}`);
+    assert.ok(html.includes('<textarea name="q-note"'), "the text question keeps its own field");
+  });
+
+  test("the Spanish page has the Spanish labels and no English one; the English page has the English ones", () => {
+    const en = renderQuestionsPage({ harnessRoot: HARNESS_ROOT, questions: QUESTIONS, action: QUESTIONS_ACTION }).html;
+    const es = renderQuestionsPage({ harnessRoot: HARNESS_ROOT, questions: QUESTIONS, action: QUESTIONS_ACTION, language: "es" }).html;
+    assert.ok(en.includes('<html lang="en">') && en.includes("Questions about this repository") && en.includes("Choose one option."));
+    assert.ok(en.includes("Source: <code>CLAUDE.md:3</code>"));
+    assert.ok(es.includes('<html lang="es">') && es.includes("Preguntas sobre este repositorio") && es.includes("Elige una opción."));
+    assert.ok(es.includes("Fuente: <code>CLAUDE.md:3</code>"));
+    for (const text of ["Choose one option", "Questions about this repository", "Save answers", "Source:"]) {
+      assert.equal(es.includes(text), false, text);
+    }
+  });
+
+  test("the done and error pages serve the questions form too, with the same policy", () => {
+    const done = renderIntakeDone({ harnessRoot: HARNESS_ROOT });
+    assert.ok(done.html.includes("Answers saved. You can close this tab."), "the done text fits the answers");
+    const error = renderIntakeError({
+      harnessRoot: HARNESS_ROOT,
+      action: QUESTIONS_ACTION,
+      errors: [{ pointer: "/q-folders", message: "is not an option of this question" }],
+    });
+    assert.ok(error.html.includes('<a href="' + QUESTIONS_ACTION + '">Back to the form</a>'));
+    assert.ok(error.html.includes("<li>/q-folders: is not an option of this question</li>"));
+  });
+
+  test("the questions are checked in shape: an empty list, or a question without its source, is refused", () => {
+    assert.throws(() => renderQuestionsPage({ harnessRoot: HARNESS_ROOT, questions: [], action: QUESTIONS_ACTION }), TypeError);
+    const broken = [{ id: "x", type: "text", text: "t", why: "w" }];
+    assert.throws(() => renderQuestionsPage({ harnessRoot: HARNESS_ROOT, questions: broken, action: QUESTIONS_ACTION }), TypeError);
+    assert.throws(() => renderQuestionsPage({ harnessRoot: HARNESS_ROOT, questions: QUESTIONS, action: "//evil.example/q" }), TypeError);
+    // Positive control: the same list, with its source, passes.
+    assert.ok(renderQuestionsPage({ harnessRoot: HARNESS_ROOT, questions: QUESTIONS, action: QUESTIONS_ACTION }).html.includes("<form"));
+  });
+});
+
 describe("every intake label is used by the page", () => {
-  test("each intake.* key of the labels is rendered by the intake page or by the done page", () => {
+  test("each intake.* key of the labels is rendered by the intake page, the done page, the error page or the questions page", () => {
     const keys = Object.keys(labelsEn).filter((key) => key.startsWith("intake."));
     assert.ok(keys.length > 20, "the intake labels exist");
     const used = new Set();
@@ -341,6 +502,7 @@ describe("every intake label is used by the page", () => {
       renderIntakePage({ harnessRoot: pseudoRoot, plan: PLAN, action: ACTION }).html,
       renderIntakeDone({ harnessRoot: pseudoRoot }).html,
       renderIntakeError({ harnessRoot: pseudoRoot, action: ACTION, errors: [{ pointer: "/depth", message: "x" }] }).html,
+      renderQuestionsPage({ harnessRoot: pseudoRoot, questions: QUESTIONS, action: QUESTIONS_ACTION }).html,
     ]) {
       for (const [, key] of html.matchAll(/⟦(intake\.[^⟧]+)⟧/gu)) used.add(key);
     }

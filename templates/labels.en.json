@@ -211,6 +211,13 @@
   "intake.access.help": "Each box allows one read outside the target. Leave them unchecked to read only the target.",
   "intake.access.userLayer": "The user layer: your Claude files in ~/.claude (memory, settings, rules, skills and subagents).",
   "intake.access.ancestors": "The parent folders: the memory files of the folders above the target, for their counts only.",
+  "intake.questions.title": "Harness X-Ray: questions",
+  "intake.questions.heading": "Questions about this repository",
+  "intake.questions.intro": "The scan could not settle these points from its measurements. Answer them and save. An answer that contradicts a measurement does not change the measurement.",
+  "intake.questions.single": "Choose one option.",
+  "intake.questions.multi": "Choose any number of options, or none.",
+  "intake.questions.text": "Write your answer. It may be left empty.",
+  "intake.questions.source": "Source",
   "html.filter.legend": "Filter the findings",
   "html.filter.axes": "Axes",
   "html.filter.help": "Uncheck a box to hide the findings that it marks. If the page cannot apply the filters, every finding is shown."
