@@ -1472,7 +1472,7 @@ test("candidates: a settings file that a verified blocker stops from loading is 
   assert.deepEqual(loads.candidates, [], "the file loads for the demo agent, so it is no control candidate");
 });
 
-test("the schema lists the two candidate kinds with their fields, and the agents field of a measured finding", () => {
+test("the schema lists the candidate kinds with their fields, and the agents field of a measured finding", () => {
   const schema = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "schemas", "measurements.schema.json"), "utf8"));
   const candidate = schema.$defs.candidate;
   assert.deepEqual(candidate.properties.kind.enum, [
@@ -1481,7 +1481,10 @@ test("the schema lists the two candidate kinds with their fields, and the agents
     "memory-file",
     "agent-instructions",
     "unloaded-control",
+    "injection-candidate",
   ]);
+  assert.equal(candidate.properties.excerpt.maxLength, 120);
+  assert.deepEqual(candidate.properties.line, { type: "integer", minimum: 1 });
   assert.deepEqual(candidate.properties.controlKind.enum, ["settings", "hooks"]);
   assert.deepEqual(candidate.properties.status.enum, ["not-verified", "missing"]);
   assert.equal(schema.$defs.measuredFinding.properties.agents.uniqueItems, true);

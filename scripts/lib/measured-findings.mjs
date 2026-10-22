@@ -5,9 +5,10 @@
 //   each trigger names the measurement that caused it. Ids mf-N follow the order of EMITTERS, then the order of the
 //   measurements inside each emitter.
 // - candidates: what the agent must read: duplication groups (COD-01, COD-04), hook scripts (SEC-02, SEC-04),
-//   memory files (judgment rules), instruction files of other agents (agent-instructions) and the settings or hooks
-//   files that no agent loads (unloaded-control). They carry file paths and line numbers, never code text. Ids cand-N
-//   follow the order of the groups.
+//   memory files (judgment rules), instruction files of other agents (agent-instructions), the settings or hooks
+//   files that no agent loads (unloaded-control) and the lines that hold text aimed at an agent (injection-candidate,
+//   SEC-06). They carry file paths and line numbers, never code text; an injection candidate also carries the short,
+//   redacted excerpt of its line that the injection measure wrote. Ids cand-N follow the order of the groups.
 // - undeterminable: cases that a measured rule could not decide, with the reason. They are never findings.
 //
 // Every measurementRef is an RFC 6901 JSON pointer into measurements.json. Triggers are sorted by impact, high first,
@@ -55,6 +56,7 @@ const CONTROL_KINDS = Object.freeze(["settings", "hooks"]);
 const OUT_OF_EFFECT = new Set(["excluded", "not-loaded"]);
 const AGENT_INSTRUCTION_RULES = Object.freeze(["RUL-01", "RUL-02", "RUL-03", "SEC-04", "SEC-05"]);
 const CONTROL_RULES = Object.freeze(["SEC-04", "SEC-05"]);
+const INJECTION_RULES = Object.freeze(["SEC-06"]);
 
 /**
  * The emitters of the measured MVP rules, in axis order. Each takes the merged measurements and returns
@@ -596,7 +598,8 @@ function emitDuplication(measurements) {
 
 // ---------------------------------------------------------------------------------------------------
 // Candidates. They are not findings: the agent reads them and judges. Groups come first, then hook scripts sorted by
-// path, then memory files in inventory order, then the agent-instructions and unloaded-control files, each sorted by file.
+// path, then memory files in inventory order, then the agent-instructions and unloaded-control files, each sorted by file,
+// then the injection matches in measurement order.
 
 function buildCandidates(measurements) {
   const candidates = [];
@@ -666,6 +669,20 @@ function buildCandidates(measurements) {
     }
   });
   candidates.push(...agentFiles.sort(byFile), ...controls.sort(byFile));
+
+  // The injection matches, in the order of the measurement: by file, line, category and pattern.
+  listAt(measurements.security?.injection?.matches).forEach((match, index) => {
+    candidates.push({
+      kind: "injection-candidate",
+      rules: [...INJECTION_RULES],
+      measurementRef: `/security/injection/matches/${index}`,
+      file: match.file,
+      line: match.line,
+      category: match.category,
+      patternId: match.patternId,
+      excerpt: match.excerpt,
+    });
+  });
   return candidates;
 }
 

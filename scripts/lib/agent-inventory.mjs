@@ -49,7 +49,8 @@
 // ids of the agents whose pair for the file is of kind instructions. A file already in ctx.memory is not kept twice. A nested
 // file is never read, so it is never kept. ctx.agentOwners (path -> sorted agent ids of all pairs) is set for every candidate,
 // before any read. The scanner core creates both channels empty; this measure is the only writer. The texts are not output:
-// the measures that read them (references, verification) redact what they write.
+// the measures that read them (references, verification) redact what they write. contextFilesOf(ctx) gives the paths of the
+// candidates that an entry of a context kind (instructions, skills, commands, subagents) owns, for the injection measure.
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -92,6 +93,8 @@ const SECRET_REASON = "secret-name";
 const BYTES_REASON = "bytes-cap";
 const CUT_REASON = "agent-files-cut";
 const BYTES_CUT_REASON = "agent-bytes-cut";
+// The paths of each scan's candidates that an entry of a context kind owns, keyed by the scan context (see contextFilesOf).
+const contextFilesByScan = new WeakMap();
 
 /**
  * Builds the agent-harness measure.
@@ -141,6 +144,8 @@ function collectAgentHarness(ctx, model, { maxFiles, maxTotalBytes }) {
   const env = { model, byPath: new Map(candidates.map((file) => [file.path, file])) };
   const pairs = buildPairs(candidates, env);
   for (const file of candidates) ctx.agentOwners.set(file.path, agentsOfFile(file));
+  const contextPaths = candidates.filter((file) => entriesOf(file).some((entry) => CONTEXT_KINDS.has(entry.kind)));
+  contextFilesByScan.set(ctx, new Set(contextPaths.map((file) => file.path)));
   const listed = candidates.slice(0, maxFiles);
   const cut = candidates.length - listed.length;
   const listedPaths = new Set(listed.map((file) => file.path));
@@ -633,6 +638,17 @@ export function instructionTextsOf(ctx) {
     ...[...ctx.agentInstructions].map(([file, entry]) => [file, entry.text]),
   ];
   return texts.sort(([a], [b]) => compareText(a, b));
+}
+
+/**
+ * The paths of a scan's candidates that some agent reads as context: every candidate that an entry of kind instructions,
+ * skills, commands or subagents owns, through the full path or through re-rooting. The file cap of the listing does not
+ * apply, so a candidate left out of agentHarness.files is still here. Empty when this measure did not run for the scan.
+ * @param {object} ctx The scan context.
+ * @returns {ReadonlySet<string>}
+ */
+export function contextFilesOf(ctx) {
+  return contextFilesByScan.get(ctx) ?? new Set();
 }
 
 /** The measure with the registry of this repository and the default caps. */

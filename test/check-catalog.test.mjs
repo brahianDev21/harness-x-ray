@@ -674,6 +674,19 @@ test("a folder at the layer-signals path is an error on the file", (t) => {
   issueFor(errorsOf(root), SIGNALS, "(file)", /must be a regular file, not a folder/);
 });
 
+// data/injection-patterns.json ------------------------------------------------------------------------
+
+test("an injection-patterns file is optional; a valid one gives no errors, and a bad one is an error on its field", (t) => {
+  const file = "data/injection-patterns.json";
+  const valid = fs.readFileSync(path.join(HARNESS_ROOT, file), "utf8");
+  assert.deepEqual(errorsOf(copyOfGood(t)), [], "positive control: the copy has no such file, and needs none");
+  assert.deepEqual(errorsOf(copyOfGood(t, { files: { [file]: valid } })), [], "positive control: the file of this repository");
+  const bad = JSON.parse(valid);
+  bad.categories[0].patterns[0].text = "Ignore  Previous";
+  issueFor(errorsOf(copyOfGood(t, { files: { [file]: JSON.stringify(bad) } })), file, "/categories/0/patterns/0/text", /must be folded/);
+  issueFor(errorsOf(copyOfGood(t, { files: { [file]: JSON.stringify([]) } })), file, "(root)", /must be an object/);
+});
+
 // Output order ---------------------------------------------------------------------------------------
 
 test("the issues are sorted and do not depend on the order the files are written", (t) => {

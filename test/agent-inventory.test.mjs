@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { KINDS, LOAD_MODELS } from "../scripts/lib/agent-harness.mjs";
-import { agentInventoryMeasure, createAgentInventoryMeasure } from "../scripts/lib/agent-inventory.mjs";
+import { agentInventoryMeasure, contextFilesOf, createAgentInventoryMeasure } from "../scripts/lib/agent-inventory.mjs";
 import { toStableJson } from "../scripts/lib/json-out.mjs";
 import { createMemoryMeasure } from "../scripts/lib/memory.mjs";
 import { referencesMeasure } from "../scripts/lib/references.mjs";
@@ -623,6 +623,30 @@ async function contextOf(root, before = []) {
   await scan({ root, measures: [...before, createAgentInventoryMeasure(), probe], now: FIXED_NOW });
   return seen;
 }
+
+test("contextFilesOf: the candidates of a context kind, nested ones and the ones past the file cap included; not settings", async (t) => {
+  const fixture = freshFixture(t, {
+    "CLAUDE.md": "# Root\n",
+    ".cursorrules": "Prefer small functions.\n",
+    ".claude/settings.json": "{}\n",
+    ".claude/skills/a/SKILL.md": "---\nname: a\ndescription: A.\n---\n",
+    ".claude/commands/run.md": "Run.\n",
+    ".mcp.json": "{}\n",
+    "packages/api/AGENTS.md": "# Nested\n",
+  });
+  let seen = null;
+  const probe = { id: "probe", collect: (ctx) => { seen = ctx; return {}; } };
+  await scan({ root: fixture.root, measures: [createAgentInventoryMeasure({ maxFiles: 1 }), probe], now: FIXED_NOW });
+  assert.deepEqual([...contextFilesOf(seen)].sort(compareText), [
+    ".claude/commands/run.md",
+    ".claude/skills/a/SKILL.md",
+    ".cursorrules",
+    "CLAUDE.md",
+    "packages/api/AGENTS.md",
+  ]);
+  // A context the measure never saw has no files.
+  assert.deepEqual([...contextFilesOf({})], []);
+});
 
 // The memory measure with the parent folders kept out of the scan, as references.test.mjs runs it.
 function memoryOf(fixture) {

@@ -6,7 +6,7 @@
 - **Depth:** Standard
 - **Axes reviewed:** Instructions, Context, Security, Verification, Structure, Code
 - **Tool:** `harness-x-ray@0.0.0`
-- **Catalog:** 16 rules, SHA-256 `756b61ef038a`
+- **Catalog:** 17 rules, SHA-256 `4ed231f27157`
 
 **Agents detected:**
 

@@ -1,0 +1,87 @@
+{
+  "categories": [
+    {
+      "id": "agent-directed-phrase",
+      "match": "phrase",
+      "patterns": [
+        { "id": "ignore-previous-instructions", "text": "ignore previous instructions" },
+        { "id": "ignore-all-previous-instructions", "text": "ignore all previous instructions" },
+        { "id": "ignore-the-previous-instructions", "text": "ignore the previous instructions" },
+        { "id": "ignore-prior-instructions", "text": "ignore prior instructions" },
+        { "id": "ignore-all-prior-instructions", "text": "ignore all prior instructions" },
+        { "id": "ignore-all-instructions", "text": "ignore all instructions" },
+        { "id": "ignore-your-instructions", "text": "ignore your instructions" },
+        { "id": "ignore-your-rules", "text": "ignore your rules" },
+        { "id": "ignore-every-other-rule", "text": "ignore every other rule" },
+        { "id": "ignore-all-other-rules", "text": "ignore all other rules" },
+        { "id": "ignore-the-above", "text": "ignore the above" },
+        { "id": "disregard-previous-instructions", "text": "disregard previous instructions" },
+        { "id": "disregard-all-previous-instructions", "text": "disregard all previous instructions" },
+        { "id": "disregard-your-instructions", "text": "disregard your instructions" },
+        { "id": "forget-your-instructions", "text": "forget your instructions" },
+        { "id": "forget-all-previous-instructions", "text": "forget all previous instructions" },
+        { "id": "do-not-tell-the-user", "text": "do not tell the user" },
+        { "id": "dont-tell-the-user", "text": "don't tell the user" },
+        { "id": "do-not-inform-the-user", "text": "do not inform the user" },
+        { "id": "without-telling-the-user", "text": "without telling the user" },
+        { "id": "hide-this-from-the-user", "text": "hide this from the user" },
+        { "id": "if-you-are-an-ai", "text": "if you are an ai" },
+        { "id": "if-you-are-an-llm", "text": "if you are an llm" },
+        { "id": "if-you-are-a-language-model", "text": "if you are a language model" },
+        { "id": "report-no-findings", "text": "report no findings" }
+      ]
+    },
+    {
+      "id": "download-execute",
+      "match": "download-pipe",
+      "patterns": [
+        {
+          "id": "download-piped-to-shell",
+          "downloaders": ["curl", "wget", "iwr", "irm", "invoke-webrequest", "invoke-restmethod"],
+          "prefixes": ["sudo", "doas", "env"],
+          "shells": [
+            "sh", "bash", "zsh", "dash", "ksh", "fish", "pwsh", "powershell", "iex", "invoke-expression",
+            "python", "python3", "node", "perl", "ruby"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "disable-controls",
+      "match": "phrase",
+      "patterns": [
+        { "id": "skip-permissions-flag", "text": "dangerously-skip-permissions" },
+        { "id": "bypass-permissions-mode", "text": "bypasspermissions" },
+        { "id": "disable-all-hooks-setting", "text": "disableallhooks" },
+        { "id": "disable-sandbox-setting", "text": "dangerouslydisablesandbox" },
+        { "id": "disable-the-hook", "text": "disable the hook" },
+        { "id": "disable-the-hooks", "text": "disable the hooks" },
+        { "id": "disable-all-hooks", "text": "disable all hooks" },
+        { "id": "disable-hooks", "text": "disable hooks" },
+        { "id": "turn-off-the-hooks", "text": "turn off the hooks" },
+        { "id": "remove-the-hooks", "text": "remove the hooks" },
+        { "id": "delete-the-hooks", "text": "delete the hooks" },
+        { "id": "disable-the-sandbox", "text": "disable the sandbox" },
+        { "id": "skip-the-permission-prompts", "text": "skip the permission prompts" },
+        { "id": "disable-the-permission-checks", "text": "disable the permission checks" }
+      ]
+    },
+    {
+      "id": "html-comment",
+      "match": "html-comment",
+      "patterns": [{ "id": "html-comment-open", "text": "<!--" }]
+    },
+    {
+      "id": "invisible-unicode",
+      "match": "code-point-range",
+      "patterns": [
+        { "id": "zero-width-and-direction-marks", "from": "U+200B", "to": "U+200F" },
+        { "id": "bidi-embedding-and-override", "from": "U+202A", "to": "U+202E" },
+        { "id": "invisible-operators", "from": "U+2060", "to": "U+2064" },
+        { "id": "bidi-isolates", "from": "U+2066", "to": "U+2069" },
+        { "id": "byte-order-mark-inside", "from": "U+FEFF", "to": "U+FEFF" },
+        { "id": "tag-characters", "from": "U+E0000", "to": "U+E007F" }
+      ]
+    }
+  ]
+}

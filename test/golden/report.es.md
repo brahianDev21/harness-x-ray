@@ -6,7 +6,7 @@
 - **Profundidad:** Estándar
 - **Ejes revisados:** Instrucciones, Contexto, Seguridad, Verificación, Estructura, Código
 - **Herramienta:** `harness-x-ray@0.0.0`
-- **Catálogo:** 16 reglas, SHA-256 `756b61ef038a`
+- **Catálogo:** 17 reglas, SHA-256 `4ed231f27157`
 
 **Agentes detectados:**
 
