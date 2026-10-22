@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,12 +10,16 @@ import { promisify } from "node:util";
 import { toStableJson } from "../scripts/lib/json-out.mjs";
 import { scan } from "../scripts/lib/scanner.mjs";
 import { defaultOutputDir, formatStamp, isInside } from "../scripts/lib/target.mjs";
-import { makeFixture } from "./helpers/make-fixture.mjs";
+import { makeFixture, symlinkSupport } from "./helpers/make-fixture.mjs";
 
 const execFileAsync = promisify(execFile);
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const HARNESS_ROOT = path.resolve(TEST_DIR, "..");
 const SCAN_SCRIPT = path.join(HARNESS_ROOT, "scripts", "scan.mjs");
+const RUNS_DIR = path.join(HARNESS_ROOT, "runs");
+const SCRIPTS_DIR = path.join(HARNESS_ROOT, "scripts");
+const support = symlinkSupport();
+const symlinkSkip = support.supported ? false : support.reason;
 const EMPTY_FIXTURE = path.join(TEST_DIR, "fixtures", "empty");
 const SCHEMA_FILE = path.join(HARNESS_ROOT, "schemas", "measurements.schema.json");
 const PACKAGE_FILE = path.join(HARNESS_ROOT, "package.json");
@@ -42,9 +47,11 @@ const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const FIXED_NOW = new Date("2026-10-17T12:00:00.000Z");
 
 // Runs the command line through execFile (never a shell). Resolves with the exit code and both streams.
-async function runScan(args) {
+// The working directory of the child is cwd when given, and the one of this process otherwise.
+async function runScan(args, { cwd } = {}) {
   try {
     const { stdout, stderr } = await execFileAsync(process.execPath, [SCAN_SCRIPT, ...args], {
+      cwd,
       encoding: "utf8",
       windowsHide: true,
       timeout: 120_000,
@@ -212,7 +219,95 @@ test("scan: an output folder inside the target, or the target itself, exits 2", 
 
   assert.equal(inside.code, 2, inside.stderr);
   assert.equal(same.code, 2, same.stderr);
+  assert.match(inside.stderr, /^error: output folder is inside the target: /m);
+  assert.match(same.stderr, /^error: output folder is inside the target: /m);
   assert.deepEqual(fs.readdirSync(target), [".gitkeep"], "the target is left untouched");
+});
+
+// A random name, so that a test never reuses a folder of an earlier run.
+function randomName(prefix) {
+  return `${prefix}-${randomUUID().slice(0, 8)}`;
+}
+
+test("scan: an output folder in the repository but outside runs/ exits 2 and is not created", async (t) => {
+  const { target } = copyOfEmptyFixture(t);
+  const out = path.join(HARNESS_ROOT, "test", randomName("hxr-not-allowed"));
+  t.after(() => fs.rmSync(out, { recursive: true, force: true }));
+
+  const result = await runScan([target, "--out", out]);
+
+  assert.equal(result.code, 2, result.stderr);
+  assert.match(result.stderr, /^error: folder must be inside runs\/ or the system temp folder: /m);
+  assert.equal(fs.existsSync(out), false);
+});
+
+test("scan: an output folder inside runs/ exits 0 and is written", async (t) => {
+  const { target } = copyOfEmptyFixture(t);
+  const out = path.join(RUNS_DIR, randomName("hxr-test"));
+  fs.mkdirSync(RUNS_DIR, { recursive: true });
+  t.after(() => fs.rmSync(out, { recursive: true, force: true }));
+
+  const result = await runScan([target, "--out", out]);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(fs.readdirSync(out), ["measurements.json"]);
+});
+
+test("scan: a relative output folder in runs/, run from the harness folder, exits 0 and is written", async (t) => {
+  const { target } = copyOfEmptyFixture(t);
+  const name = randomName("hxr-relative");
+  const out = path.join(RUNS_DIR, name);
+  t.after(() => fs.rmSync(out, { recursive: true, force: true }));
+
+  const result = await runScan([target, "--out", path.join("runs", name)], { cwd: HARNESS_ROOT });
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(fs.readdirSync(out), ["measurements.json"]);
+});
+
+test("scan: an output folder that is an existing regular file in runs/ exits 2, and the file is untouched", async (t) => {
+  const { target } = copyOfEmptyFixture(t);
+  fs.mkdirSync(RUNS_DIR, { recursive: true });
+  const file = path.join(RUNS_DIR, randomName("hxr-file"));
+  fs.writeFileSync(file, "keep\n");
+  t.after(() => fs.rmSync(file, { force: true }));
+
+  const result = await runScan([target, "--out", file]);
+
+  assert.equal(result.code, 2, result.stderr);
+  assert.match(result.stderr, /^error: not a folder: /m);
+  assert.equal(fs.readFileSync(file, "utf8"), "keep\n");
+});
+
+test("scan: a link inside runs/ that points to a folder outside exits 2, and nothing is created behind it", { skip: symlinkSkip }, async (t) => {
+  const { target } = copyOfEmptyFixture(t);
+  fs.mkdirSync(RUNS_DIR, { recursive: true });
+  const link = path.join(RUNS_DIR, randomName("hxr-link"));
+  fs.symlinkSync(SCRIPTS_DIR, link, "dir");
+  t.after(() => fs.unlinkSync(link));
+  const behind = randomName("hxr-behind");
+  t.after(() => fs.rmSync(path.join(SCRIPTS_DIR, behind), { recursive: true, force: true }));
+
+  const result = await runScan([target, "--out", path.join(link, behind)]);
+
+  assert.equal(result.code, 2, result.stderr);
+  assert.equal(fs.existsSync(path.join(SCRIPTS_DIR, behind)), false);
+});
+
+test("scan: a dangling link inside runs/ exits 2, and mkdir does not create the folder it points to", { skip: symlinkSkip }, async (t) => {
+  const { target } = copyOfEmptyFixture(t);
+  fs.mkdirSync(RUNS_DIR, { recursive: true });
+  const missing = randomName("hxr-missing");
+  const link = path.join(RUNS_DIR, randomName("hxr-dangling"));
+  fs.symlinkSync(path.join(SCRIPTS_DIR, missing), link, "dir");
+  t.after(() => fs.unlinkSync(link));
+  t.after(() => fs.rmSync(path.join(SCRIPTS_DIR, missing), { recursive: true, force: true }));
+
+  const result = await runScan([target, "--out", path.join(link, "sub")]);
+
+  assert.equal(result.code, 2, result.stderr);
+  assert.match(result.stderr, /broken symbolic link/);
+  assert.equal(fs.existsSync(path.join(SCRIPTS_DIR, missing)), false);
 });
 
 test("scan: outside meta, measurements.json holds no absolute path of this machine", async (t) => {

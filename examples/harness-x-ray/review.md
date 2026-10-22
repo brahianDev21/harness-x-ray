@@ -36,9 +36,9 @@ Measured as `wildcard-shell-allow` at `/security/permissions/allow/0` and `/allo
 
 **Why it stays.** The target path is an argument and changes on every run, so an exact-command entry would need one entry per target. In the scan's simulation, none of the 16 destructive commands in the scanner's list is decided by an allow rule. Each one asks under the default mode.
 
-**Residual risk.** The wildcard also passes the scanner's `--out` option. The scanner refuses only an output folder inside the target (`checkOutputDir` in `scripts/lib/target.mjs`), so it can write `measurements.json` into any other folder without a prompt. The renderer writes `report.md` into any existing folder that holds the two JSON files, and it takes that folder as its argument. The destructive list is short, so a destructive command outside it would not be measured at all.
+**Residual risk.** The wildcard still passes the scanner's `--out` option, and the renderer takes a run folder as its argument. Since v0.2 (V02-01), the scanner and the renderer refuse any folder outside `runs/` and the system temp folder, checked on real paths (`checkRunDir` in `scripts/lib/run-dir.mjs`), so they can no longer write `measurements.json` or `report.md` elsewhere without a prompt. One limit remains: the system temp folder is allowed, and other processes can write there too. The destructive list is short, so a destructive command outside it would not be measured at all.
 
-**What would change the decision.** Limiting `--out` to the runs folder, either in the scanner or with a hook that refuses an output folder outside it, as the rule recommends. See open decision 1.
+**What would change the decision.** A new scanner or renderer option that writes outside `runs/` and the system temp folder would make the wildcard broad again, and the entry would have to be narrowed. The `--out` limit that this paragraph used to ask for is in place since v0.2 (V02-01; see open decision 1).
 
 ### SEC-05 · Security rules exist only as text
 
@@ -79,7 +79,7 @@ The step is not added. Its text would load in every session that works on `scrip
 
 ## Open decisions
 
-1. Whether `--out` should be limited to the runs folder, and whether the renderer's folder argument should be limited the same way (SEC-01).
+1. Whether `--out` should be limited to the runs folder, and whether the renderer's folder argument should be limited the same way (SEC-01). Decided in v0.2 (V02-01): both are limited to `runs/` and the system temp folder, in the scanner and in the renderer.
 2. Whether to add deny or ask rules for the destructive commands in the scanner's list. The scan gives no finding for them, so this is a choice and not a fix the scan requires (SEC-02).
 3. Whether to build the hook and deny rules that SEC-05 recommends, given that the tests write to the temp folder (SEC-05).
 4. Whether the scanner should read `claudeMdExcludes` and inventory the skills under `test/fixtures/`, so that its inventory matches what loads.
