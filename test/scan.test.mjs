@@ -8,9 +8,11 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { toStableJson } from "../scripts/lib/json-out.mjs";
+import { loadLabels } from "../scripts/lib/report-labels.mjs";
 import { scan } from "../scripts/lib/scanner.mjs";
 import { defaultOutputDir, formatStamp, isInside } from "../scripts/lib/target.mjs";
 import { makeFixture, symlinkSupport } from "./helpers/make-fixture.mjs";
+import { runRender } from "./helpers/report-run.mjs";
 
 const execFileAsync = promisify(execFile);
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -47,11 +49,13 @@ const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const FIXED_NOW = new Date("2026-10-17T12:00:00.000Z");
 
 // Runs the command line through execFile (never a shell). Resolves with the exit code and both streams.
-// The working directory of the child is cwd when given, and the one of this process otherwise.
-async function runScan(args, { cwd } = {}) {
+// The working directory of the child is cwd when given, and the one of this process otherwise. The environment of the
+// child is env when given (a test sets HOME and USERPROFILE to a fake home), and the one of this process otherwise.
+async function runScan(args, { cwd, env } = {}) {
   try {
     const { stdout, stderr } = await execFileAsync(process.execPath, [SCAN_SCRIPT, ...args], {
       cwd,
+      env,
       encoding: "utf8",
       windowsHide: true,
       timeout: 120_000,
@@ -590,11 +594,31 @@ test("containment ignores letter case on Windows", { skip: process.platform === 
   assert.equal(isInside("C:\\Repo", "D:\\Repo"), false);
 });
 
+// The top-level key that only an opt-in flag writes (--include-user-layer). The schema documents it, but does not require it.
+const OPT_IN_KEYS = ["userLayer"];
+
 test("the measurements schema documents every top-level key", () => {
   const schema = JSON.parse(fs.readFileSync(SCHEMA_FILE, "utf8"));
   assert.equal(schema.$schema, "https://json-schema.org/draft/2020-12/schema");
   assert.deepEqual([...schema.required].sort(), TOP_LEVEL_KEYS);
-  assert.deepEqual(Object.keys(schema.properties).sort(), TOP_LEVEL_KEYS);
+  assert.deepEqual(Object.keys(schema.properties).sort(), [...TOP_LEVEL_KEYS, ...OPT_IN_KEYS].sort());
+});
+
+test("the schema marks the opt-in fields as optional, and documents the fields of the user layer and of the ancestors", () => {
+  const schema = JSON.parse(fs.readFileSync(SCHEMA_FILE, "utf8"));
+  assert.equal(schema.required.includes("userLayer"), false);
+  assert.deepEqual(schema.properties.meta.required, ["scannedAt", "targetRoot", "tool"]);
+  assert.deepEqual(Object.keys(schema.properties.meta.properties.include.properties).sort(), ["ancestors", "userLayer"]);
+  const ancestorItem = schema.properties.context.properties.ancestors.items;
+  assert.deepEqual(ancestorItem.required, ["path", "bytes"]);
+  assert.deepEqual(
+    Object.keys(ancestorItem.properties).sort(),
+    ["bytes", "estTokens", "lines", "loadMode", "loadReason", "path", "read", "reason"],
+  );
+  assert.deepEqual(
+    schema.properties.userLayer.required,
+    ["root", "found", "memory", "settings", "skills", "subagents", "warnings", "notes"],
+  );
 });
 
 test("scan: derive gets a deep-frozen copy of the merged result and no context, and its keys are added", async (t) => {
@@ -645,4 +669,224 @@ test("scan: without derive, no derived key is written", async (t) => {
   for (const key of ["candidates", "measuredFindings", "undeterminable"]) {
     assert.equal(Object.hasOwn(result, key), false, key);
   }
+});
+
+test("scan: meta.include is written only when include is given, and a malformed include is refused", async (t) => {
+  const fixture = gitFixture(t);
+  const without = await scan({ root: fixture.root, measures: [], now: FIXED_NOW });
+  assert.equal(Object.hasOwn(without.meta, "include"), false);
+
+  const withFlags = await scan({ root: fixture.root, measures: [], now: FIXED_NOW, include: { userLayer: true, ancestors: false } });
+  assert.deepEqual(withFlags.meta.include, { userLayer: true, ancestors: false });
+  await assert.rejects(
+    scan({ root: fixture.root, measures: [], now: FIXED_NOW, include: { userLayer: "yes", ancestors: false } }),
+    /include must be \{ userLayer: boolean, ancestors: boolean \}/,
+  );
+});
+
+test("scan: ctx.outside starts empty, and a measure that fills it is seen by the measures after it", async (t) => {
+  const fixture = gitFixture(t);
+  const seen = [];
+  const measures = [
+    {
+      id: "fills",
+      collect(ctx) {
+        seen.push(ctx.outside.size);
+        ctx.outside.set("user", { permissions: { allow: [], ask: [], deny: [] } });
+        return {};
+      },
+    },
+    {
+      id: "reads",
+      collect(ctx) {
+        seen.push(ctx.outside.has("user"));
+        return {};
+      },
+    },
+  ];
+
+  await scan({ root: fixture.root, measures, now: FIXED_NOW });
+
+  assert.deepEqual(seen, [0, true]);
+});
+
+// The user-layer flags of the CLI tests. WITNESS sits in a file of the fake home that no measure reads.
+const WITNESS = "WITNESS-CLI-USER-LAYER-91c2";
+const RM_RULE = "Bash(rm:*)";
+
+// A target and a fake home in the temp folder. The home holds a user allow for rm, and a witness in a projects file. Without
+// withClaude the home has no .claude folder. The home is <base>/outside/home.
+function userHomeCase(t, { withClaude = true } = {}) {
+  const outside = { "home/README.txt": "A fake home folder.\n" };
+  if (withClaude) {
+    outside["home/.claude/settings.json"] = JSON.stringify({ permissions: { allow: [RM_RULE] } });
+    outside["home/.claude/projects/p/x.jsonl"] = `${WITNESS}\n`;
+  }
+  const fixture = makeFixture({ files: { "README.md": "# Target\n" }, outside });
+  t.after(fixture.cleanup);
+  return { target: fixture.root, base: fixture.base, home: path.join(fixture.outsideDir, "home") };
+}
+
+// The environment of the child: the fake home is its home folder on POSIX (HOME) and on Windows (USERPROFILE).
+function envWithHome(home) {
+  return { ...process.env, HOME: home, USERPROFILE: home };
+}
+
+// The outcome of the rm command in the measurements of a scan.
+function rmOf(data) {
+  return data.security.destructiveCoverage.commands.find((command) => command.id === "rm-recursive-force");
+}
+
+test("scan: without the flags, ~/.claude is not read: a user allow changes nothing, the witness is absent, and no user section is written", async (t) => {
+  const withClaude = userHomeCase(t);
+  const withoutClaude = userHomeCase(t, { withClaude: false });
+  const out = path.join(withClaude.base, "out");
+  const outBaseline = path.join(withoutClaude.base, "out");
+
+  const result = await runScan([withClaude.target, "--out", out], { env: envWithHome(withClaude.home) });
+  const baseline = await runScan([withoutClaude.target, "--out", outBaseline], { env: envWithHome(withoutClaude.home) });
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(baseline.code, 0, baseline.stderr);
+  const raw = fs.readFileSync(path.join(out, "measurements.json"), "utf8");
+  const data = JSON.parse(raw);
+  const baselineData = JSON.parse(fs.readFileSync(path.join(outBaseline, "measurements.json"), "utf8"));
+  assert.equal(Object.hasOwn(data, "userLayer"), false);
+  assert.equal(Object.hasOwn(data.meta, "include"), false);
+  assert.equal(raw.includes(WITNESS), false, "the witness of the fake home is never read");
+  assert.equal(rmOf(data).outcome, rmOf(baselineData).outcome, "the user allow does not change the outcome");
+  assert.equal(rmOf(data).outcome, "asks", "positive control: the removal asks, as with an empty home");
+});
+
+test("scan: --include-user-layer reads ~/.claude, and a user allow passes the rm command, attributed to the user layer", async (t) => {
+  const { target, base, home } = userHomeCase(t);
+  const out = path.join(base, "out");
+
+  const result = await runScan([target, "--out", out, "--include-user-layer"], { env: envWithHome(home) });
+
+  assert.equal(result.code, 0, result.stderr);
+  const raw = fs.readFileSync(path.join(out, "measurements.json"), "utf8");
+  const data = JSON.parse(raw);
+  assert.equal(data.userLayer.found, true);
+  assert.deepEqual(data.meta.include, { userLayer: true, ancestors: false });
+  assert.equal(rmOf(data).outcome, "passes");
+  assert.deepEqual(rmOf(data).decidedBy, {
+    kind: "rule",
+    list: "allow",
+    rule: RM_RULE,
+    source: "~/.claude/settings.json",
+    layer: "user",
+  });
+  assert.equal(raw.includes(WITNESS), false, "the projects folder is not read, even with the flag");
+  assert.equal(raw.includes(home), false, "the home folder is not written");
+});
+
+test("scan: --include-ancestors reads the memory file of the parent folder, and meta.include records the flag", async (t) => {
+  const { target, base, home } = userHomeCase(t, { withClaude: false });
+  // The target is <base>/repo, so its parent folder is <base>.
+  fs.writeFileSync(path.join(base, "CLAUDE.md"), "# Parent memory\n\nRead me.\n");
+  const out = path.join(base, "out");
+  const outPlain = path.join(base, "out-plain");
+
+  const result = await runScan([target, "--out", out, "--include-ancestors"], { env: envWithHome(home) });
+  const plain = await runScan([target, "--out", outPlain], { env: envWithHome(home) });
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(plain.code, 0, plain.stderr);
+  const data = JSON.parse(fs.readFileSync(path.join(out, "measurements.json"), "utf8"));
+  const plainData = JSON.parse(fs.readFileSync(path.join(outPlain, "measurements.json"), "utf8"));
+  assert.deepEqual(data.meta.include, { userLayer: false, ancestors: true });
+  // The walk goes up to the file system root, so only the item of the fixture's own parent folder is asserted.
+  const parent = data.context.ancestors.find((item) => item.path === "../CLAUDE.md");
+  assert.equal(parent.read, true);
+  assert.equal(parent.lines, 3);
+  const plainParent = plainData.context.ancestors.find((item) => item.path === "../CLAUDE.md");
+  assert.equal(Object.hasOwn(plainParent, "read"), false, "positive control: without the flag the file is listed by size only");
+  assert.equal(Object.hasOwn(plainData.meta, "include"), false);
+});
+
+test("scan: an unknown flag still exits 2, and the usage line names the two opt-in flags", async (t) => {
+  const { target, base } = copyOfEmptyFixture(t);
+  const out = path.join(base, "out");
+
+  const result = await runScan([target, "--out", out, "--include-everything"]);
+
+  assert.equal(result.code, 2);
+  assert.equal(
+    result.stderr.trimEnd().split("\n").at(-1),
+    "usage: node scripts/scan.mjs <target> [--out <dir>] [--include-user-layer] [--include-ancestors]",
+  );
+  assert.equal(fs.existsSync(out), false);
+});
+
+// Reads a JSON file of a run folder.
+function readRunJson(dir, name) {
+  return JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"));
+}
+
+// The end to end path of the user layer: the scan with the flag, a findings.json made from the measured finding that cites
+// the user's settings, and the report. The positive control is the same target and fake home without the flag.
+test("scan e2e: a user allow of rm is attributed to the user layer in the report, which says the layer was read (positive control: without the flag)", async (t) => {
+  const { target, base, home } = userHomeCase(t);
+  const withFlag = path.join(base, "run-user");
+  const withoutFlag = path.join(base, "run-plain");
+  const labels = loadLabels(HARNESS_ROOT, "en");
+  const schema = JSON.parse(fs.readFileSync(SCHEMA_FILE, "utf8"));
+
+  const scanned = await runScan([target, "--out", withFlag, "--include-user-layer"], { env: envWithHome(home) });
+  const plain = await runScan([target, "--out", withoutFlag], { env: envWithHome(home) });
+  assert.equal(scanned.code, 0, scanned.stderr);
+  assert.equal(plain.code, 0, plain.stderr);
+
+  const data = readRunJson(withFlag, "measurements.json");
+  assert.deepEqual(Object.keys(data.userLayer).sort(), [...schema.properties.userLayer.required].sort());
+  const sec02 = data.measuredFindings.find(
+    (item) => item.rule === "SEC-02" && item.evidence.some((entry) => entry.layer === "user"),
+  );
+  assert.ok(sec02, "a SEC-02 finding cites the user's settings with layer user");
+  const userEvidence = sec02.evidence.filter((entry) => entry.layer === "user");
+  assert.deepEqual(userEvidence, [{ file: "~/.claude/settings.json", layer: "user" }]);
+
+  // The findings are made from the measured finding: its id, its impact and its user evidence, with the agent's text.
+  const findings = {
+    findings: [
+      {
+        rule: "SEC-02",
+        axis: "security",
+        kind: "measured",
+        measuredFindingId: sec02.id,
+        evidence: userEvidence,
+        impact: sec02.impact,
+        summary: "The user's settings allow rm without a prompt, and the project does not ask for it.",
+        recommendation: "Remove the rm allow rule from ~/.claude/settings.json, or put Bash(rm:*) in the project's ask list.",
+        testInFunction2: null,
+      },
+    ],
+  };
+  fs.writeFileSync(path.join(withFlag, "findings.json"), `${JSON.stringify(findings, null, 2)}\n`);
+
+  const rendered = await runRender([withFlag]);
+  assert.equal(rendered.code, 0, rendered.stderr);
+  const report = fs.readFileSync(path.join(withFlag, "report.md"), "utf8");
+  assert.ok(report.includes(`\`~/.claude/settings.json\` (${labels["layer.user"]})`), "the evidence is not marked as user layer");
+  assert.ok(report.includes(labels["limits.readUser"]), "the limits do not say that the user layer was read");
+  assert.equal(report.includes(labels["limits.notRead"]), false);
+  assert.equal(report.includes(home), false, "the home folder is written to the report");
+
+  // Positive control: the same target and fake home without the flag. No user evidence exists, and the limits keep the
+  // statement that the user layer was not read.
+  const plainData = readRunJson(withoutFlag, "measurements.json");
+  assert.equal(Object.hasOwn(plainData, "userLayer"), false);
+  assert.equal(
+    plainData.measuredFindings.some((item) => item.evidence.some((entry) => entry.layer === "user")),
+    false,
+    "without the flag, no finding cites the user layer",
+  );
+  fs.writeFileSync(path.join(withoutFlag, "findings.json"), `${JSON.stringify({ findings: [] })}\n`);
+  const plainRendered = await runRender([withoutFlag]);
+  assert.equal(plainRendered.code, 0, plainRendered.stderr);
+  const plainReport = fs.readFileSync(path.join(withoutFlag, "report.md"), "utf8");
+  assert.ok(plainReport.includes(labels["limits.notRead"]), "the limits do not keep the not-read statement");
+  assert.equal(plainReport.includes(labels["limits.readUser"]), false);
+  assert.equal(plainReport.includes(labels["layer.user"]), false);
 });

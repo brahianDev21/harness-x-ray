@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MATRIX_MODES, decide, evaluate, evaluateInSessionMode, matchBash, matchPathGlob, parseRule } from "../scripts/lib/permissions.mjs";
+import {
+  MATRIX_MODES,
+  decide,
+  decisionRules,
+  evaluate,
+  evaluateInSessionMode,
+  matchBash,
+  matchPathGlob,
+  parseRule,
+} from "../scripts/lib/permissions.mjs";
 
 // Documentation URLs cited in test names. Each example is copied from the Claude Code permission docs.
 const PERMISSIONS = "https://code.claude.com/docs/en/permissions";
@@ -645,4 +654,143 @@ test("normal patterns keep their results: secrets/* stays in one folder, a /fold
   assert.equal(decide(anchored, read("secret/a.txt")).decision, "default", "positive control: the same folder at the root is not covered");
   assert.equal(matchPathGlob("a?c", "a\u{1F600}c"), false, "an emoji is two UTF-16 code units, so one ? does not match it");
   assert.equal(matchPathGlob("a??c", "a\u{1F600}c"), true);
+});
+
+// A user rule in the shape decisionRules gives it (its raw text, and the shown text, which is the same unless given), and a
+// project rule in the shape of security.permissions.
+const USER_SOURCE = "~/.claude/settings.json";
+const userRule = (rule, shown = rule) => ({ rule, shown, source: USER_SOURCE, anchor: null, layer: "user" });
+const projectRule = (rule) => ({ rule, source: ".claude/settings.json" });
+
+test("a decision names layer user only when the deciding rule is a user rule; project decisions keep their shape", () => {
+  const userDeny = decide({ deny: [userRule("Bash(rm:*)")] }, bash("rm -rf build"));
+  assert.deepEqual(userDeny, {
+    decision: "deny",
+    rule: "Bash(rm:*)",
+    source: USER_SOURCE,
+    reason: "deny-rule",
+    list: "deny",
+    layer: "user",
+  });
+
+  const projectDeny = decide({ deny: [projectRule("Bash(rm:*)")] }, bash("rm -rf build"));
+  assert.deepEqual(projectDeny, {
+    decision: "deny",
+    rule: "Bash(rm:*)",
+    source: ".claude/settings.json",
+    reason: "deny-rule",
+    list: "deny",
+  });
+  assert.equal("layer" in projectDeny, false, "positive control: a project decision has no layer key");
+
+  const verdict = evaluate({ allow: [userRule("Bash(rm:*)")] }, bash("rm -rf build"), { mode: "default", insideProject: true, criticalPath: false });
+  assert.equal(verdict.outcome, "passes");
+  assert.deepEqual(verdict.decidedBy, { kind: "rule", list: "allow", rule: "Bash(rm:*)", source: USER_SOURCE, layer: "user" });
+  const projectVerdict = evaluate({ allow: ["Bash(rm:*)"] }, bash("rm -rf build"), { mode: "default", insideProject: true, criticalPath: false });
+  assert.deepEqual(projectVerdict.decidedBy, { kind: "rule", list: "allow", rule: "Bash(rm:*)", source: null }, "string rules keep today's shape");
+});
+
+test("across the layers, a deny beats an allow whichever layer it is in, because deny is checked first", () => {
+  const projectDenied = decide({ allow: [userRule("Bash(git push:*)")], deny: [projectRule("Bash(git push:*)")] }, bash("git push origin main"));
+  assert.equal(projectDenied.decision, "deny");
+  assert.equal("layer" in projectDenied, false, "the project deny decides, so the decision has no user layer");
+
+  const userDenied = decide({ allow: [projectRule("Bash(npm publish:*)")], deny: [userRule("Bash(npm publish:*)")] }, bash("npm publish"));
+  assert.deepEqual(userDenied, {
+    decision: "deny",
+    rule: "Bash(npm publish:*)",
+    source: USER_SOURCE,
+    reason: "deny-rule",
+    list: "deny",
+    layer: "user",
+  });
+
+  const projectAllowOnly = decide({ allow: [projectRule("Bash(npm publish:*)")] }, bash("npm publish"));
+  assert.equal(projectAllowOnly.decision, "allow", "positive control: without the user deny, the project allow passes");
+});
+
+test("a compound command approved partly by a user rule is a user decision, and one approved by project rules only is not", () => {
+  const user = decide(
+    { allow: [projectRule("Bash(ls)"), userRule("Bash(rm:*)")] },
+    { tool: "Bash", command: "ls && rm -rf build", parts: ["ls", "rm -rf build"] },
+  );
+  assert.deepEqual(user, {
+    decision: "allow",
+    rule: "Bash(ls) && Bash(rm:*)",
+    source: USER_SOURCE,
+    reason: "allow-rule",
+    list: "allow",
+    layer: "user",
+  });
+
+  const project = decide(
+    { allow: [projectRule("Bash(ls)"), projectRule("Bash(cat)")] },
+    { tool: "Bash", command: "ls && cat", parts: ["ls", "cat"] },
+  );
+  assert.equal(project.decision, "allow");
+  assert.equal("layer" in project, false, "positive control: project parts only give no layer");
+});
+
+test("a user Read rule with a leading slash is undeterminable, because its anchor is unknown (conservative reading)", () => {
+  const verdict = decide({ deny: [userRule("Read(/secrets/**)")] }, read("secrets/a.txt"));
+  assert.equal(verdict.decision, "undeterminable");
+  assert.equal(verdict.reason, "anchor-unknown");
+  assert.equal(verdict.layer, "user");
+  const projectVerdict = decide({ deny: [{ rule: "Read(/secrets/**)", source: "settings", anchor: "" }] }, read("secrets/a.txt"));
+  assert.equal(projectVerdict.decision, "deny", "positive control: a project rule with a known anchor still decides");
+});
+
+test("a user rule matches its raw text, and every result names its shown text, also in the join of a compound command", () => {
+  // The raw rule names an absolute folder; its shown text is the redacted one. Only the shown text may reach a result.
+  const userAllow = userRule("Bash(cat /abs/proj/x)", "Bash(cat <target>/x)");
+  const rules = { allow: [userAllow, projectRule("Bash(echo ok)")] };
+
+  const compound = decide(rules, { tool: "Bash", command: "cat /abs/proj/x && echo ok", parts: ["cat /abs/proj/x", "echo ok"] });
+  assert.deepEqual(compound, {
+    decision: "allow",
+    rule: "Bash(cat <target>/x) && Bash(echo ok)",
+    source: USER_SOURCE,
+    reason: "allow-rule",
+    list: "allow",
+    layer: "user",
+  });
+  const verdict = evaluate(rules, { tool: "Bash", command: "cat /abs/proj/x && echo ok", parts: ["cat /abs/proj/x", "echo ok"] }, {
+    mode: "default",
+    insideProject: true,
+    criticalPath: false,
+  });
+  assert.deepEqual(verdict.decidedBy, {
+    kind: "rule",
+    list: "allow",
+    rule: "Bash(cat <target>/x) && Bash(echo ok)",
+    source: USER_SOURCE,
+    layer: "user",
+  });
+  assert.equal(JSON.stringify([compound, verdict]).includes("/abs/proj"), false, "the raw path is not in a result");
+
+  const projectOnly = decide(rules, { tool: "Bash", command: "echo ok" });
+  assert.deepEqual(projectOnly, { decision: "allow", rule: "Bash(echo ok)", source: ".claude/settings.json", reason: "allow-rule", list: "allow" }, "positive control: a project rule names its own text, with no layer");
+});
+
+test("decisionRules: the user lists come after the project's, with layer user and no anchor, and nothing changes without user data", () => {
+  const permissions = { allow: [projectRule("Bash(npm test)")], ask: [], deny: [] };
+  const outside = new Map([
+    [
+      "user",
+      {
+        permissions: {
+          allow: [{ rule: "Bash(rm:*)", shown: "Bash(rm:*)", source: USER_SOURCE }],
+          ask: [],
+          deny: [{ rule: "Read(.env)", shown: "Read(.env)", source: USER_SOURCE }],
+        },
+      },
+    ],
+  ]);
+
+  assert.deepEqual(decisionRules(permissions, outside), {
+    allow: [projectRule("Bash(npm test)"), userRule("Bash(rm:*)")],
+    ask: [],
+    deny: [userRule("Read(.env)")],
+  });
+  assert.deepEqual(decisionRules(permissions, new Map()), permissions, "positive control: no user data gives the project lists");
 });

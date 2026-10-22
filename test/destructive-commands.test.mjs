@@ -536,3 +536,53 @@ test("the schema documents modes on each command and matrixModes on destructiveC
     for (const mode of MATRIX_MODES) assert.ok(outcomes.includes(item.modes[mode]), `${item.id} ${mode}`);
   }
 });
+
+// A measure that puts user permission lists in ctx.outside, as the user layer measure does.
+function userLists(lists) {
+  return {
+    id: "user-lists",
+    collect(ctx) {
+      ctx.outside.set("user", { permissions: { allow: [], ask: [], deny: [], ...lists } });
+      return {};
+    },
+  };
+}
+
+test("a user allow passes the rm command that asks without it, and the decision names the user layer", async (t) => {
+  const fixture = emptyFixture(t);
+  const userAllow = { allow: [{ rule: "Bash(rm:*)", source: "~/.claude/settings.json" }] };
+  const withoutUser = await scan({ root: fixture.root, measures: MEASURES, now: FIXED_NOW });
+  const withUser = await scan({ root: fixture.root, measures: [claudeConfigMeasure, userLists(userAllow), destructiveCommandsMeasure], now: FIXED_NOW });
+  const rm = (result) => byId(result.security.destructiveCoverage.commands).get("rm-recursive-force");
+
+  assert.equal(rm(withoutUser).outcome, "asks", "positive control: without user data the removal asks by default");
+  assert.deepEqual(rm(withoutUser).decidedBy, { kind: "mode", mode: "default" });
+  assert.equal(rm(withUser).outcome, "passes");
+  assert.deepEqual(rm(withUser).decidedBy, {
+    kind: "rule",
+    list: "allow",
+    rule: "Bash(rm:*)",
+    source: "~/.claude/settings.json",
+    layer: "user",
+  });
+  assert.deepEqual(withUser.security.permissions.allow, [], "security.permissions holds the project lists only");
+});
+
+test("a user deny blocks a command that the project allows, and a project decision keeps its shape", async (t) => {
+  const fixture = settingsFixture(t, { permissions: { allow: ["Bash(git reset:*)"] } });
+  const userDeny = { deny: [{ rule: "Bash(git reset:*)", source: "~/.claude/settings.json" }] };
+  const withUser = await scan({ root: fixture.root, measures: [claudeConfigMeasure, userLists(userDeny), destructiveCommandsMeasure], now: FIXED_NOW });
+  const withoutUser = await scan({ root: fixture.root, measures: [claudeConfigMeasure, destructiveCommandsMeasure], now: FIXED_NOW });
+  const reset = (result) => byId(result.security.destructiveCoverage.commands).get("git-reset-hard");
+
+  assert.equal(reset(withoutUser).outcome, "passes", "positive control: the project allow passes the reset");
+  assert.deepEqual(reset(withoutUser).decidedBy, PROJECT_RULE("allow", "Bash(git reset:*)"));
+  assert.equal(reset(withUser).outcome, "blocked");
+  assert.deepEqual(reset(withUser).decidedBy, {
+    kind: "rule",
+    list: "deny",
+    rule: "Bash(git reset:*)",
+    source: "~/.claude/settings.json",
+    layer: "user",
+  });
+});

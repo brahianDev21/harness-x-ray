@@ -6,7 +6,9 @@
 //
 // Findings are shown by axis, then by impact (high, medium, low), then by rule id, then by input order. A measured
 // finding that no finding of findings.json cites (by measuredFindingId) is still shown, marked as not explained by the
-// agent; renderReport lists those so the command line can warn about them.
+// agent; renderReport lists those so the command line can warn about them. Evidence outside the target carries its layer
+// and is marked in its row; the limits say what the scan read beyond the target, from meta.include. The skipped items
+// outside the target (the user layer's warnings and the parent-folder files that were not read) are marked in the limits table.
 
 import { AXES, DEFAULT_LANGUAGE } from "./findings-validate.mjs";
 import { isPlainObject } from "./json-out.mjs";
@@ -40,6 +42,10 @@ const COMPONENT_LABELS = Object.freeze({
 const STATUS_LABELS = Object.freeze({ provisional: "status.provisional" });
 // A trigger whose name does not say the state it stands for: its label is shown in brackets after the name.
 const TRIGGER_NOTES = Object.freeze({ "hook-not-verified": "trigger.hookNotVerified" });
+// The mark of an evidence entry that lies outside the target, by its layer.
+const LAYER_LABELS = Object.freeze({ user: "layer.user", ancestor: "layer.ancestor" });
+// The source column of a parent-folder file that the walk did not read: the memory measure, which lists it.
+const ANCESTOR_SOURCE = "memory";
 // The fields of measurements.json that the report reads. Their presence is checked before anything is rendered.
 const REQUIRED_FIELDS = Object.freeze([
   "/meta/tool",
@@ -145,6 +151,7 @@ function createContext({ measurements, catalog, labels, language }) {
     t,
     language,
     measurements,
+    included: includedOf(measurements),
     catalog,
     measured: new Map(measurements.measuredFindings.map((item) => [item.id, item])),
     num: (value) => formatNumber(value, language),
@@ -160,6 +167,12 @@ function createContext({ measurements, catalog, labels, language }) {
     tableText: (value) => escapePipes(plain(value)),
     link: (label, url) => link(plain(label), plain(url)),
   };
+}
+
+// What the scan read beyond the target, from meta.include. The section is absent when no flag was given, so nothing was read.
+function includedOf(measurements) {
+  const include = measurements.meta.include ?? {};
+  return { userLayer: include.userLayer === true, ancestors: include.ancestors === true };
 }
 
 // One entry per finding to show: each agent finding, then each measured finding that no agent finding cites.
@@ -434,7 +447,7 @@ function evidenceBlock(ctx, entry) {
   const items = entry.agent === null ? entry.measured.evidence : entry.agent.evidence;
   if (items.length === 0) return t("finding.noEvidence");
   const rows = items.map((item) => [
-    ctx.tableCode(locationOf(item)),
+    evidenceLocation(ctx, item),
     item.quote === undefined ? t("value.empty") : ctx.tableCode(item.quote),
   ]);
   return table([t("table.evidence"), t("table.quote")], rows);
@@ -443,6 +456,14 @@ function evidenceBlock(ctx, entry) {
 function locationOf(item) {
   if (item.line === undefined) return item.file;
   return item.endLine === undefined ? `${item.file}:${item.line}` : `${item.file}:${item.line}-${item.endLine}`;
+}
+
+// The location of an evidence entry, with its mark when the file lies outside the target (its layer).
+function evidenceLocation(ctx, item) {
+  const location = ctx.tableCode(locationOf(item));
+  if (item.layer === undefined) return location;
+  if (!Object.hasOwn(LAYER_LABELS, item.layer)) throw new Error(`an evidence entry has an unknown layer: ${String(item.layer)}`);
+  return `${location} (${ctx.tableText(ctx.t(LAYER_LABELS[item.layer]))})`;
 }
 
 // The measured numbers of a finding: the value at its measurementRef, and one row per group of triggers.
@@ -486,7 +507,7 @@ function renderContext(ctx) {
     blocks.push(table(headers, rows));
   }
   blocks.push(t("context.total", { estimate: estimateText(ctx) }));
-  blocks.push(t("context.layers"), t("context.agents"));
+  blocks.push(t(ctx.included.ancestors ? "context.layersAncestors" : "context.layers"), t("context.agents"));
   if (budget.unknownStatic.length > 0) {
     blocks.push(t("context.unknownTitle"), budget.unknownStatic.map((item) => `- ${unknownText(ctx, item)}`).join("\n"));
   }
@@ -550,19 +571,20 @@ function listOrNone(ctx, items) {
 
 function renderLimits(ctx) {
   const { t, measurements: m } = ctx;
-  const blocks = [`## ${t("limits.title")}`, t("limits.notRead")];
+  const blocks = [`## ${t("limits.title")}`, readLimitText(ctx)];
   blocks.push(t("limits.estimate", { method: ctx.text(m.context.alwaysLoaded.estMethod) }));
   blocks.push(t("limits.thresholds", { status: statusText(ctx) }));
   const mode = usedMode(m);
   blocks.push(t("limits.sec02", { mode: ctx.code(mode ?? t("mode.default")) }));
   const matrix = renderMatrix(ctx);
   if (matrix !== null) blocks.push(matrix);
-  if (m.warnings.length === 0) {
+  const skipped = skippedItems(ctx);
+  if (skipped.length === 0) {
     blocks.push(t("limits.noWarnings"));
   } else {
-    const rows = m.warnings.map((item) => [
+    const rows = skipped.map((item) => [
       ctx.tableCode(item.source),
-      ctx.tableCode(item.path),
+      pathCell(ctx, item),
       ctx.tableCode(item.reason),
       item.detail === undefined ? t("value.empty") : valueText(ctx, item.detail, true),
     ]);
@@ -579,6 +601,35 @@ function renderLimits(ctx) {
     blocks.push(t("limits.undeterminable"), table([t("table.rule"), t("table.reference"), t("table.reason")], rows));
   }
   return blocks.join("\n\n");
+}
+
+// The items of the skipped table: the scan's own warnings, then the warnings of the user layer, then the parent-folder files
+// that the walk listed and did not read (read false). The last two lie outside the target, so they carry their layer. Without
+// a flag neither exists, and the table is the scan's own warnings as before.
+function skippedItems(ctx) {
+  const { measurements: m } = ctx;
+  const user = (m.userLayer?.warnings ?? []).map((item) => ({ ...item, layer: "user" }));
+  const ancestors = (m.context.ancestors ?? [])
+    .filter((item) => item.read === false)
+    .map((item) => ({ source: ANCESTOR_SOURCE, path: item.path, reason: item.reason, layer: "ancestor" }));
+  return [...m.warnings, ...user, ...ancestors];
+}
+
+// The path of a skipped item, with its layer mark when it lies outside the target.
+function pathCell(ctx, item) {
+  const code = ctx.tableCode(item.path);
+  if (item.layer === undefined) return code;
+  return `${code} (${ctx.tableText(ctx.t(LAYER_LABELS[item.layer]))})`;
+}
+
+// What the limits say the scan did not read. The user layer and the parent folders are named as read only when meta.include
+// says the scan read them (the flags of the scan); otherwise they are not read.
+function readLimitText(ctx) {
+  const { t, included } = ctx;
+  if (included.userLayer && included.ancestors) return t("limits.readBoth");
+  if (included.userLayer) return t("limits.readUser");
+  if (included.ancestors) return t("limits.readAncestors");
+  return t("limits.notRead");
 }
 
 // The SEC-02 permission matrix, as context: one row per command, one column per session mode in the order the scan

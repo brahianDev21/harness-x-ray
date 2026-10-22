@@ -47,13 +47,16 @@ export const DERIVED_KEYS = Object.freeze(["candidates", "measuredFindings", "un
  * @param {(merged: object) => object} [options.derive] Runs once, after the measures have merged and the lists are
  *   sorted. It receives a deep-frozen copy of the merged result and no context, so it cannot read the target. It
  *   returns a plain object whose keys are DERIVED_KEYS; those keys are added to the result.
+ * @param {{ userLayer: boolean, ancestors: boolean }} [options.include] The opt-in flags of the run. When it is given,
+ *   meta.include records them. Without it, the output has no meta.include.
  * @returns {Promise<object>} The measurements object, ready for toStableJson.
  * @throws {Error} If a measure fails, two measures set the same value, a measure sets a derived key, or derive
  *   returns something malformed.
  */
-export async function scan({ root, measures = [], now = new Date(), derive }) {
+export async function scan({ root, measures = [], now = new Date(), derive, include }) {
   validateMeasures(measures);
   if (derive !== undefined && typeof derive !== "function") throw new TypeError("derive must be a function");
+  if (include !== undefined) validateInclude(include);
   const fsView = createTargetFs(root);
   const listing = await listFiles(root);
   const ctx = Object.freeze({
@@ -64,6 +67,9 @@ export async function scan({ root, measures = [], now = new Date(), derive }) {
     commit: listing.commit,
     readText: createMemoizedReader(fsView),
     memory: new Map(),
+    // Data that opt-in measures read from outside the target, keyed by layer ("user" for the user layer). It is empty
+    // unless such a measure runs, and the measures that run after it can read it.
+    outside: new Map(),
   });
 
   const result = {
@@ -82,6 +88,8 @@ export async function scan({ root, measures = [], now = new Date(), derive }) {
       alwaysLoaded: { estTokensTotal: 0, estMethod: ESTIMATE_METHOD, byComponent: [], unknownStatic: [] },
     },
   };
+
+  if (include !== undefined) result.meta.include = { userLayer: include.userLayer, ancestors: include.ancestors };
 
   const owners = new Map();
   for (const measure of measures) {
@@ -123,6 +131,12 @@ function deepFreeze(value) {
 function readToolName() {
   const manifest = JSON.parse(fs.readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
   return `${manifest.name}@${manifest.version}`;
+}
+
+function validateInclude(include) {
+  if (!isPlainObject(include) || typeof include.userLayer !== "boolean" || typeof include.ancestors !== "boolean") {
+    throw new TypeError("include must be { userLayer: boolean, ancestors: boolean }");
+  }
 }
 
 function validateMeasures(measures) {

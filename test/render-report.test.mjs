@@ -151,6 +151,86 @@ describe("trigger notes", () => {
   });
 });
 
+describe("evidence outside the target", () => {
+  // A copy of the scan with the flags given: the user layer and the parent folders. Only what the validator reads is
+  // written: the paths and the line counts. Without a flag, the copy is the scan as it is (no meta.include, as the scan writes).
+  function withLayers({ userLayer = false, ancestors = false }) {
+    const measurements = structuredClone(run.measurements);
+    if (!userLayer && !ancestors) return measurements;
+    measurements.meta.include = { userLayer, ancestors };
+    if (userLayer) {
+      measurements.userLayer = {
+        root: "~/.claude",
+        found: true,
+        memory: [{ path: "~/.claude/CLAUDE.md", lines: 12 }],
+        settings: { path: "~/.claude/settings.json", found: true, lines: 4 },
+        skills: [{ path: "~/.claude/skills/review/SKILL.md" }],
+        subagents: [],
+      };
+    }
+    if (ancestors) measurements.context.ancestors = [{ path: "../CLAUDE.md", bytes: 500, read: true, lines: 3 }];
+    return measurements;
+  }
+
+  // The golden findings, with one evidence entry from each layer on the first finding.
+  function findingsWithLayers(language) {
+    const findings = readGoldenFindings(language === "es" ? "findings.es.json" : "findings.en.json");
+    findings.findings[0].evidence.push(
+      { file: "~/.claude/settings.json", line: 2, endLine: 3, layer: "user" },
+      { file: "../CLAUDE.md", line: 1, layer: "ancestor" },
+    );
+    return findings;
+  }
+
+  test("an evidence entry from each layer is marked in the English report, after its location", async () => {
+    const dir = makeCase({ findings: findingsWithLayers("en"), measurements: withLayers({ userLayer: true, ancestors: true }) });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.ok(report.includes("`~/.claude/settings.json:2-3` (user layer, outside the repository)"), "the user mark is missing");
+    assert.ok(report.includes("`../CLAUDE.md:1` (parent folder, outside the repository)"), "the parent-folder mark is missing");
+  });
+
+  test("the same marks in the Spanish report carry the Spanish labels", async () => {
+    const labels = loadLabels(HARNESS_ROOT, "es");
+    const dir = makeCase({ findings: findingsWithLayers("es"), measurements: withLayers({ userLayer: true, ancestors: true }) });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.ok(report.includes(`\`~/.claude/settings.json:2-3\` (${labels["layer.user"]})`), "the Spanish user mark is missing");
+    assert.ok(report.includes(`\`../CLAUDE.md:1\` (${labels["layer.ancestor"]})`), "the Spanish parent-folder mark is missing");
+  });
+
+  test("the limits name what the scan read beyond the target, and only what meta.include says (positive controls: each flag)", async () => {
+    const labels = loadLabels(HARNESS_ROOT, "en");
+    const cases = [
+      [{}, "limits.notRead", "context.layers"],
+      [{ userLayer: true }, "limits.readUser", "context.layers"],
+      [{ ancestors: true }, "limits.readAncestors", "context.layersAncestors"],
+      [{ userLayer: true, ancestors: true }, "limits.readBoth", "context.layersAncestors"],
+    ];
+    const limitKeys = cases.map(([, key]) => key);
+    const contextKeys = ["context.layers", "context.layersAncestors"];
+    for (const [flags, expectedLimit, expectedContext] of cases) {
+      const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements: withLayers(flags) });
+      const result = await runRender([dir]);
+      assert.equal(result.code, 0, result.stderr);
+      const report = reportOf(dir);
+      for (const key of limitKeys) {
+        assert.equal(report.includes(labels[key]), key === expectedLimit, `${key} for ${JSON.stringify(flags)}`);
+      }
+      for (const key of contextKeys) {
+        assert.equal(report.includes(labels[key]), key === expectedContext, `${key} for ${JSON.stringify(flags)}`);
+      }
+    }
+  });
+
+  test("the golden reports have no mark and no flag text, since no evidence there has a layer (positive control)", () => {
+    assert.equal(readGolden("report.en.md").includes("outside the repository"), false);
+    assert.equal(readGolden("report.es.md").includes("fuera del repositorio"), false);
+  });
+});
+
 describe("permission matrix", () => {
   // The matrix table as the report writes it: a header with the Command label and the modes as code, a divider, and one
   // row per command. The cells are read from the measurements, so the test does not copy any outcome by hand.
@@ -269,6 +349,68 @@ describe("warnings and errors", () => {
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stderr, /warning: measured finding mf-3 \(SEC-03\) is not cited by findings\.json/);
     assert.match(reportOf(dir), /The scan measured this, but findings\.json does not cite it/);
+  });
+
+  // The scan's measurements with the flags given, and what they skipped outside the target: the user layer's warnings and the
+  // parent-folder files that were not read. The file that was read is there too, as a positive control.
+  function withSkippedOutside() {
+    const measurements = structuredClone(run.measurements);
+    measurements.meta.include = { userLayer: true, ancestors: true };
+    measurements.userLayer = {
+      root: "~/.claude",
+      found: true,
+      memory: [],
+      settings: {
+        path: "~/.claude/settings.json",
+        found: true,
+        lines: 1,
+        permissions: { allow: [], ask: [], deny: [] },
+        defaultMode: null,
+        hooks: { count: 0, evaluated: false },
+      },
+      skills: [],
+      subagents: [],
+      warnings: [
+        { source: "fs", path: "~/.claude/rules/leak.md", reason: "outside-root" },
+        { source: "user-layer", path: "~/.claude/settings.json", reason: "invalid-json" },
+      ],
+      notes: [],
+    };
+    measurements.context.ancestors = [
+      { path: "../../.claude/AGENTS.md", bytes: 70, read: false, reason: "user-layer" },
+      { path: "../CLAUDE.md", bytes: 500, read: true, lines: 3, estTokens: 30, loadMode: "always", loadReason: "x" },
+    ];
+    return measurements;
+  }
+
+  // The table row that holds a text, or undefined when no row does.
+  const rowWith = (report, text) => report.split("\n").find((line) => line.startsWith("|") && line.includes(text));
+
+  for (const language of ["en", "es"]) {
+    test(`the skipped items outside the target are in the limits table, each with its layer mark and reason (${language})`, async () => {
+      const labels = loadLabels(HARNESS_ROOT, language);
+      const dir = makeCase({ findings: readGoldenFindings(`findings.${language}.json`), measurements: withSkippedOutside() });
+      const result = await runRender([dir]);
+      assert.equal(result.code, 0, result.stderr);
+      const report = reportOf(dir);
+
+      const userRow = rowWith(report, "`~/.claude/rules/leak.md`");
+      assert.ok(userRow, "the user-layer warning is missing from the limits table");
+      assert.ok(userRow.includes(`\`fs\``) && userRow.includes(`(${labels["layer.user"]})`) && userRow.includes("`outside-root`"), userRow);
+      const parentRow = rowWith(report, "`../../.claude/AGENTS.md`");
+      assert.ok(parentRow, "the unread parent file is missing from the limits table");
+      assert.ok(parentRow.includes(`\`memory\``) && parentRow.includes(`(${labels["layer.ancestor"]})`) && parentRow.includes("`user-layer`"), parentRow);
+      assert.equal(rowWith(report, "`../CLAUDE.md`"), undefined, "positive control: a parent file that was read is not in the table");
+      assert.equal(report.includes(labels["limits.noWarnings"]), false, "the table is not replaced by the no-warning text");
+    });
+  }
+
+  test("without the flags, the limits table is the scan's own warnings only (positive control: the golden has no layer mark)", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(reportOf(dir).includes("(user layer, outside the repository)"), false);
+    assert.equal(reportOf(dir).includes("(parent folder, outside the repository)"), false);
   });
 
   test("a finding that fails validation prints each error, exits 1 and writes no report", async () => {

@@ -52,6 +52,8 @@ const NONE = Object.freeze({ state: "none" });
 const MATCH = Object.freeze({ state: "match" });
 // A `!` path rule that covers the path: it makes the whole list undeterminable (see scanList).
 const NEGATION_UNKNOWN = Object.freeze({ state: "unknown", reason: "negation-rule", neg: true });
+// The layer of the rules that the user layer adds (see decisionRules). The key of the user data in ctx.outside too.
+export const USER_LAYER = "user";
 
 /**
  * Parses one permission rule, `Tool` or `Tool(specifier)`. The specifier starts at the first "(" and ends at the
@@ -394,26 +396,34 @@ function unknown(reason) {
 }
 
 // The state of one list for one call or one part. A rule that matches decides. A `!` rule that covers the path makes
-// the whole list undeterminable. Otherwise an undeterminable rule makes the list undeterminable.
+// the whole list undeterminable. Otherwise an undeterminable rule makes the list undeterminable. The layer of the
+// deciding entry is kept when it has one (only the user layer's rules have one).
 function scanList(list, entries, call, unit) {
   let match = null;
   let unresolved = null;
   for (const entry of entries) {
     const state = entryState(list, entry, call, unit);
-    if (state.neg === true) return { state: "unknown", rule: entry.rule, source: entry.source, reason: state.reason };
-    if (state.state === "match" && match === null) match = { state: "match", rule: entry.rule, source: entry.source };
+    if (state.neg === true) {
+      return { state: "unknown", rule: displayRule(entry), source: entry.source, reason: state.reason, ...layerField(entry) };
+    }
+    if (state.state === "match" && match === null) {
+      match = { state: "match", rule: displayRule(entry), source: entry.source, ...layerField(entry) };
+    }
     if (state.state === "unknown" && unresolved === null) {
-      unresolved = { state: "unknown", rule: entry.rule, source: entry.source, reason: state.reason };
+      unresolved = { state: "unknown", rule: displayRule(entry), source: entry.source, reason: state.reason, ...layerField(entry) };
     }
   }
   return match ?? unresolved ?? NONE;
 }
 
-// An allow rule approves a compound command only when every part is approved by some allow rule.
+// An allow rule approves a compound command only when every part is approved by some allow rule. When a part is approved
+// by a user rule, the result is a user decision: its layer and source are kept, so the attribution names the user layer.
 function allowAllParts(results) {
   if (results.some((result) => result.state === "none")) return NONE;
   if (results.every((result) => result.state === "match")) {
-    return { state: "match", rule: results.map((result) => result.rule).join(" && "), source: results[0].source };
+    const joined = { state: "match", rule: results.map((result) => result.rule).join(" && "), source: results[0].source };
+    const user = results.find((result) => result.layer === USER_LAYER);
+    return user === undefined ? joined : { ...joined, source: user.source, layer: USER_LAYER };
   }
   return results.find((result) => result.state === "unknown");
 }
@@ -426,17 +436,62 @@ function listResult(list, entries, call, units) {
   return results.find((result) => result.state === "match") ?? results.find((result) => result.state === "unknown") ?? NONE;
 }
 
-// Normalizes a list of rules: plain strings, or objects with rule, source and anchor. A missing anchor is the project
-// root (""); a null anchor means the folder is unknown.
+// Normalizes a list of rules: plain strings, or objects with rule, source, anchor, layer and shown. A missing anchor is the
+// project root (""); a null anchor means the folder is unknown. A missing layer is the project's.
 function entriesOf(list) {
   if (!Array.isArray(list)) return [];
   return list.map((item) => {
     const entry =
       typeof item === "string"
         ? { rule: item, source: null, anchor: "" }
-        : { rule: item?.rule, source: item?.source ?? null, anchor: item?.anchor === undefined ? "" : item.anchor };
+        : {
+            rule: item?.rule,
+            source: item?.source ?? null,
+            anchor: item?.anchor === undefined ? "" : item.anchor,
+            layer: item?.layer,
+            shown: item?.shown,
+          };
     return { ...entry, parsed: parseRule(entry.rule) };
   });
+}
+
+// The layer field of a result or entry: present only for a rule that has a layer, so project decisions keep their shape.
+function layerField(item) {
+  return item.layer === undefined ? {} : { layer: item.layer };
+}
+
+// The rule text that a result names. A user rule is matched by its raw text, and it has a shown text, the redacted one,
+// which is the only text a result may hold: the raw text can contain the home or target folder. A project rule has no
+// shown text, because its rule is already redacted.
+function displayRule(entry) {
+  return entry.shown ?? entry.rule;
+}
+
+/**
+ * The rules that decide a call: the project's lists, and the user layer's lists after them when the user layer was read
+ * (scan --include-user-layer). The user measure puts its lists in ctx.outside under USER_LAYER. A user rule is marked with
+ * layer "user", and its anchor is null, so a "/" path rule of it is undeterminable. Deny is checked before ask and allow
+ * over both layers (see decide). A user rule keeps its raw text for matching, and its redacted text as shown: a result
+ * names the shown text only.
+ * NOT VERIFIED: no note in rules/sources.json says how the user, project and local rules combine. This union is the repo's
+ * choice. security.permissions never holds the user rules, so SEC-01 does not read them.
+ * @param {{ allow: object[], ask: object[], deny: object[] }} permissions The project lists (claude-config, permissions).
+ * @param {Map<string, object>} outside ctx.outside: data that opt-in measures read from outside the target, by layer.
+ * @returns {{ allow: object[], ask: object[], deny: object[] }} New arrays, or the project's arrays when there is no user data.
+ */
+export function decisionRules(permissions, outside) {
+  const project = { allow: permissions.allow, ask: permissions.ask, deny: permissions.deny };
+  const user = outside.get(USER_LAYER)?.permissions;
+  if (user === undefined) return project;
+  return {
+    allow: [...project.allow, ...userEntries(user.allow)],
+    ask: [...project.ask, ...userEntries(user.ask)],
+    deny: [...project.deny, ...userEntries(user.deny)],
+  };
+}
+
+function userEntries(list) {
+  return list.map((item) => ({ rule: item.rule, shown: item.shown, source: item.source, anchor: null, layer: USER_LAYER }));
 }
 
 // The simple commands to match: the caller's parts when given, else the command itself when it has no operator.
@@ -473,7 +528,8 @@ function validPath(path) {
  * be trusted. The result names the rule that decided, or the undeterminable rule.
  * @param {{ allow?: Array<string | { rule: string, source?: string, anchor?: string | null }>, ask?: Array<string | object>, deny?: Array<string | object> }} rules
  * @param {{ tool: string, command?: string, parts?: string[], path?: string, domain?: string }} call
- * @returns {{ decision: "deny" | "ask" | "allow" | "default" | "undeterminable", rule: string | null, source: string | null, reason: string, list: "deny" | "ask" | "allow" | null }}
+ * @returns {{ decision: "deny" | "ask" | "allow" | "default" | "undeterminable", rule: string | null, source: string | null, reason: string, list: "deny" | "ask" | "allow" | null, layer?: "user" }}
+ *   layer is present only when the deciding entry is a user rule.
  */
 export function decide(rules, call) {
   const invalid = invalidCall(call);
@@ -483,10 +539,17 @@ export function decide(rules, call) {
   for (const list of ["deny", "ask", "allow"]) {
     const result = listResult(list, lists[list], call, units);
     if (result.state === "match") {
-      return { decision: list, rule: result.rule, source: result.source, reason: LIST_REASON[list], list };
+      return { decision: list, rule: result.rule, source: result.source, reason: LIST_REASON[list], list, ...layerField(result) };
     }
     if (result.state === "unknown") {
-      return { decision: "undeterminable", rule: result.rule, source: result.source, reason: result.reason, list };
+      return {
+        decision: "undeterminable",
+        rule: result.rule,
+        source: result.source,
+        reason: result.reason,
+        list,
+        ...layerField(result),
+      };
     }
   }
   return { decision: "default", rule: null, source: null, reason: "no-rule-matched", list: null };
@@ -651,7 +714,8 @@ function removesFiles(call, units) {
 }
 
 function ruleBy(decided) {
-  return decided.list === null ? null : { kind: "rule", list: decided.list, rule: decided.rule, source: decided.source };
+  if (decided.list === null) return null;
+  return { kind: "rule", list: decided.list, rule: decided.rule, source: decided.source, ...layerField(decided) };
 }
 
 function modeBy(mode, ignoredMode) {

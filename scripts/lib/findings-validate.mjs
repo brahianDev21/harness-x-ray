@@ -22,6 +22,11 @@
 // Secret heuristic (errors). Every string of findings.json is checked with the patterns of data/secret-patterns.json:
 // the token formats and the generic key-value assignments. File names are not checked, because a finding about a
 // secret file must name it. A match whose value has the shape of mask() is accepted (see isMasked).
+//
+// Layers (errors). Evidence with a layer names a file outside the target: user for a file of ~/.claude/, ancestor for a
+// file of a parent folder (../). The validator never reads such a file. The file must be one that measurements.json lists
+// for its layer (its userLayer section, or context.ancestors with read true), a quote is refused, and a line must lie
+// inside the lines count that measurements.json gives the file. Without a layer, evidence is a file of the target.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -50,7 +55,11 @@ export const FINDING_FIELDS = Object.freeze([
   "recommendation",
   "testInFunction2",
 ]);
-export const EVIDENCE_FIELDS = Object.freeze(["file", "line", "endLine", "quote"]);
+export const EVIDENCE_FIELDS = Object.freeze(["file", "line", "endLine", "quote", "layer"]);
+/** The layers of an evidence entry: a file outside the target. The schema must document the same set. */
+export const EVIDENCE_LAYERS = Object.freeze(["user", "ancestor"]);
+// The start that a file of each layer must have, which is where the file lies outside the target.
+const LAYER_PREFIX = Object.freeze({ user: "~/.claude/", ancestor: "../" });
 export const REQUIRED_FINDING_FIELDS = Object.freeze([
   "rule",
   "axis",
@@ -119,6 +128,7 @@ export function validateFindings({ findings, measurements, rules, targetRoot }) 
     rules: new Map(rules.map((rule) => [rule.id, rule])),
     measured: measuredById(measurements),
     numbers: numbersIn(measurements, new Set()),
+    outside: outsideFilesOf(measurements),
     target: createTargetFs(targetRoot),
     reads: new Map(),
   };
@@ -315,18 +325,19 @@ function checkMeasuredFields(item, { index, rule, fail, warn, ctx }) {
 
 // Evidence -----------------------------------------------------------------------------------------
 
-// Checks one evidence entry: its shape, then its file, line range and quote against the target.
+// Checks one evidence entry: its shape, then its file, line range and quote against the target. An entry with a layer
+// is a file outside the target, so it is checked against measurements.json instead (checkLayeredEvidence).
 function checkEvidence(entry, at, where) {
   const { index, rule, ctx } = where;
   const fail = (name, message) => addIssue(ctx.errors, index, rule, name === "" ? at : `${at}.${name}`, message);
   if (!isPlainObject(entry)) {
-    fail("", "must be an object with file, and optionally line, endLine and quote");
+    fail("", "must be an object with file, and optionally line, endLine, quote and layer");
     return;
   }
   for (const key of Object.keys(entry)) {
     if (!EVIDENCE_FIELDS.includes(key)) fail(key, `unknown field; the fields are ${EVIDENCE_FIELDS.join(", ")}`);
   }
-  const { file, line, endLine, quote } = entry;
+  const { file, line, endLine, quote, layer } = entry;
   if (file === undefined) fail("file", "missing required field");
 
   const hasLine = line !== undefined;
@@ -344,6 +355,10 @@ function checkEvidence(entry, at, where) {
   } else if (endLine !== undefined && isPositiveInteger(line) && endLine < line) {
     fail("endLine", `must not be before line (${line})`);
     rangeOk = false;
+  }
+  if (layer !== undefined) {
+    checkLayeredEvidence(entry, at, { index, rule, ctx }, rangeOk);
+    return;
   }
   const quoteText = typeof quote === "string" && quote.trim() !== "" ? quote : null;
   if (quote !== undefined) {
@@ -388,6 +403,73 @@ function checkEvidence(entry, at, where) {
       fail("quote", `does not appear on ${label} of ${show(file)}, with runs of spaces compared as one space`);
     }
   }
+}
+
+// Checks an entry with a layer: a file outside the target, which is never read. The file must be one that measurements.json
+// lists for its layer. A line must lie inside the lines count the scan gives that file, and a quote is refused.
+function checkLayeredEvidence(entry, at, where, rangeOk) {
+  const { index, rule, ctx } = where;
+  const fail = (name, message) => addIssue(ctx.errors, index, rule, `${at}.${name}`, message);
+  const { file, line, endLine, quote, layer } = entry;
+  if (!EVIDENCE_LAYERS.includes(layer)) {
+    fail("layer", `must be "user" or "ancestor", found ${show(layer)}`);
+    return;
+  }
+  if (quote !== undefined) {
+    fail("quote", "cannot be checked, because a file outside the target is not read; remove quote");
+  }
+  if (file === undefined) return;
+
+  const prefix = LAYER_PREFIX[layer];
+  if (typeof file !== "string" || !file.startsWith(prefix)) {
+    fail("file", `with layer ${layer}, must start with ${prefix}, found ${show(file)}`);
+    return;
+  }
+  const listed = ctx.outside[layer].get(file);
+  if (listed === undefined) {
+    const section = layer === "user" ? "the userLayer section" : "context.ancestors";
+    fail("file", `${show(file)} is not listed in ${section} of measurements.json`);
+    return;
+  }
+  if (layer === "ancestor" && listed.read !== true) {
+    fail("file", `${show(file)} was not read by the scan, so it cannot be cited with layer ancestor`);
+    return;
+  }
+  if (line === undefined || !rangeOk) return;
+
+  const count = listed.lines;
+  if (!Number.isSafeInteger(count) || count < 0) {
+    fail("line", `${show(file)} has no line count in measurements.json, so line cannot be checked; cite the file without line`);
+    return;
+  }
+  const last = endLine ?? line;
+  if (line > count) {
+    fail("line", `line ${line} is past the end of ${show(file)}, which has ${count} lines`);
+    return;
+  }
+  if (last > count) fail("endLine", `line ${last} is past the end of ${show(file)}, which has ${count} lines`);
+}
+
+// The files outside the target that measurements.json lists, by layer: user files under userLayer, and parent folders in
+// context.ancestors, where read says whether the scan read them. A section that the scan did not write lists no file.
+function outsideFilesOf(measurements) {
+  const user = new Map();
+  const ancestor = new Map();
+  const layer = measurements.userLayer;
+  if (isPlainObject(layer)) {
+    const settings = isPlainObject(layer.settings) ? [layer.settings] : [];
+    for (const item of [...listOf(layer.memory), ...settings, ...listOf(layer.skills), ...listOf(layer.subagents)]) {
+      if (isPlainObject(item) && typeof item.path === "string") user.set(item.path, item);
+    }
+  }
+  for (const item of listOf(measurements.context?.ancestors)) {
+    if (isPlainObject(item) && typeof item.path === "string") ancestor.set(item.path, item);
+  }
+  return { user, ancestor };
+}
+
+function listOf(value) {
+  return Array.isArray(value) ? value : [];
 }
 
 // Returns the problem with an evidence path, or null. Checked before any read, so a bad path is never opened.

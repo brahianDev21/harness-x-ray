@@ -453,6 +453,186 @@ describe("validator: the target is read only for evidence, and only through safe
   });
 });
 
+describe("validator: evidence with a layer names a file outside the target", () => {
+  // The scan's user layer and parent folders, as synthetic measurements: the paths and the line counts the validator reads.
+  // A skill has no line count, and an unread parent file is listed with read false.
+  const LAYERED = {
+    userLayer: {
+      root: "~/.claude",
+      found: true,
+      memory: [{ path: "~/.claude/CLAUDE.md", lines: 4 }],
+      settings: { path: "~/.claude/settings.json", found: true, lines: 6 },
+      skills: [{ path: "~/.claude/skills/review/SKILL.md" }],
+      subagents: [],
+    },
+    context: {
+      ancestors: [
+        { path: "../CLAUDE.md", bytes: 500, read: true, lines: 3 },
+        { path: "../AGENTS.md", bytes: 90, read: false, reason: "too-large" },
+      ],
+    },
+  };
+  let fixture = null;
+  before(() => {
+    fixture = makeFixture({ files: { "CLAUDE.md": "one\ntwo\nthree\n" } });
+  });
+  after(() => {
+    fixture?.cleanup();
+  });
+
+  // The result of one judgment finding that cites the evidence, checked against the given measurements.
+  const check = (evidence, measurements = LAYERED) =>
+    validate(
+      {
+        findings: [{ rule: "RUL-01", axis: "instructions", kind: "judgment", evidence: [evidence], impact: "low", summary: "A check.", recommendation: "A change.", testInFunction2: null }],
+      },
+      measurements,
+      fixture.root,
+    );
+
+  test("a user file that measurements.json lists passes, with a line inside its lines count (positive control)", () => {
+    for (const evidence of [
+      { file: "~/.claude/settings.json", layer: "user" },
+      { file: "~/.claude/settings.json", line: 2, endLine: 6, layer: "user" },
+      { file: "~/.claude/CLAUDE.md", line: 4, layer: "user" },
+      { file: "~/.claude/skills/review/SKILL.md", layer: "user" },
+    ]) {
+      const result = check(evidence);
+      assert.deepEqual(result.errors, [], JSON.stringify(evidence));
+      assert.deepEqual(result.warnings, [], JSON.stringify(evidence));
+    }
+  });
+
+  test("a parent-folder file that the scan read passes, with a line inside its lines count (positive control)", () => {
+    assert.deepEqual(check({ file: "../CLAUDE.md", layer: "ancestor" }).errors, []);
+    assert.deepEqual(check({ file: "../CLAUDE.md", line: 1, endLine: 3, layer: "ancestor" }).errors, []);
+  });
+
+  test("a user file that measurements.json does not list is an error", () => {
+    const result = check({ file: "~/.claude/hooks.json", layer: "user" });
+    expectIssue(result.errors, {
+      index: 0,
+      field: "findings[0].evidence[0].file",
+      rule: "RUL-01",
+      message: /is not listed in the userLayer section of measurements.json/,
+    });
+  });
+
+  test("a parent-folder file that measurements.json does not list is an error", () => {
+    const result = check({ file: "../README.md", layer: "ancestor" });
+    expectIssue(result.errors, {
+      index: 0,
+      field: "findings[0].evidence[0].file",
+      rule: "RUL-01",
+      message: /is not listed in context.ancestors of measurements.json/,
+    });
+  });
+
+  test("a parent-folder file that the scan did not read is an error, even though it is listed", () => {
+    const result = check({ file: "../AGENTS.md", layer: "ancestor" });
+    expectIssue(result.errors, {
+      index: 0,
+      field: "findings[0].evidence[0].file",
+      rule: "RUL-01",
+      message: /was not read by the scan/,
+    });
+  });
+
+  test("a layer whose section the scan did not write (the flag was off) lists no file", () => {
+    const withoutSections = { inventory: [] };
+    expectIssue(check({ file: "~/.claude/settings.json", layer: "user" }, withoutSections).errors, {
+      index: 0,
+      field: "findings[0].evidence[0].file",
+      rule: "RUL-01",
+      message: /is not listed in the userLayer section/,
+    });
+    expectIssue(check({ file: "../CLAUDE.md", layer: "ancestor" }, withoutSections).errors, {
+      index: 0,
+      field: "findings[0].evidence[0].file",
+      rule: "RUL-01",
+      message: /is not listed in context.ancestors/,
+    });
+  });
+
+  test("a quote with a layer is an error, because the file outside the target is not read", () => {
+    const result = check({ file: "~/.claude/CLAUDE.md", line: 1, quote: "one", layer: "user" });
+    expectIssue(result.errors, {
+      index: 0,
+      field: "findings[0].evidence[0].quote",
+      rule: "RUL-01",
+      message: /cannot be checked/,
+    });
+  });
+
+  test("a line past the lines count of the file is an error, and a line inside it passes (positive control)", () => {
+    const past = check({ file: "~/.claude/CLAUDE.md", line: 5, layer: "user" });
+    expectIssue(past.errors, {
+      index: 0,
+      field: "findings[0].evidence[0].line",
+      rule: "RUL-01",
+      message: /line 5 is past the end of "~\/\.claude\/CLAUDE\.md", which has 4 lines/,
+    });
+    const endPast = check({ file: "../CLAUDE.md", line: 2, endLine: 4, layer: "ancestor" });
+    expectIssue(endPast.errors, {
+      index: 0,
+      field: "findings[0].evidence[0].endLine",
+      rule: "RUL-01",
+      message: /line 4 is past the end of "\.\.\/CLAUDE\.md", which has 3 lines/,
+    });
+    assert.deepEqual(check({ file: "~/.claude/CLAUDE.md", line: 4, layer: "user" }).errors, []);
+  });
+
+  test("a line on a file that has no lines count is an error, since the validator cannot check it", () => {
+    const result = check({ file: "~/.claude/skills/review/SKILL.md", line: 1, layer: "user" });
+    expectIssue(result.errors, {
+      index: 0,
+      field: "findings[0].evidence[0].line",
+      rule: "RUL-01",
+      message: /has no line count in measurements.json/,
+    });
+  });
+
+  test("an unknown layer is an error, and so is a file with the wrong start for its layer", () => {
+    expectIssue(check({ file: "CLAUDE.md", layer: "project" }).errors, {
+      index: 0,
+      field: "findings[0].evidence[0].layer",
+      rule: "RUL-01",
+      message: /must be "user" or "ancestor", found "project"/,
+    });
+    expectIssue(check({ file: "CLAUDE.md", layer: "ancestor" }).errors, {
+      index: 0,
+      field: "findings[0].evidence[0].file",
+      rule: "RUL-01",
+      message: /with layer ancestor, must start with \.\.\/, found "CLAUDE\.md"/,
+    });
+    expectIssue(check({ file: "../CLAUDE.md", layer: "user" }).errors, {
+      index: 0,
+      field: "findings[0].evidence[0].file",
+      rule: "RUL-01",
+      message: /with layer user, must start with ~\/\.claude\//,
+    });
+  });
+
+  test("without a layer, a parent-folder path still fails as before, and a file of the target still passes (positive control)", () => {
+    expectIssue(check({ file: "../CLAUDE.md", line: 1 }).errors, {
+      index: 0,
+      field: "findings[0].evidence[0].file",
+      rule: "RUL-01",
+      message: /\.\. segments/,
+    });
+    assert.deepEqual(check({ file: "CLAUDE.md", line: 1 }).errors, []);
+  });
+
+  test("without a layer, a path under ~/.claude is a file of the target, as before, so it does not exist there", () => {
+    expectIssue(check({ file: "~/.claude/settings.json" }).errors, {
+      index: 0,
+      field: "findings[0].evidence[0].file",
+      rule: "RUL-01",
+      message: /does not exist in the target/,
+    });
+  });
+});
+
 describe("validator: a secret inside the target", () => {
   test("a line that holds a secret is cited without a quote: its masked form is not in the file, so the quote is refused", () => {
     const token = ["sk", "ant", "api03", "E".repeat(24)].join("-");

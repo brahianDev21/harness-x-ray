@@ -95,7 +95,7 @@
         "file": {
           "type": "string",
           "minLength": 1,
-          "description": "Path of a file of the target, relative to the target root."
+          "description": "Path of a file of the target, relative to the target root. With layer, the path of a file outside the target: under ~/.claude/ for user, or beginning with ../ for ancestor."
         },
         "line": {
           "type": "integer",
@@ -111,7 +111,11 @@
           "type": "string",
           "minLength": 1,
           "pattern": "\\S",
-          "description": "Text that must appear on the line (or inside the range), with runs of spaces, tabs and line breaks compared as one space. It must not hold a raw secret, and a masked form does not appear in the file, so for a line that holds a secret, cite the line without a quote."
+          "description": "Text that must appear on the line (or inside the range), with runs of spaces, tabs and line breaks compared as one space. It must not hold a raw secret, and a masked form does not appear in the file, so for a line that holds a secret, cite the line without a quote. Not allowed with layer, because the validator does not read a file outside the target."
+        },
+        "layer": {
+          "enum": ["user", "ancestor"],
+          "description": "Only for a file outside the target. user: a file of the user's Claude folder (~/.claude/), which measurements.json must list under userLayer. ancestor: a file of a parent folder (../), which measurements.json must list in context.ancestors with read true. The validator does not read such a file: line and endLine are checked only against the lines count that measurements.json gives it, and only when it gives one. Without layer, file is a file of the target, as before."
         }
       }
     }

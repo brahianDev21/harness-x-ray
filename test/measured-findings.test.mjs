@@ -4,6 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isPlainObject } from "../scripts/lib/json-out.mjs";
+import { createMemoryMeasure } from "../scripts/lib/memory.mjs";
 import {
   EMITTERS,
   THRESHOLDS as REEXPORTED_THRESHOLDS,
@@ -11,10 +12,15 @@ import {
   countByAxis,
   deriveMeasuredOutput,
 } from "../scripts/lib/measured-findings.mjs";
+import { loadRules, validateFindings } from "../scripts/lib/findings-validate.mjs";
+import { scan } from "../scripts/lib/scanner.mjs";
 import { THRESHOLDS, THRESHOLDS_STATUS } from "../scripts/lib/thresholds.mjs";
+import { makeFixture, symlinkSupport } from "./helpers/make-fixture.mjs";
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const HARNESS_ROOT = path.resolve(TEST_DIR, "..");
+const FIXED_NOW = new Date("2026-10-17T12:00:00.000Z");
+const symlinkSkip = symlinkSupport().supported ? false : symlinkSupport().reason;
 
 const CLEAN_ENV = Object.freeze({ decision: "deny", reason: "deny-rule", rule: "Read(**/.env)", source: ".claude/settings.json" });
 const DEFAULT_ENV = Object.freeze({ decision: "default", reason: "no-rule-matched", rule: null, source: null });
@@ -22,6 +28,7 @@ const DEFAULT_READ = Object.freeze({ decision: "default", reason: "no-rule-match
 const DENY_READ = Object.freeze({ decision: "deny", reason: "deny-rule", rule: "Read(./dist/**)", source: ".claude/settings.json" });
 const ASK_READ = Object.freeze({ decision: "ask", reason: "ask-rule", rule: "Read(./docs/**)", source: ".claude/settings.json" });
 const SETTINGS = ".claude/settings.json";
+const USER_SETTINGS = "~/.claude/settings.json";
 
 // A measurements object with no finding: every section is present and empty, as a scan of a clean folder writes them.
 function baseMeasurements() {
@@ -64,6 +71,8 @@ function shellCommand(id, outcome, decidedBy, preToolUseHook = "none") {
 const MODE_DEFAULT = Object.freeze({ kind: "mode", mode: "default" });
 const MODE_ACCEPT = Object.freeze({ kind: "mode", mode: "acceptEdits" });
 const ALLOW = (rule, source = SETTINGS) => ({ kind: "rule", list: "allow", rule, source });
+// An allow rule of the user's settings, as the permission simulation writes it: its source is in ~/.claude/ and it has layer user.
+const USER_ALLOW = (rule) => ({ kind: "rule", list: "allow", rule, source: USER_SETTINGS, layer: "user" });
 
 function hook(changes) {
   return {
@@ -325,6 +334,68 @@ test("CTX-07: the cause is an ancestor CLAUDE.md when the target has none", () =
   assert.deepEqual(finding.evidence, [{ file: "AGENTS.md" }, { file: "../CLAUDE.md" }]);
 });
 
+test("CTX-07: a parent-folder cause carries the ancestor layer only when the scan read it (positive control: without the flag, no layer)", () => {
+  const inventory = [{ path: "AGENTS.md", kind: "memory", loadMode: "not-loaded", lines: 40, estTokens: 300, bytes: 1300 }];
+  const read = measured({
+    inventory,
+    context: { ancestors: [{ path: "../CLAUDE.md", bytes: 500, read: true, lines: 3, estTokens: 30, loadMode: "always", loadReason: "x" }] },
+  });
+  assert.deepEqual(findingsOf(read, "CTX-07")[0].evidence, [{ file: "AGENTS.md" }, { file: "../CLAUDE.md", layer: "ancestor" }]);
+
+  // The cause is still named by the trigger, but an unread file is not cited: the validator refuses an ancestor that was not read.
+  const unread = measured({ inventory, context: { ancestors: [{ path: "../CLAUDE.md", bytes: 500, read: false, reason: "too-large" }] } });
+  assert.deepEqual(findingsOf(unread, "CTX-07")[0].evidence, [{ file: "AGENTS.md" }]);
+  assert.deepEqual(findingsOf(unread, "CTX-07")[0].triggers[0].detail, { causedBy: "ancestor" });
+
+  const without = measured({ inventory, context: { ancestors: [{ path: "../CLAUDE.md", bytes: 500 }] } });
+  assert.deepEqual(findingsOf(without, "CTX-07")[0].evidence, [{ file: "AGENTS.md" }, { file: "../CLAUDE.md" }]);
+});
+
+// A scan of a target folder whose parent folder may hold a CLAUDE.md, with the parent folders read (--include-ancestors).
+// The findings are derived as the scan command does. The fixture is returned, so the caller can remove it.
+async function scanWithParent(t, description) {
+  const fixture = makeFixture(description);
+  t.after(fixture.cleanup);
+  const target = path.join(fixture.root, "target");
+  const measures = [createMemoryMeasure({ ancestorLimit: fixture.base, home: path.join(fixture.base, "no-home"), includeAncestors: true })];
+  const measurements = await scan({ root: target, measures, derive: deriveMeasuredOutput, now: FIXED_NOW });
+  return { target, measurements };
+}
+
+// The errors that the validator gives to one judgment finding that cites the evidence, against the scan's measurements.
+function evidenceErrors(target, measurements, evidence) {
+  const findings = {
+    language: "en",
+    findings: [{ rule: "RUL-01", axis: "instructions", kind: "judgment", evidence, impact: "low", summary: "A check.", recommendation: "A change.", testInFunction2: null }],
+  };
+  return validateFindings({ findings, measurements, rules: loadRules(HARNESS_ROOT), targetRoot: target }).errors;
+}
+
+test("CTX-07: a parent CLAUDE.md that the scan cannot read is the cause but not evidence, and the finding stays valid (positive control: a readable one is cited)", { skip: symlinkSkip }, async (t) => {
+  // The parent folder's CLAUDE.md is a link to a file outside that folder, so the scan refuses to read it (outside-root).
+  const unreadable = await scanWithParent(t, {
+    files: { "target/AGENTS.md": "# Agents\n" },
+    outside: { "secret.md": "# Secret\n" },
+    symlinks: [{ path: "CLAUDE.md", target: "../outside/secret.md" }],
+  });
+  const [finding] = unreadable.measurements.measuredFindings.filter((item) => item.rule === "CTX-07");
+  assert.ok(finding, "CTX-07 is measured");
+  assert.deepEqual(finding.evidence, [{ file: "AGENTS.md" }], "the unread parent file is not cited");
+  assert.deepEqual(finding.triggers[0].detail, { causedBy: "ancestor" }, "the trigger still names the parent CLAUDE.md as the cause");
+  assert.deepEqual(evidenceErrors(unreadable.target, unreadable.measurements, finding.evidence), [], "the finding stays valid");
+  assert.notDeepEqual(
+    evidenceErrors(unreadable.target, unreadable.measurements, [{ file: "AGENTS.md" }, { file: "../CLAUDE.md", layer: "ancestor" }]),
+    [],
+    "positive control: the validator refuses that same parent file with layer ancestor",
+  );
+
+  // Positive control: a parent CLAUDE.md that the scan reads is cited with the ancestor layer, and that evidence is valid.
+  const readable = await scanWithParent(t, { files: { "target/AGENTS.md": "# Agents\n", "CLAUDE.md": "# Parent\n" } });
+  const [cited] = readable.measurements.measuredFindings.filter((item) => item.rule === "CTX-07");
+  assert.deepEqual(cited.evidence, [{ file: "AGENTS.md" }, { file: "../CLAUDE.md", layer: "ancestor" }]);
+  assert.deepEqual(evidenceErrors(readable.target, readable.measurements, cited.evidence), []);
+});
+
 test("CTX-07: .claude/AGENTS.md counts too; an AGENTS.md that loads is no finding", () => {
   const notLoaded = measured({
     inventory: [
@@ -434,6 +505,28 @@ test("SEC-01: a wildcard allow that passes no listed destructive command is medi
   const [finding] = findingsOf(m, "SEC-01");
   assert.equal(finding.impact, "medium");
   assert.deepEqual(finding.triggers, [{ trigger: "wildcard-shell-allow", impact: "medium", measurementRef: "/security/permissions/allow/0" }]);
+});
+
+test("SEC-01: a command that a user allow passes is not matched to a project allow with the same text (positive control: a project decision is)", () => {
+  const projectAllow = { rule: "Bash(rm -rf *)", source: SETTINGS };
+  const project = measured({
+    security: {
+      permissions: { allow: [projectAllow] },
+      destructiveCoverage: { commands: [shellCommand("rm-recursive-force", "passes", ALLOW("Bash(rm -rf *)"))] },
+    },
+  });
+  assert.deepEqual(findingsOf(project, "SEC-01")[0].triggers.map((item) => item.trigger), ["destructive-allow-passes"]);
+
+  const user = measured({
+    security: {
+      permissions: { allow: [projectAllow] },
+      destructiveCoverage: { commands: [shellCommand("rm-recursive-force", "passes", USER_ALLOW("Bash(rm -rf *)"))] },
+    },
+  });
+  const [finding] = findingsOf(user, "SEC-01");
+  assert.equal(finding.impact, "medium");
+  assert.deepEqual(finding.triggers, [{ trigger: "wildcard-shell-allow", impact: "medium", measurementRef: "/security/permissions/allow/0" }]);
+  assert.deepEqual(finding.evidence, [{ file: SETTINGS }]);
 });
 
 test("SEC-01: an exact allow is no finding", () => {
@@ -576,6 +669,40 @@ test("SEC-02: a passing command is high, and a passing subagent result is high, 
     { trigger: "destructive-command-passes", impact: "high", measurementRef: "/security/destructiveCoverage/subagents/0/results/0" },
   ]);
   assert.deepEqual(finding.evidence, [{ file: SETTINGS }, { file: ".claude/agents/fixer.md" }]);
+});
+
+test("SEC-02: a command that passes by a user allow cites the user's settings with the user layer (positive control: a project allow cites none)", () => {
+  const user = measured({
+    security: { destructiveCoverage: { commands: [shellCommand("rm-recursive-force", "passes", USER_ALLOW("Bash(rm -rf *)"))] } },
+  });
+  const [finding] = findingsOf(user, "SEC-02");
+  assert.equal(finding.impact, "high");
+  assert.deepEqual(finding.evidence, [{ file: USER_SETTINGS, layer: "user" }]);
+
+  const project = measured({
+    security: { destructiveCoverage: { commands: [shellCommand("rm-recursive-force", "passes", ALLOW("Bash(rm -rf *)"))] } },
+  });
+  assert.deepEqual(findingsOf(project, "SEC-02")[0].evidence, [{ file: SETTINGS }]);
+});
+
+test("SEC-02: a subagent result that passes by a user allow carries the user layer after the agent file", () => {
+  const m = measured({
+    security: {
+      destructiveCoverage: {
+        subagents: [
+          {
+            path: ".claude/agents/fixer.md",
+            name: "fixer",
+            permissionMode: "default",
+            effectiveMode: "default",
+            shellTools: ["Bash"],
+            results: [{ id: "git-reset-hard", outcome: "passes", decidedBy: USER_ALLOW("Bash(git *)"), reason: "allow-rule" }],
+          },
+        ],
+      },
+    },
+  });
+  assert.deepEqual(findingsOf(m, "SEC-02")[0].evidence, [{ file: ".claude/agents/fixer.md" }, { file: USER_SETTINGS, layer: "user" }]);
 });
 
 test("SEC-02: a command that only the default-mode prompt stops is medium, with no hook", () => {

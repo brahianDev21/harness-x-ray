@@ -35,10 +35,12 @@ This is a measured rule. No `THRESHOLDS` key applies.
 
 Fields the scanner reads:
 
-- `security.destructiveCoverage.commands[]`: `tool`; `outcome`; `decidedBy`, which is `{ kind: "rule", list, rule }`, `{ kind: "mode", mode }` with an optional `ignoredMode`, or `{ kind: "critical-path" }`; `reason`; and `preToolUseHook`, which is `runs`, `none` or `undeterminable`.
+- `security.destructiveCoverage.commands[]`: `tool`; `outcome`; `decidedBy`, which is `{ kind: "rule", list, rule, source }` (with `layer: "user"` for a rule of `~/.claude/settings.json`), `{ kind: "mode", mode }` with an optional `ignoredMode`, or `{ kind: "critical-path" }`; `reason`; and `preToolUseHook`, which is `runs`, `none` or `undeterminable`.
 - `security.destructiveCoverage.commands[].builtInProtection` and `criticalPath`, copied from the data file. The data marks `rm` with `critical-path-removal`, the PowerShell removal with `remove-item-system-paths`, and the cmd removals with `cmd-system-path-removal`. The scanner simulates the critical-path rule for `rm` and `rmdir` only, and applies it when `criticalPath` is `true`. The PowerShell and cmd marks describe protection of system paths, which the examples do not target, so they do not change an outcome here.
 - `security.destructiveCoverage.subagents[].results[]`: the `outcome` of each shell command a subagent can run.
 - `security.destructiveCoverage.preToolUseHooks[]`: `failsOpen`, `onFailure` and `tools` for each PreToolUse hook that covers Bash or PowerShell. `tools` is the list of the shell tools that the matcher covers, or `undeterminable`.
+
+With `--include-user-layer`, the allow, ask and deny rules of `~/.claude/settings.json` join this simulation: deny is checked first, then ask, then allow, over the union of the user and project rules. How Claude Code combines those layers is not verified by a note, so a decision by a user rule (`layer: "user"`) is the scanner's reading, and the finding cites the user's settings file with that layer.
 
 The matrix is context, not a trigger: no row of the table below reads it, and it does not change `outcome`.
 
