@@ -51,6 +51,16 @@ export function inline(text) {
   return String(text).replace(/\r\n|\r|\n/g, " ").trim();
 }
 
+/**
+ * Escapes every ASCII punctuation character with a backslash, which CommonMark reads as the character itself. A text that comes
+ * from an agent is escaped this way, so it cannot start a heading, a link, an emphasis or an HTML tag.
+ * @param {string} text One line of text.
+ * @returns {string}
+ */
+export function escapeMarkdown(text) {
+  return text.replace(/[!-\/:-@[-`{-~]/g, (char) => `\\${char}`);
+}
+
 /** A pipe as GFM reads it inside a table cell: escaped. */
 export function escapePipes(text) {
   return text.replace(/\|/g, "\\|");

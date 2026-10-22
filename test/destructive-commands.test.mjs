@@ -147,6 +147,13 @@ test("the data validator refuses a file that breaks its rules", () => {
     ["parts with one command", (data) => { data.commands[8].parts = ["curl example"]; }, /parts must be/],
     ["a criticalPath that is not a boolean", (data) => { data.commands[0].criticalPath = "no"; }, /criticalPath must be a boolean/],
     ["an empty list", (data) => { data.commands = []; }, /non-empty commands list/],
+    ["a coverRule that is missing", (data) => { delete data.commands[0].coverRule; }, /has no "coverRule"/],
+    ["a coverRule that does not parse", (data) => { data.commands[0].coverRule = "Bash(rm -rf *"; }, /coverRule must be a Bash or PowerShell rule/],
+    ["a coverRule that names another tool", (data) => { data.commands[0].coverRule = "PowerShell(rm -rf *)"; }, /coverRule must name the tool "Bash"/],
+    ["a coverRule that does not match its command", (data) => { data.commands[0].coverRule = "Bash(git push *)"; }, /coverRule does not match the command/],
+    ["a coverRule that does not match a compound command", (data) => { data.commands[8].coverRule = "Bash(wget *)"; }, /coverRule does not match the command/],
+    ["an empty coverNote", (data) => { data.commands[0].coverNote = "  "; }, /coverNote must be a non-blank string/],
+    ["a coverNote that is too long", (data) => { data.commands[0].coverNote = "x".repeat(301); }, /coverNote must be a non-blank string/],
   ];
   for (const [name, breakIt, pattern] of cases) {
     const broken = structuredClone(valid);
@@ -666,4 +673,27 @@ test("the schema documents matrixLocations and locations as optional, and the de
   const standard = await coverageOf(copyOf(t, "permissive").root);
   assert.deepEqual(schemaProblems(documented, deep, "", schema), [], "the deep output matches the schema");
   assert.deepEqual(schemaProblems(documented, standard, "", schema), [], "positive control: the standard output matches it too");
+});
+
+test("the measurements carry each command's fields but not coverRule, which only the remediation reads", async (t) => {
+  const standard = await coverageOf(copyOf(t, "permissive").root);
+  const deep = await deepCoverageOf(copyOf(t, "permissive").root);
+  const ids = loadDestructiveCommands().map((command) => command.id);
+  for (const coverage of [standard, deep]) {
+    assert.deepEqual(coverage.commands.map((command) => command.id), ids, "positive control: every command is measured");
+    for (const command of coverage.commands) {
+      assert.equal(Object.hasOwn(command, "coverRule"), false, `${command.id} carries no coverRule`);
+      assert.equal(Object.hasOwn(command, "coverNote"), false, `${command.id} carries no coverNote`);
+      assert.equal(typeof command.insideProject, "boolean", "positive control: the other fields are there");
+    }
+  }
+});
+
+test("the rules that cover more than their command say so in coverNote, and the others have none", () => {
+  const data = new Map(loadDestructiveCommands().map((command) => [command.id, command]));
+  for (const id of ["curl-pipe-shell", "wget-pipe-bash", "git-restore-discard"]) {
+    assert.equal(typeof data.get(id).coverNote, "string", `${id} has a coverNote`);
+  }
+  assert.match(data.get("git-restore-discard").coverNote, /git restore --staged/);
+  assert.equal(data.get("rm-recursive-force").coverNote, undefined, "positive control: an entry that covers only its command has none");
 });

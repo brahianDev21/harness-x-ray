@@ -18,7 +18,7 @@
 
 ---
 
-{{limits}}
+{{limits}}{{remediation}}
 
 ---
 

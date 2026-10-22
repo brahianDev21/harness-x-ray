@@ -4,7 +4,8 @@
 // renderMarkdown is one view: it writes the model as Markdown and places the sections in templates/report.md by fillTemplate.
 // Every string from the target, the measurements or the agent goes through the redactor before it reaches the model, and
 // every number is read from measurements.json through its measurementRef: the agent's text never supplies a number. The
-// model holds no markup; each view escapes the text for its own format.
+// model holds no markup; each view escapes the text for its own format. A remediation (remediation.json, see remediation.mjs)
+// is an optional section after the limits: its blocks come from remediation-view.mjs, and a report without one is written as before.
 //
 // Findings are shown by axis, then by impact (high, medium, low), then by rule id, then by input order. A measured
 // finding that no finding of findings.json cites (by measuredFindingId) is still shown, marked as not explained by the
@@ -23,7 +24,8 @@ import { isPlainObject } from "./json-out.mjs";
 import { THRESHOLDS_STATUS } from "./measured-findings.mjs";
 import { createRedactor } from "./redact.mjs";
 import { createLabelParts } from "./report-labels.mjs";
-import { codeSpan, escapePipes, formatNumber, inline, link, table, utcDate } from "./report-markdown.mjs";
+import { codeSpan, escapeMarkdown, escapePipes, formatNumber, inline, link, table, utcDate } from "./report-markdown.mjs";
+import { buildRemediationBlocks } from "./remediation-view.mjs";
 
 /** The section markers of templates/report.md. Each must appear exactly once. */
 export const MARKERS = Object.freeze([
@@ -33,6 +35,7 @@ export const MARKERS = Object.freeze([
   "context",
   "function2",
   "limits",
+  "remediation",
   "sources",
   "appendix",
 ]);
@@ -128,13 +131,14 @@ export function fillTemplate(template, sections) {
  * @param {ReturnType<import("./report-catalog.mjs").readCatalog>} options.catalog The catalog for the report.
  * @param {Readonly<Record<string, string>>} options.labels The labels of the language of findings.json.
  * @param {string} options.template The text of templates/report.md.
+ * @param {object | null} [options.remediation] The parsed and checked remediation.json of the same scan, or null for none.
  * @returns {{ markdown: string, unexplained: Array<{ id: string, rule: string }>, model: ReportModel }} unexplained lists
  *   the measured findings that findings.json does not cite.
  * @throws {TypeError} If an input has the wrong shape.
  * @throws {Error} If a measurementRef does not resolve, a rule or source is missing from the catalog, or a label is missing.
  */
-export function renderReport({ measurements, findings, catalog, labels, template }) {
-  const model = buildReportModel({ measurements, findings, catalog, labels });
+export function renderReport({ measurements, findings, catalog, labels, template, remediation = null }) {
+  const model = buildReportModel({ measurements, findings, catalog, labels, remediation });
   return { markdown: renderMarkdown(model, template), unexplained: model.unexplained, model };
 }
 
@@ -169,11 +173,12 @@ export function renderReport({ measurements, findings, catalog, labels, template
  * @param {object} options.findings The parsed findings.json, validated.
  * @param {ReturnType<import("./report-catalog.mjs").readCatalog>} options.catalog The catalog for the report.
  * @param {Readonly<Record<string, string>>} options.labels The labels of the language of findings.json.
+ * @param {object | null} [options.remediation] The remediation of the same scan, or null. Its section is empty without one.
  * @returns {ReportModel}
  * @throws {TypeError} If an input has the wrong shape.
  * @throws {Error} If a measurementRef does not resolve, a rule or source is missing from the catalog, or a label is missing.
  */
-export function buildReportModel({ measurements, findings, catalog, labels }) {
+export function buildReportModel({ measurements, findings, catalog, labels, remediation = null }) {
   if (!isPlainObject(findings) || !Array.isArray(findings.findings)) {
     throw new TypeError("findings must be the parsed findings.json, with a findings list");
   }
@@ -195,6 +200,7 @@ export function buildReportModel({ measurements, findings, catalog, labels }) {
       context: contextSection(ctx),
       function2: function2Section(ctx, entries),
       limits: limitsSection(ctx),
+      remediation: remediation === null ? [] : buildRemediationBlocks(remediation, { labels, level: 2 }),
       sources: sourcesSection(ctx, entries),
       appendix: appendixSection(ctx),
     },
@@ -970,8 +976,16 @@ function appendixSection(ctx) {
  * @throws {Error} If the template does not have each marker once.
  */
 export function renderMarkdown(model, template) {
-  const sections = Object.fromEntries(MARKERS.map((name) => [name, blocksMarkdown(model.sections[name])]));
+  const sections = Object.fromEntries(MARKERS.map((name) => [name, sectionMarkdown(name, model.sections)]));
   return fillTemplate(template, sections);
+}
+
+// The text of one section. The remediation section is optional: without blocks it is the empty text, and with them it starts
+// with its own rule, so the template keeps the same bytes as a report without one.
+function sectionMarkdown(name, sections) {
+  if (name !== "remediation") return blocksMarkdown(sections[name]);
+  const blocks = sections.remediation ?? [];
+  return blocks.length === 0 ? "" : `\n\n---\n\n${blocksMarkdown(blocks)}`;
 }
 
 /**
@@ -998,9 +1012,18 @@ function blockMarkdown(block) {
       return block.items.map((item) => `- ${runsMarkdown(item)}`).join("\n");
     case "finding":
       return block.blocks.map(blockMarkdown).join("\n\n");
+    case "code-block":
+      return fencedMarkdown(block.text);
     default:
       throw new TypeError(`the report model holds an unknown block: ${String(block.type)}`);
   }
+}
+
+// A code block: a fence one backtick longer than the longest run of backticks in its text, so the text cannot end it.
+function fencedMarkdown(text) {
+  const longest = (text.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return `${fence}\n${text}\n${fence}`;
 }
 
 // A table cell: GFM reads a pipe as a cell boundary even inside a code span, so every pipe of the cell is escaped.
@@ -1018,6 +1041,9 @@ function runMarkdown(run, inTable) {
     case "text":
     case "label":
       return text(run.text);
+    case "data":
+      // Text from an agent: every ASCII punctuation character is escaped, so it reads as written and cannot start markup.
+      return text(escapeMarkdown(run.text));
     case "code":
       return codeSpan(text(run.text));
     case "strong":

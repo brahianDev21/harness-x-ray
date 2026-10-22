@@ -37,9 +37,9 @@ export const IMPACT_RANK = Object.freeze({ high: 3, medium: 2, low: 1 });
 const SHELL_TOOLS = Object.freeze(["Bash", "PowerShell"]);
 const VERIFICATION_CATEGORIES = Object.freeze(["lint", "test", "typecheck", "verify"]);
 // Bare shell allows: the tool with no specifier, or with the whole-tool wildcard.
-const BARE_SHELL_RULES = new Set(["Bash", "Bash(*)", "PowerShell", "PowerShell(*)"]);
+export const BARE_SHELL_RULES = new Set(["Bash", "Bash(*)", "PowerShell", "PowerShell(*)"]);
 // A shell allow with a wildcard inside its parentheses, such as Bash(git *).
-const WILDCARD_SHELL_RULE = /^(?:Bash|PowerShell)\([^)]*\*[^)]*\)$/;
+export const WILDCARD_SHELL_RULE = /^(?:Bash|PowerShell)\([^)]*\*[^)]*\)$/;
 // The files that Claude Code reads as CLAUDE memory, and as AGENTS memory, by their path from the target.
 const CLAUDE_FILE_NAMES = Object.freeze(["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"]);
 const CLAUDE_BASE_NAMES = Object.freeze(["CLAUDE.md", "CLAUDE.local.md"]);

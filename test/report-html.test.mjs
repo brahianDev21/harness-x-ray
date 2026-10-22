@@ -282,7 +282,8 @@ describe("structure", () => {
       ],
     });
     const { html } = render(model);
-    assert.equal(html.match(/<section>/g).length, MARKERS.length);
+    // The remediation section has no element when the model has none (a report without remediation.json).
+    assert.equal(html.match(/<section>/g).length, MARKERS.length - 1);
     assert.ok(html.includes("<h1>Title</h1>"));
     assert.ok(html.includes('<dl class="fields"><div><dt>Target</dt><dd><code>app</code></dd></div></dl>'));
     assert.ok(html.includes("<h2>Summary</h2>"));

@@ -60,7 +60,7 @@ export function renderHtml(model, { template, theme, css, labels }) {
   const style = [theme, css, filterRules()].join("\n").replace(/\r\n?/g, "\n");
   if (/<\/style/i.test(style)) throw new Error("the stylesheet must not hold a closing style tag");
   const csp = pagePolicy(style);
-  const sections = Object.fromEntries(MARKERS.map((name) => [name, sectionHtml(model.sections[name])]));
+  const sections = Object.fromEntries(MARKERS.map((name) => [name, sectionValueHtml(name, model.sections)]));
   const values = {
     lang: escapeHtml(model.language),
     csp: escapeHtml(csp),
@@ -148,6 +148,14 @@ function sectionHtml(blocks) {
   return `<section>\n${blocksHtml(blocks)}\n</section>`;
 }
 
+// The value of one section marker. The remediation section is optional: without blocks it is the empty text, and with them it
+// starts on a line of its own, so the page keeps the same bytes as a report without one.
+function sectionValueHtml(name, sections) {
+  if (name !== "remediation") return sectionHtml(sections[name]);
+  const blocks = sections.remediation ?? [];
+  return blocks.length === 0 ? "" : `\n${sectionHtml(blocks)}`;
+}
+
 function blockHtml(block) {
   switch (block.type) {
     case "heading":
@@ -162,6 +170,8 @@ function blockHtml(block) {
       return `<ul>${block.items.map((item) => `<li>${runsHtml(item)}</li>`).join("")}</ul>`;
     case "finding":
       return findingHtml(block);
+    case "code-block":
+      return `<pre><code>${escapeHtml(block.text)}</code></pre>`;
     default:
       throw new TypeError(`the report model holds an unknown block: ${String(block.type)}`);
   }
@@ -212,6 +222,7 @@ function runHtml(run) {
   switch (run.type) {
     case "text":
     case "label":
+    case "data":
       return escapeHtml(run.text);
     case "code":
       return `<code>${escapeHtml(run.text)}</code>`;
@@ -240,6 +251,8 @@ function checkModel(model) {
   }
   if (!LANGUAGES.includes(model.language)) throw new TypeError(`model.language must be one of ${LANGUAGES.join(", ")}`);
   for (const name of MARKERS) {
+    // The remediation section is optional: a model without it is a report without a remediation.
+    if (name === "remediation" && model.sections[name] === undefined) continue;
     if (!Array.isArray(model.sections[name])) throw new TypeError(`model.sections.${name} must be a list of blocks`);
   }
 }

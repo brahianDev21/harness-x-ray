@@ -10,6 +10,11 @@
 // an existing report.md and report.html untouched. The writes are not atomic: report.md is written first, then report.html,
 // so a write that fails (a full disk, a read-only file) exits 1 and can leave a new or partial report.md beside the older
 // report.html. Nothing from the target is executed, and the target is read only by the validator.
+//
+// When the run folder has a remediation.json (scripts/remediate.mjs), both reports get a remediation section after the limits.
+// The file is checked like the other inputs: a link or a hard link, a file larger than its cap, a file that does not match its
+// schema, a file made from another scan (its scannedAt is not the one of measurements.json), and a file with a secret-shaped value
+// in any string are usage errors (exit 2), and nothing is written. Without the file, the reports are written exactly as before.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -22,12 +27,17 @@ import { readCatalog } from "./lib/report-catalog.mjs";
 import { loadLabels } from "./lib/report-labels.mjs";
 import { missingField, renderReport } from "./lib/report.mjs";
 import { checkRunDir, checkRunFile } from "./lib/run-dir.mjs";
+import { schemaProblems } from "./lib/schema-check.mjs";
+import { exists, readRunJson } from "./lib/run-io.mjs";
+import { REMEDIATION_MAX_BYTES, anyStringHoldsSecretShape } from "./lib/remediation.mjs";
 import { UsageError } from "./lib/target.mjs";
 
 const HARNESS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const USAGE = "usage: node scripts/render-report.mjs <runDir>";
 const REPORT_NAME = "report.md";
 const HTML_NAME = "report.html";
+const REMEDIATION_NAME = "remediation.json";
+const REMEDIATION_SCHEMA = "remediation.schema.json";
 
 process.exitCode = await main(process.argv.slice(2));
 
@@ -41,6 +51,7 @@ async function main(argv) {
     // Checked before validation, so a link in the way is reported as the usage error it is, and nothing is written.
     checkRunFile(reportFile);
     checkRunFile(htmlFile);
+    const remediation = readRemediation(runDir, measurements);
 
     const rules = loadRules(HARNESS_ROOT);
     const result = validateFindings({
@@ -60,7 +71,7 @@ async function main(argv) {
     const labels = loadLabels(HARNESS_ROOT, result.language);
     const template = fs.readFileSync(path.join(HARNESS_ROOT, "templates", "report.md"), "utf8");
     // The model is built once, and both texts are made before either file is written: a failure leaves both files alone.
-    const { markdown, unexplained, model } = renderReport({ measurements, findings, catalog, labels, template });
+    const { markdown, unexplained, model } = renderReport({ measurements, findings, catalog, labels, template, remediation });
     const { html } = renderHtml(model, {
       template: fs.readFileSync(path.join(HARNESS_ROOT, "templates", "report.html"), "utf8"),
       theme: loadTheme(HARNESS_ROOT),
@@ -77,6 +88,7 @@ async function main(argv) {
     console.log(`html: ${htmlFile}`);
     console.log(`findings: ${findings.findings.length} from the agent, ${unexplained.length} measured and not cited`);
     console.log(`language: ${result.language}`);
+    if (remediation !== null) console.log(`remediation: included from ${path.join(runDir, REMEDIATION_NAME)}`);
     return 0;
   } catch (error) {
     if (error instanceof UsageError) {
@@ -126,4 +138,24 @@ function readJson(file) {
     // The parser message is not printed: it may quote part of the file.
     throw new UsageError(`input file is not valid JSON: ${file}`);
   }
+}
+
+// Reads <runDir>/remediation.json when the run folder has one, and returns it checked: null when it has none. The file must be
+// a regular file with one name and no larger than its cap (readRunJson), match its schema, be the remediation of this scan, and
+// hold no secret-shaped value in any of its strings (the same check that remediate.mjs applies to the agent's texts). Each check
+// names the first problem only, and never a value of the file.
+function readRemediation(runDir, measurements) {
+  const file = path.join(runDir, REMEDIATION_NAME);
+  if (!exists(file)) return null;
+  const remediation = readRunJson(file, { maxBytes: REMEDIATION_MAX_BYTES });
+  const schema = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "schemas", REMEDIATION_SCHEMA), "utf8"));
+  const problems = schemaProblems(schema, remediation);
+  if (problems.length > 0) throw new UsageError(`${REMEDIATION_NAME} does not match its schema: ${problems[0]}`);
+  if (remediation.scan.scannedAt !== measurements.meta.scannedAt) {
+    throw new UsageError(`${REMEDIATION_NAME} was made from another scan: its scannedAt is not the one of measurements.json`);
+  }
+  if (anyStringHoldsSecretShape(remediation)) {
+    throw new UsageError(`${REMEDIATION_NAME} holds a secret-shaped value: the value is not printed, and no report is written`);
+  }
+  return remediation;
 }

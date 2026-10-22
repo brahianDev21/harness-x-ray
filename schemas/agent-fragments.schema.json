@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Harness X-Ray agent fragments",
+  "description": "The input of scripts/remediate.mjs: agent-fragments.json, optional, in a run folder. The agent proposes fragments for judgment findings only. Each rule must be a judgment rule of the catalog, and remediate.mjs checks the rest: each rule must parse, must hold no secret-shaped value and must name no folder of this machine, and the texts are redacted. The lengths and the counts are capped here.",
+  "type": "object",
+  "required": ["schemaVersion", "fragments"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "fragments": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "required": ["rule", "title", "text"],
+        "additionalProperties": false,
+        "properties": {
+          "rule": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}-[0-9]{2}$",
+            "maxLength": 16,
+            "description": "A judgment rule of the catalog: a rule file of kind judgment in rules/."
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "What the fragment does and why. It is data: remediation.md and the report escape it."
+          },
+          "settings": {
+            "type": "object",
+            "description": "Optional. The settings to copy by hand, with the deny and the ask lists only: a fragment with an allow rule is refused. A fragment with no settings is a text change or a hook, and it is not simulated.",
+            "required": ["permissions"],
+            "additionalProperties": false,
+            "properties": {
+              "permissions": {
+                "type": "object",
+                "required": ["deny", "ask"],
+                "additionalProperties": false,
+                "properties": {
+                  "deny": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 300
+                    }
+                  },
+                  "ask": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 300
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
