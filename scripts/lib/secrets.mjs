@@ -179,7 +179,8 @@ function genericLiterals(where, location, key, value) {
 }
 
 // The markdown files of the harness (memory and rules, skills, commands and subagents), one entry per path, sorted. A file
-// with a secret-shaped name is not read: it is reported by name.
+// with a secret-shaped name is not read: it is reported by name. A memory file that claudeMdExcludes matches is included on
+// purpose: Claude's Read can open it, so a secret value in it is still reported here (the memory measure does not read it).
 function harnessTextPaths(ctx, config) {
   const paths = new Set();
   for (const file of ctx.files) {

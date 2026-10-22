@@ -35,7 +35,7 @@ This is a measured rule. The threshold is not numeric: any matching entry is a f
 - `loadReason` says whether the `CLAUDE.md` that causes this sits in the target repository or in an ancestor folder. Cite it in the finding.
 - Threshold: no `THRESHOLDS` key applies. Any such entry is a finding.
 
-The scanner sets `not-loaded` only when no `CLAUDE.md` imports the `AGENTS.md` file. If `loadMode` is `always`, Claude Code reads the file, and the rule does not apply.
+The scanner sets `not-loaded` only when no `CLAUDE.md` imports the `AGENTS.md` file. If `loadMode` is `always`, Claude Code reads the file, and the rule does not apply. An entry with loadReason `claude-md-excluded-agents-unverified` is an undeterminable case in `undeterminable`, not a finding.
 
 Impact: medium. The impact table has no row for silently missing instructions. Medium is used because the instructions are absent from every session, although no size threshold is involved.
 
@@ -53,6 +53,7 @@ Option 1 and option 3 add the whole `AGENTS.md` to every session. Its size is me
 
 - A `CLAUDE.md` that already imports `@AGENTS.md`. The file loads once through the import.
 - A `CLAUDE.md` that is a symlink to `AGENTS.md`. The content loads once, through the link.
+- An `AGENTS.md` or a `CLAUDE.md` that `claudeMdExcludes` matches. The excluded file is not loaded because of that setting, so it is not this finding. When the only root `CLAUDE.md` is excluded, the scan lists the root `AGENTS.md` as undeterminable (loadReason `claude-md-excluded-agents-unverified`): whether Claude Code then loads it is not verified.
 - A person who set the **Project instructions** value to `claude-md-and-agents-md` or `claude-md` in a settings file the scanner does not read.
 - A team that has decided Claude must not use `AGENTS.md`. The state is then correct. Report it as a fact, not as a defect.
 

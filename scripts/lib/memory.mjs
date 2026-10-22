@@ -11,16 +11,36 @@
 // Output: one inventory item per memory or rule file, the "memory" component of the always-loaded
 // budget, and context.ancestors, context.imports and context.limits. The text of each file that was
 // read goes to ctx.memory, for the measures that come after.
+//
+// claudeMdExcludes (read by claude-config) stops the memory and rule files that its patterns match from loading. Such a
+// file is listed as not-loaded with loadReason "claude-md-excludes" and excludedBy, and it is never read: it is not in
+// the budget, not in ctx.memory and its imports are not followed. NOT VERIFIED, none of these by a note: that
+// claudeMdExcludes covers .claude/rules/ (applying it there follows this repository's CLAUDE.md); that it covers AGENTS.md
+// (AGENTS.md is treated as covered); that matching is case-sensitive; that a trailing slash is dropped (gitignore's
+// directory-only meaning is not kept); that ancestor files are not checked against the patterns; and that Claude Code does
+// not load an import of an excluded file (an import of one is given status "excluded" and is not followed).
+// Excluding a CLAUDE file at the root does not count it as a CLAUDE file for the AGENTS rule: when the excluded files are
+// the only root CLAUDE files, the root AGENTS file is not-loaded with loadReason CLAUDE_EXCLUDED_AGENTS_REASON, which
+// CTX-07 reports as undeterminable. Whether Claude Code then loads AGENTS.md is not verified.
+// The secrets measure still scans an excluded file for secret values, on purpose: Claude's Read can open it. This measure
+// does not read it.
 
 import os from "node:os";
 import path from "node:path";
+import { loadClaudeConfig } from "./claude-config.mjs";
 import { parseFrontmatter } from "./frontmatter.mjs";
 import { closesFence, maskCodeSpans, opensFence } from "./markdown.mjs";
+import { matchPathGlob } from "./permissions.mjs";
 import { createRedactor } from "./redact.mjs";
 import { DEFAULT_MAX_BYTES, statOutside } from "./safe-fs.mjs";
 import { estimateTokens } from "./tokens.mjs";
 
 export const MEASURE_ID = "memory";
+// The loadReason of a memory or rule file that claudeMdExcludes matches. CTX-07 and the memory candidates read it.
+export const EXCLUDED_REASON = "claude-md-excludes";
+// The loadReason of a root AGENTS file when the only root CLAUDE files are excluded, and no CLAUDE file is found above. The
+// file is not-loaded, as it would be with a CLAUDE file that does not import it, but the cause is not verified. CTX-07 reads it.
+export const CLAUDE_EXCLUDED_AGENTS_REASON = "claude-md-excluded-agents-unverified";
 
 // Import hops below a memory file. The file that Claude Code loads is hop 0; an import that would be
 // hop 5 is not read (docs: memory).
@@ -88,28 +108,28 @@ function collectMemory(ctx, options) {
     queue: [],
     imports: [],
     warnings: [],
+    // The valid claudeMdExcludes patterns, in file order: { pattern, shown, source }. Read once, through claude-config.
+    excludes: loadClaudeConfig(ctx).claudeMdExcludes,
   };
 
   // 1. The CLAUDE files of the root, and every file that a loaded one imports.
-  const claudeAtRoot = CLAUDE_FILES.some((rel) => probeFile(ctx, rel).state !== "absent");
+  const rootClaude = CLAUDE_FILES.filter((rel) => probeFile(ctx, rel).state !== "absent");
   for (const rel of CLAUDE_FILES) {
     admit(state, rel, { kind: "memory", loadMode: "always", reason: ROOT_REASON, depth: 0, parent: null });
   }
   traverse(state);
 
   // 2. The AGENTS files of the root. Ancestors are checked by existence only. An AGENTS file that a
-  // loaded file imports has already been admitted above, so it is loaded once.
+  // loaded file imports has already been admitted above, so it is loaded once. The root CLAUDE files that
+  // claudeMdExcludes matches are not CLAUDE files for this rule: they are not loaded, so they do not keep AGENTS.md from
+  // loading. Their absence leaves the case unverified, which the loadReason says.
   const ancestors = collectAncestors(root, options);
-  const noClaude = !claudeAtRoot && !ancestors.claudePresent;
+  const claudeAtRoot = rootClaude.some((rel) => exclusionOf(state, rel) === null);
+  const claudeAtRootExcluded = rootClaude.length > 0 && !claudeAtRoot;
+  const agents = agentsSpecOf({ claudeAtRoot, claudeAtRootExcluded, ancestorClaude: ancestors.claudePresent });
   for (const rel of AGENTS_FILES) {
     if (state.nodes.has(key(rel))) continue;
-    admit(
-      state,
-      rel,
-      noClaude
-        ? { kind: "memory", loadMode: "always", reason: NO_CLAUDE_REASON, depth: 0, parent: null }
-        : { kind: "memory", loadMode: "not-loaded", reason: NOT_LOADED_REASON, depth: 0, parent: null },
-    );
+    admit(state, rel, { kind: "memory", ...agents, depth: 0, parent: null });
   }
   traverse(state);
 
@@ -122,7 +142,7 @@ function collectMemory(ctx, options) {
   // 4. Memory files of subfolders. They come from the file list, and they are never read.
   for (const entry of ctx.files) {
     if (!isSubfolderMemory(entry.path) || state.nodes.has(key(entry.path))) continue;
-    state.nodes.set(key(entry.path), {
+    const node = {
       path: entry.path,
       kind: "memory",
       loadMode: "on-demand",
@@ -134,7 +154,11 @@ function collectMemory(ctx, options) {
       depth: null,
       parent: null,
       skipped: null,
-    });
+      excludedBy: null,
+    };
+    const excluded = exclusionOf(state, entry.path);
+    if (excluded !== null) excludeNode(node, excluded);
+    state.nodes.set(key(entry.path), node);
   }
 
   const nodes = [...state.nodes.values()].sort(byPath);
@@ -142,15 +166,7 @@ function collectMemory(ctx, options) {
     if (node.text !== null) ctx.memory.set(node.path, { text: node.text, kind: node.kind, loadMode: node.loadMode });
   }
   return {
-    inventory: nodes.map((node) => ({
-      path: node.path,
-      kind: node.kind,
-      loadMode: node.loadMode,
-      loadReason: node.loadReason,
-      bytes: node.bytes,
-      lines: node.lines,
-      estTokens: node.estTokens,
-    })),
+    inventory: nodes.map(inventoryItem),
     warnings: state.warnings,
     context: {
       alwaysLoaded: { byComponent: [budgetOf(nodes)] },
@@ -159,6 +175,15 @@ function collectMemory(ctx, options) {
       limits: limitsOf(nodes),
     },
   };
+}
+
+// How a root AGENTS file loads. A CLAUDE file that loads in the root or in an ancestor keeps it from loading. When the only
+// root CLAUDE files are excluded and no ancestor has one, the result is not verified, so it has its own loadReason.
+// Otherwise no CLAUDE file exists and the file loads.
+function agentsSpecOf({ claudeAtRoot, claudeAtRootExcluded, ancestorClaude }) {
+  if (claudeAtRoot || ancestorClaude) return { loadMode: "not-loaded", reason: NOT_LOADED_REASON };
+  if (claudeAtRootExcluded) return { loadMode: "not-loaded", reason: CLAUDE_EXCLUDED_AGENTS_REASON };
+  return { loadMode: "always", reason: NO_CLAUDE_REASON };
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -182,9 +207,15 @@ function admit(state, rel, spec) {
     depth: spec.depth,
     parent: spec.parent,
     skipped: null,
+    excludedBy: null,
   };
   state.nodes.set(key(rel), node);
 
+  const excluded = exclusionOf(state, rel);
+  if (excluded !== null) {
+    excludeNode(node, excluded);
+    return node;
+  }
   if (probe.bytes > DEFAULT_MAX_BYTES) {
     skip(state, node, TOO_LARGE, TOO_LARGE_REASON);
     return node;
@@ -238,6 +269,38 @@ function setMode(node, loadMode, loadReason) {
   node.loadReason = loadReason;
 }
 
+// The first claudeMdExcludes pattern, in file order, that matches the root-relative path of the file. Null when none matches.
+// Every pattern here is relative: claude-config refuses a pattern with a leading "/" or a drive letter, because its meaning
+// is not verified. Matching is case-sensitive (NOT VERIFIED by a note).
+function exclusionOf(state, rel) {
+  for (const entry of state.excludes) {
+    if (matchPathGlob(entry.pattern, rel) === true) return entry;
+  }
+  return null;
+}
+
+// A node that claudeMdExcludes matches: not loaded, and never read. The pattern is shown in its redacted form.
+function excludeNode(node, entry) {
+  node.loadMode = "not-loaded";
+  node.loadReason = EXCLUDED_REASON;
+  node.excludedBy = entry.shown;
+}
+
+// One inventory item. excludedBy is present only on a file that claudeMdExcludes matches.
+function inventoryItem(node) {
+  const item = {
+    path: node.path,
+    kind: node.kind,
+    loadMode: node.loadMode,
+    loadReason: node.loadReason,
+    bytes: node.bytes,
+    lines: node.lines,
+    estTokens: node.estTokens,
+  };
+  if (node.excludedBy !== null) item.excludedBy = node.excludedBy;
+  return item;
+}
+
 // Follows the imports of every loaded memory file, breadth first, so that each file gets the smallest
 // depth at which it can be reached.
 function traverse(state) {
@@ -267,10 +330,13 @@ function recordImport(state, from, { line, ref }) {
   if (isOnChain(state, from, target)) return record("cycle", target);
   if (depth > MAX_IMPORT_DEPTH) return record("too-deep", target);
 
-  if (!state.nodes.has(key(target))) {
-    admit(state, target, { kind: "memory", loadMode: "always", reason: `imported by ${from.path}`, depth, parent: from.path });
+  let node = state.nodes.get(key(target));
+  if (node === undefined) {
+    node = admit(state, target, { kind: "memory", loadMode: "always", reason: `imported by ${from.path}`, depth, parent: from.path });
   }
-  return record("ok", target);
+  // An excluded file is listed and never read, so an import of it is not followed. NOT VERIFIED by a note: whether Claude Code
+  // loads an import of an excluded file.
+  return record(node !== null && node.excludedBy !== null ? "excluded" : "ok", target);
 }
 
 // The import as it is shown: redacted, and never an absolute path.
@@ -363,7 +429,8 @@ function isSubfolderMemory(rel) {
 
 // The memory files of the parent folders, by existence and size. The .claude/CLAUDE.md of the home
 // folder is user memory, so it is skipped. claudePresent tells whether a CLAUDE file exists in any
-// parent folder, which the AGENTS rule needs.
+// parent folder, which the AGENTS rule needs. Ancestors are not checked against claudeMdExcludes (NOT VERIFIED by a note),
+// so an ancestor CLAUDE file counts here even when a pattern would match it.
 function collectAncestors(root, { ancestorLimit, home }) {
   const entries = [];
   let claudePresent = false;

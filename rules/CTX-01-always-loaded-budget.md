@@ -82,7 +82,7 @@ None of these adds text to memory. A rules file or a skill is new text in the ha
 ## When not to apply
 
 - A `CLAUDE.md` in a subfolder over 200 lines. It loads on demand, when Claude works in that folder, so it is not always-loaded.
-- A file that the `claudeMdExcludes` setting skips. That setting can be set in a file the scanner does not read, so the file may appear loaded when it is not. This is most common for ancestor files.
+- A file that the `claudeMdExcludes` setting skips. The scanner reads that setting from `.claude/settings.json` and `.claude/settings.local.json` only, so a value set in another settings file is not seen, and the file may appear loaded when it is not. Which settings files Claude Code honours the setting in is not verified. This is most common for ancestor files, which the patterns are not checked against.
 - A rules file that the scanner lists in `warnings` because it could not parse its frontmatter. Open it and check its `paths` field before reporting it as always-loaded.
 - An estimate close to a threshold. The estimate is based on characters, so tables, code and long identifiers can be over- or under-counted. Say that the figure is approximate.
 - A file in layer 3 or layer 2 presented as the repository's cost.

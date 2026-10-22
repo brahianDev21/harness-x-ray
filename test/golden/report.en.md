@@ -5,7 +5,7 @@
 - **Scan date (UTC):** 2026-10-18
 - **Axes reviewed:** Instructions, Context, Security, Verification, Structure, Code
 - **Tool:** `harness-x-ray@0.0.0`
-- **Catalog:** 16 rules, SHA-256 `47bd793f7516`
+- **Catalog:** 16 rules, SHA-256 `cd577b1be1ff`
 
 ---
 
