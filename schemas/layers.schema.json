@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "layers.json",
+  "description": "Output of scripts/map.mjs. Documentation only: nothing validates against it. The units, workspaces, tree and folders are candidates for a layer plan, and they say nothing about what a layer is. Every string that comes from the target is redacted. targetRoot in meta is the only absolute path. Lists are sorted by their values, and the output is the same for the same target, except meta.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["folders", "meta", "schemaVersion", "structure", "suggestion", "tree", "units", "warnings", "workspaces"],
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "Layout version of this file."
+    },
+    "meta": {
+      "type": "object",
+      "description": "Values that depend on the machine or on the time. Determinism checks ignore this key.",
+      "additionalProperties": false,
+      "required": ["mappedAt", "targetRoot", "tool"],
+      "properties": {
+        "tool": {
+          "type": "string",
+          "pattern": "^harness-x-ray@",
+          "description": "Tool name and version from package.json."
+        },
+        "mappedAt": {
+          "type": "string",
+          "description": "Time of the run, as an ISO 8601 string."
+        },
+        "targetRoot": {
+          "type": "string",
+          "description": "Absolute path of the target folder. It is the only absolute path in this file."
+        }
+      }
+    },
+    "structure": {
+      "enum": ["units", "flat"],
+      "description": "units when a unit other than the root has a workspace, manifest or harness signal. flat when none does: a name alone does not make a structure."
+    },
+    "units": {
+      "type": "array",
+      "description": "The candidate folders, sorted by path. The root (\".\") is always one of them.",
+      "items": { "$ref": "#/$defs/unit" }
+    },
+    "workspaces": {
+      "type": "array",
+      "description": "The workspaces that the root files declare, sorted by manifest and then by manager. A workspace is listed only when it declares at least one pattern.",
+      "items": { "$ref": "#/$defs/workspace" }
+    },
+    "tree": {
+      "$ref": "#/$defs/node",
+      "description": "The folders from the root, at most MAX_TREE_DEPTH levels deep, with at most MAX_TREE_ENTRIES children per node. Folders only: no file names."
+    },
+    "folders": {
+      "type": "array",
+      "description": "Every folder that a layer plan may use: the root, every unit path and every tree node path. Unique and sorted.",
+      "items": { "type": "string" }
+    },
+    "suggestion": {
+      "description": "null unless structure is flat. Then one layer, whole repository, with the top-level folders of the tree as options.",
+      "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/suggestion" }]
+    },
+    "warnings": {
+      "type": "array",
+      "description": "Sorted by path, reason and detail. A path that the target could not give (a refused name, a manifest that cannot be parsed, a cut cap) is named here.",
+      "items": { "$ref": "#/$defs/warning" }
+    }
+  },
+  "$defs": {
+    "unit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bytes", "files", "languages", "path", "signals"],
+      "properties": {
+        "path": { "type": "string", "description": "POSIX path relative to the target, or \".\" for the root." },
+        "signals": {
+          "type": "array",
+          "description": "Why the folder is a unit, sorted by type and then by value.",
+          "items": {
+            "anyOf": [
+              { "$ref": "#/$defs/rootSignal" },
+              { "$ref": "#/$defs/manifestSignal" },
+              { "$ref": "#/$defs/nameSignal" },
+              { "$ref": "#/$defs/workspaceSignal" },
+              { "$ref": "#/$defs/harnessSignal" }
+            ]
+          }
+        },
+        "files": { "type": "integer", "minimum": 0, "description": "Files at any depth below the folder." },
+        "bytes": {
+          "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }],
+          "description": "Sum of the file sizes below the folder, or null when the repository has more files than the cap."
+        },
+        "languages": {
+          "type": "array",
+          "description": "The languages of the files below the folder, by extension, sorted by files (most first) and then by language. Files with an unknown extension are not counted.",
+          "items": { "$ref": "#/$defs/language" }
+        }
+      }
+    },
+    "rootSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": { "type": { "const": "root" } }
+    },
+    "manifestSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "type"],
+      "properties": {
+        "type": { "const": "manifest" },
+        "file": { "type": "string", "description": "The file name of the manifest (package.json, go.mod, ...)." }
+      }
+    },
+    "nameSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hint", "type"],
+      "properties": {
+        "type": { "const": "name" },
+        "hint": { "type": "string", "description": "The hint of data/layer-signals.json that the folder name matches." }
+      }
+    },
+    "workspaceSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manager", "manifest", "type"],
+      "properties": {
+        "type": { "const": "workspace" },
+        "manager": { "enum": ["cargo", "go", "lerna", "npm", "pnpm", "uv", "yarn"] },
+        "manifest": { "type": "string", "description": "The root file that declares the workspace." }
+      }
+    },
+    "harnessSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agents", "type"],
+      "properties": {
+        "type": { "const": "harness" },
+        "agents": {
+          "type": "array",
+          "description": "The ids of the agents that own a harness file in the folder, sorted.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "language": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files", "language"],
+      "properties": {
+        "language": { "type": "string" },
+        "files": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manager", "manifest", "members", "patterns"],
+      "properties": {
+        "manager": { "enum": ["cargo", "go", "lerna", "npm", "pnpm", "uv", "yarn"] },
+        "manifest": { "type": "string" },
+        "patterns": {
+          "type": "array",
+          "description": "The patterns as the file declares them, sorted and unique, at most MAX_WORKSPACE_PATTERNS of them. A skipped pattern is listed here too, and named in the warnings; a pattern longer than 512 characters is not listed.",
+          "items": { "type": "string" }
+        },
+        "members": {
+          "type": "array",
+          "description": "The folders that a pattern matches, sorted and unique.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["children", "files", "path", "truncated"],
+      "properties": {
+        "path": { "type": "string" },
+        "files": { "type": "integer", "minimum": 0, "description": "Files at any depth below the folder." },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/node" } },
+        "truncated": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Child folders that are not in children: beyond MAX_TREE_ENTRIES, or all of them when MAX_TREE_DEPTH is reached."
+        }
+      }
+    },
+    "suggestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["layers"],
+      "properties": {
+        "layers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["folders", "name", "options"],
+            "properties": {
+              "name": { "type": "string" },
+              "folders": { "type": "array", "items": { "type": "string" } },
+              "options": { "type": "array", "description": "The top-level folders of the tree, sorted.", "items": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "warning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "reason"],
+      "properties": {
+        "path": { "type": "string" },
+        "reason": { "type": "string" },
+        "detail": { "type": "string" }
+      }
+    }
+  }
+}

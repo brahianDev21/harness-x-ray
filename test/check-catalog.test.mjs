@@ -19,13 +19,21 @@ const RULE_RUL01 = "rules/RUL-01-generic-rules.md";
 const RULE_SEC02 = "rules/SEC-02-destructive-commands.md";
 const RULE_CTX01 = "rules/CTX-01-always-loaded-size.md";
 const SOURCES = "rules/sources.json";
+const SIGNALS = "data/layer-signals.json";
+// A valid layer-signals file. check-catalog requires one, and the good fixture has none, so each copy of the fixture gets it.
+const MINIMAL_SIGNALS = {
+  manifests: ["package.json", "Cargo.toml"],
+  names: { frontend: ["web", "frontend"], "api-server": ["api", "server"] },
+  languages: { ".ts": "TypeScript", ".c++": "C++", ".cs": "C#" },
+};
 
 // Helpers ---------------------------------------------------------------------------------------
 
-// A copy of the good fixture in a temp folder. files are written over the copy; remove lists
-// paths to delete from it.
+// A copy of the good fixture in a temp folder. The copy also gets a valid data/layer-signals.json, which the fixture lacks
+// and check-catalog requires. files are written over the copy; remove lists paths to delete from it.
 function copyOfGood(t, { files = {}, remove = [] } = {}) {
-  const fixture = makeFixture({ fromDir: GOOD, files });
+  const signals = `${JSON.stringify(MINIMAL_SIGNALS, null, 2)}\n`;
+  const fixture = makeFixture({ fromDir: GOOD, files: { [SIGNALS]: signals, ...files } });
   t.after(fixture.cleanup);
   for (const relPath of remove) fs.rmSync(path.join(fixture.root, relPath));
   return fixture.root;
@@ -100,14 +108,15 @@ async function runCheck(args, cwd = HARNESS_ROOT) {
 
 // Good catalog and repository ---------------------------------------------------------------------
 
-test("the good fixture has no errors; without emitters it only warns that they are skipped", () => {
-  const result = checkCatalog({ root: GOOD, emitters: null });
+test("the good fixture has no errors; without emitters it only warns that they are skipped", (t) => {
+  const result = checkCatalog({ root: copyOfGood(t), emitters: null });
   assert.deepEqual(result.errors, []);
   assert.equal(result.warnings.length, 1, describeIssues(result.warnings));
   assert.equal(result.warnings[0].file, EMITTERS_FILE);
   assert.equal(result.warnings[0].field, "EMITTERS");
-  // README.md and notes.txt are not rules, so only the three rule files count.
-  assert.deepEqual(result.counts, { rules: 3, sources: 2, dataFiles: 1 });
+  // README.md and notes.txt are not rules, so only the three rule files count. The copy has two data files: the
+  // fixture's example-patterns.json and the layer-signals.json that copyOfGood adds.
+  assert.deepEqual(result.counts, { rules: 3, sources: 2, dataFiles: 2 });
 });
 
 test("rule and source files with CRLF or lone CR line endings and a BOM give no errors", (t) => {
@@ -583,8 +592,8 @@ test("a measured rule with since mvp needs an emitter", (t) => {
   assert.deepEqual(errorsOf(root, ["CTX-01"]), []);
 });
 
-test("measured rules with a later since need no emitter yet", () => {
-  assert.deepEqual(errorsOf(GOOD, []), []);
+test("measured rules with a later since need no emitter yet", (t) => {
+  assert.deepEqual(errorsOf(copyOfGood(t), []), []);
 });
 
 test("emitters can be an array, a Set, a Map or a plain object keyed by rule id", (t) => {
@@ -636,6 +645,35 @@ test("an EMITTERS export of the wrong type is an error", async (t) => {
   issueFor(loaded.errors, EMITTERS_FILE, "EMITTERS", /must be an array, a Set, a Map or a plain object/);
 });
 
+// data/layer-signals.json ---------------------------------------------------------------------------
+
+test("a layer-signals file that is valid gives no errors, and a bad one is an error on its field", (t) => {
+  const good = copyOfGood(t, { files: { [SIGNALS]: `${JSON.stringify(MINIMAL_SIGNALS, null, 2)}\n` } });
+  assert.deepEqual(errorsOf(good), [], "positive control");
+  const bad = copyOfGood(t, { files: { [SIGNALS]: JSON.stringify({ ...MINIMAL_SIGNALS, manifests: [] }) } });
+  issueFor(errorsOf(bad), SIGNALS, "/manifests", /non-empty list of file names/);
+});
+
+test("the layer-signals file is required: a missing one is an error on the file, and the fixture has none", (t) => {
+  assert.deepEqual(errorsOf(copyOfGood(t)), [], "positive control: the copy has the file");
+  issueFor(errorsOf(copyOfGood(t, { remove: [SIGNALS] })), SIGNALS, "(file)", /is missing; the layer mapping reads it/);
+  const fixtureErrors = errorsOf(GOOD);
+  assert.deepEqual(fixtureErrors.map((item) => [item.file, item.field]), [[SIGNALS, "(file)"]], describeIssues(fixtureErrors));
+});
+
+test("a layer-signals file that is not valid JSON is reported once, by the data check", (t) => {
+  const root = copyOfGood(t, { files: { [SIGNALS]: "{ \"manifests\": [ }" } });
+  const errors = errorsOf(root).filter((item) => item.file === SIGNALS);
+  assert.equal(errors.length, 1, describeIssues(errors));
+  assert.equal(errors[0].field, "json");
+});
+
+test("a folder at the layer-signals path is an error on the file", (t) => {
+  const root = copyOfGood(t, { remove: [SIGNALS] });
+  fs.mkdirSync(path.join(root, SIGNALS));
+  issueFor(errorsOf(root), SIGNALS, "(file)", /must be a regular file, not a folder/);
+});
+
 // Output order ---------------------------------------------------------------------------------------
 
 test("the issues are sorted and do not depend on the order the files are written", (t) => {
@@ -661,11 +699,11 @@ test("the issues are sorted and do not depend on the order the files are written
 
 // Command line ---------------------------------------------------------------------------------------
 
-test("the command line exits 0 on the good fixture and prints one summary line", async () => {
-  const result = await runCheck(["--root", path.join("test", "fixtures", "catalog-good")]);
+test("the command line exits 0 on a copy of the good fixture and prints one summary line", async (t) => {
+  const result = await runCheck(["--root", copyOfGood(t)]);
   assert.equal(result.code, 0, result.stdout + result.stderr);
   const lines = result.stdout.trimEnd().split("\n");
-  assert.match(lines.at(-1), /^catalog: 3 rules, 2 sources, 1 data file; 0 errors, \d+ warnings?$/);
+  assert.match(lines.at(-1), /^catalog: 3 rules, 2 sources, 2 data files; 0 errors, \d+ warnings?$/);
   if (!fs.existsSync(MEASURED_FINDINGS)) {
     assert.ok(lines.includes(`warning: ${EMITTERS_FILE}: EMITTERS: EMITTERS is not available, so the check that every measured MVP rule has an emitter is skipped`));
   }
