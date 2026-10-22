@@ -22,6 +22,9 @@
 //     new RegExp(value, flags). The value of such a key is a string or a list of strings, and flags
 //     is the "flags" string next to the key, if there is one. Other keys (globs, plain patterns)
 //     are not compiled. Files that are not .json are ignored.
+// - data/agent-harness.json, the registry of the files that each agent reads: its format, the source ids and their
+//   types, the globs, and the order of the entries. scripts/lib/agent-harness.mjs documents the format. The file is optional,
+//   but anything else at its path must be a readable regular file.
 //
 // Emitters: scripts/lib/measured-findings.mjs exports EMITTERS, the ids of the rules that produce a
 // finding, as an array, a Set, a Map keyed by rule id, or a plain object keyed by rule id. The copy
@@ -32,6 +35,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { validateAgentHarness } from "./lib/agent-harness.mjs";
 import { parseFrontmatter } from "./lib/frontmatter.mjs";
 import { isPlainObject } from "./lib/json-out.mjs";
 
@@ -39,6 +43,7 @@ const HARNESS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const USAGE = "usage: node scripts/check-catalog.mjs [--root <dir>]";
 const EMITTERS_FILE = "scripts/lib/measured-findings.mjs";
 const SOURCES_FILE = "rules/sources.json";
+const AGENT_HARNESS_FILE = "data/agent-harness.json";
 
 const AXIS_BY_PREFIX = new Map([
   ["RUL", "instructions"],
@@ -101,6 +106,7 @@ export function checkCatalog({ root, emitters }) {
   const warnings = [];
   const sources = checkSources(root, errors);
   const sourceTypes = sources === null ? null : sources.types;
+  checkAgentHarness(root, sourceTypes, errors);
 
   const names = listRuleFiles(rulesDir, warnings);
   const rules = [];
@@ -592,6 +598,45 @@ function checkRegexKeys(file, object, pointer, errors) {
 
 function escapePointer(key) {
   return String(key).replaceAll("~", "~0").replaceAll("/", "~1");
+}
+
+// Checks data/agent-harness.json with validateAgentHarness. The file is optional: a root without it is skipped. Anything
+// else at its path must be a readable regular file, so a folder, a dangling symbolic link or a read error is an error on
+// the file. A file that is not valid JSON is skipped here, because the data checks above report it. sourceTypes is null
+// when rules/sources.json could not be read.
+function checkAgentHarness(root, sourceTypes, errors) {
+  const full = path.join(root, AGENT_HARNESS_FILE);
+  if (!isPresent(full)) return;
+  let text;
+  try {
+    if (!fs.statSync(full).isFile()) {
+      errors.push(issue(AGENT_HARNESS_FILE, "(file)", "must be a regular file, not a folder or another kind of entry"));
+      return;
+    }
+    text = readText(full);
+  } catch (error) {
+    errors.push(issue(AGENT_HARNESS_FILE, "(file)", `cannot be read: ${error.code ?? "unknown error"}`));
+    return;
+  }
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return;
+  }
+  for (const item of validateAgentHarness(data, { sourceTypes })) {
+    errors.push(issue(AGENT_HARNESS_FILE, item.pointer === "" ? "(root)" : item.pointer, item.message));
+  }
+}
+
+// Whether anything is at the path, a dangling symbolic link included. A path whose parent is not a folder is nothing there.
+function isPresent(target) {
+  try {
+    fs.lstatSync(target);
+    return true;
+  } catch (error) {
+    return error.code !== "ENOENT" && error.code !== "ENOTDIR";
+  }
 }
 
 // Command line --------------------------------------------------------------------------------

@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { checkCatalog, loadEmitters } from "../scripts/check-catalog.mjs";
-import { makeFixture } from "./helpers/make-fixture.mjs";
+import { makeFixture, symlinkSupport } from "./helpers/make-fixture.mjs";
 
 const execFileAsync = promisify(execFile);
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -445,6 +445,124 @@ test("keys other than regex are not compiled, and files that are not .json are i
     },
   });
   assert.deepEqual(errorsOf(root), []);
+});
+
+// data/agent-harness.json ---------------------------------------------------------------------------
+
+const HARNESS = "data/agent-harness.json";
+
+// One agent and one file entry that cites a good source. It is valid, so it is the positive control of this section.
+const MINIMAL_REGISTRY = {
+  agents: [{ id: "example-agent", name: "Example agent", type: "agent" }],
+  files: [
+    {
+      id: "example-agent-settings",
+      agent: "example-agent",
+      glob: ".example/settings.json",
+      kind: "settings",
+      loadModel: "always",
+      sources: ["example-docs"],
+    },
+  ],
+};
+
+// A good fixture with the registry changed by the callback (or with the copy of the minimal registry as it is).
+function copyWithRegistry(t, change = () => {}, { remove = [] } = {}) {
+  const registry = structuredClone(MINIMAL_REGISTRY);
+  change(registry);
+  return copyOfGood(t, { files: { [HARNESS]: `${JSON.stringify(registry, null, 2)}\n` }, remove });
+}
+
+test("a valid agent registry gives no errors (positive control)", (t) => {
+  const root = copyWithRegistry(t);
+  assert.deepEqual(errorsOf(root), []);
+});
+
+test("an agent registry that cites a nonexistent source is an error on that source", (t) => {
+  const root = copyWithRegistry(t, (registry) => { registry.files[0].sources = ["no-such-source"]; });
+  issueFor(errorsOf(root), HARNESS, "/files/0/sources/0", /does not exist in rules\/sources\.json/);
+});
+
+test("an agent registry source that is not official-docs is an error", (t) => {
+  const root = copyWithRegistry(t, (registry) => { registry.files[0].sources = ["example-study"]; });
+  issueFor(errorsOf(root), HARNESS, "/files/0/sources/0", /must have type official-docs, found "study"/);
+});
+
+test("an agent registry with a field that is not allowed is an error on that field", (t) => {
+  const root = copyWithRegistry(t, (registry) => { registry.files[0].extra = true; });
+  issueFor(errorsOf(root), HARNESS, "/files/0/extra", /unknown field/);
+});
+
+test("an agent registry with an invalid glob is an error on the glob", (t) => {
+  const root = copyWithRegistry(t, (registry) => { registry.files[0].glob = ".example/**settings"; });
+  issueFor(errorsOf(root), HARNESS, "/files/0/glob", /"\*\*" must be a whole segment/);
+});
+
+test("without rules/sources.json the registry source checks are skipped and the other checks still run", (t) => {
+  const withSource = copyWithRegistry(t, (registry) => { registry.files[0].sources = ["no-such-source"]; });
+  issueFor(errorsOf(withSource), HARNESS, "/files/0/sources/0", /does not exist/);
+
+  const root = copyWithRegistry(
+    t,
+    (registry) => { registry.files[0].sources = ["no-such-source"]; },
+    { remove: [SOURCES] },
+  );
+  const errors = errorsOf(root);
+  issueFor(errors, SOURCES, "sources", /file is missing/);
+  assert.equal(errors.some((item) => item.file === HARNESS && item.field === "/files/0/sources/0"), false);
+});
+
+test("an agent registry that is not valid JSON is reported by the data check only", (t) => {
+  const root = copyOfGood(t, { files: { [HARNESS]: "{ not json" } });
+  const errors = errorsOf(root);
+  assert.equal(errors.length, 1, describeIssues(errors));
+  issueFor(errors, HARNESS, "json", /not valid JSON/);
+});
+
+test("an absent agent registry is skipped with no error, and a valid one passes (positive control)", (t) => {
+  assert.deepEqual(errorsOf(copyWithRegistry(t)), []);
+  const root = copyOfGood(t);
+  assert.equal(fs.existsSync(path.join(root, HARNESS)), false);
+  assert.deepEqual(errorsOf(root), []);
+});
+
+test("a folder at the agent registry path is an error on the file", (t) => {
+  assert.deepEqual(errorsOf(copyWithRegistry(t)), [], "positive control");
+  const root = copyOfGood(t);
+  fs.mkdirSync(path.join(root, HARNESS));
+  issueFor(errorsOf(root), HARNESS, "(file)", /must be a regular file, not a folder/);
+});
+
+test("a dangling symbolic link at the agent registry path is an error on the file", {
+  skip: symlinkSupport().supported ? false : symlinkSupport().reason,
+}, (t) => {
+  assert.deepEqual(errorsOf(copyWithRegistry(t)), [], "positive control");
+  const root = copyOfGood(t);
+  fs.symlinkSync("missing.json", path.join(root, HARNESS));
+  issueFor(errorsOf(root), HARNESS, "(file)", /cannot be read: ENOENT/);
+});
+
+test("an agent registry that cannot be read is an error on the file", {
+  skip: process.platform === "win32" || process.getuid?.() === 0 ? "file modes do not stop reads here" : false,
+}, (t) => {
+  assert.deepEqual(errorsOf(copyWithRegistry(t)), [], "positive control");
+  const root = copyWithRegistry(t);
+  fs.chmodSync(path.join(root, HARNESS), 0o000);
+  issueFor(errorsOf(root), HARNESS, "(file)", /cannot be read: EACCES/);
+});
+
+test("the command line names the file and the field of an agent registry error", async (t) => {
+  const valid = copyWithRegistry(t);
+  const validResult = await runCheck(["--root", valid]);
+  assert.equal(validResult.code, 0, validResult.stdout + validResult.stderr);
+
+  const root = copyWithRegistry(t, (registry) => { registry.files[0].sources = ["no-such-source"]; });
+  const result = await runCheck(["--root", root]);
+  assert.equal(result.code, 1, result.stdout + result.stderr);
+  assert.ok(
+    result.stdout.split("\n").some((line) => line.startsWith(`${HARNESS}: /files/0/sources/0: `)),
+    result.stdout,
+  );
 });
 
 // Emitters ------------------------------------------------------------------------------------------

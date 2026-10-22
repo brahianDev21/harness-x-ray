@@ -1,0 +1,266 @@
+{
+  "agents": [
+    { "id": "claude-code", "name": "Claude Code", "type": "agent" },
+    { "id": "agents-md", "name": "AGENTS.md and .agents/ (shared convention)", "type": "convention" },
+    { "id": "codex", "name": "OpenAI Codex", "type": "agent" },
+    { "id": "gemini-cli", "name": "Gemini CLI", "type": "agent" },
+    { "id": "cursor", "name": "Cursor", "type": "agent" },
+    { "id": "github-copilot", "name": "GitHub Copilot", "type": "agent" },
+    { "id": "windsurf", "name": "Windsurf", "type": "agent" },
+    { "id": "cline", "name": "Cline", "type": "agent" }
+  ],
+  "files": [
+    {
+      "id": "claude-code-settings",
+      "agent": "claude-code",
+      "glob": ".claude/settings.json",
+      "kind": "settings",
+      "loadModel": "always",
+      "sources": ["cc-docs-settings", "cc-docs-permissions", "cc-docs-hooks"],
+      "pending": "The file name comes from the scanner (claude-config.mjs), not from a note. \"In effect in every session\" is read from the shared project scope in cc-docs-settings, not stated word for word."
+    },
+    {
+      "id": "claude-code-settings-local",
+      "agent": "claude-code",
+      "glob": ".claude/settings.local.json",
+      "kind": "settings",
+      "loadModel": "always",
+      "sources": ["cc-docs-settings", "cc-docs-permissions", "cc-docs-hooks"],
+      "pending": "The file name comes from the scanner (claude-config.mjs), not from a note. \"In effect in every session\" is read from the project local scope in cc-docs-settings, not stated word for word."
+    },
+    {
+      "id": "claude-code-mcp",
+      "agent": "claude-code",
+      "glob": ".mcp.json",
+      "kind": "mcp",
+      "loadModel": "unknown",
+      "sources": ["cc-docs-mcp"],
+      "pending": "The cited note covers the .mcp.json file and the approval of project-scoped servers in interactive sessions, not when the servers load."
+    },
+    {
+      "id": "claude-code-rules",
+      "agent": "claude-code",
+      "glob": ".claude/rules/**/*.md",
+      "kind": "instructions",
+      "loadModel": "glob",
+      "sources": ["cc-docs-memory-layers"],
+      "pathsField": "paths",
+      "pending": "The folder .claude/rules/ and the field name paths come from the scanner (memory.mjs), not from the cited note."
+    },
+    {
+      "id": "claude-code-skills",
+      "agent": "claude-code",
+      "glob": ".claude/skills/*/SKILL.md",
+      "kind": "skills",
+      "loadModel": "invoked",
+      "sources": ["cc-docs-skills"],
+      "pending": "The folder .claude/skills/<name>/SKILL.md comes from the scanner (claude-config.mjs), not from the cited note."
+    },
+    {
+      "id": "claude-code-nested-skills",
+      "agent": "claude-code",
+      "glob": "*/**/.claude/skills/*/SKILL.md",
+      "kind": "skills",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "No cited note says when skills in a subfolder's .claude/skills load. The scanner lists them (claude-config.mjs)."
+    },
+    {
+      "id": "claude-code-commands",
+      "agent": "claude-code",
+      "glob": ".claude/commands/**/*.md",
+      "kind": "commands",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "No cited note covers commands. The scanner counts their descriptions in the always-loaded budget today (claude-config.mjs)."
+    },
+    {
+      "id": "claude-code-subagents",
+      "agent": "claude-code",
+      "glob": ".claude/agents/**/*.md",
+      "kind": "subagents",
+      "loadModel": "unknown",
+      "sources": ["cc-docs-sub-agents"],
+      "pending": "The note says subagents are Markdown files with frontmatter. It names neither this folder nor when their descriptions load. The scanner counts them today."
+    },
+    {
+      "id": "claude-code-dot-claude-claude-md",
+      "agent": "claude-code",
+      "glob": ".claude/CLAUDE.md",
+      "kind": "instructions",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "The scanner treats it as root memory (memory.mjs). No cited note names this location."
+    },
+    {
+      "id": "claude-code-dot-claude-agents-md",
+      "agent": "claude-code",
+      "glob": ".claude/AGENTS.md",
+      "kind": "instructions",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "The scanner treats it as root memory (memory.mjs). No cited note names this location."
+    },
+    {
+      "id": "claude-code-claude-md",
+      "agent": "claude-code",
+      "glob": "**/CLAUDE.md",
+      "kind": "instructions",
+      "loadModel": "folder",
+      "sources": ["cc-docs-memory-loading"]
+    },
+    {
+      "id": "claude-code-claude-local-md",
+      "agent": "claude-code",
+      "glob": "**/CLAUDE.local.md",
+      "kind": "instructions",
+      "loadModel": "folder",
+      "sources": ["cc-docs-memory-loading"]
+    },
+    {
+      "id": "claude-code-agents-md",
+      "agent": "claude-code",
+      "glob": "**/AGENTS.md",
+      "kind": "instructions",
+      "loadModel": "ancestors",
+      "sources": ["cc-docs-memory-agents-md", "cc-docs-memory-agents-setting", "cc-docs-memory-agents-import"],
+      "unless": ["claude-code-claude-md", "claude-code-claude-local-md"],
+      "pending": "The cited notes do not say whether an AGENTS.md below the working folder loads when the agent works there. A CLAUDE.md that imports it with @AGENTS.md loads it with that file. The setting that changes this default is read only from user, command-line or managed settings. It is not stated whether .claude/CLAUDE.md also keeps it from loading."
+    },
+    {
+      "id": "agents-md-agents-md",
+      "agent": "agents-md",
+      "glob": "**/AGENTS.md",
+      "kind": "instructions",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "Not verified: which agents other than Claude Code read AGENTS.md, from which folders, and with what precedence."
+    },
+    {
+      "id": "agents-md-skills",
+      "agent": "agents-md",
+      "glob": ".agents/skills/*/SKILL.md",
+      "kind": "skills",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "No agent is verified to read .agents/. The kind is inferred from the folder name."
+    },
+    {
+      "id": "agents-md-hooks",
+      "agent": "agents-md",
+      "glob": ".agents/hooks/**",
+      "kind": "hooks",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "No agent is verified to read .agents/. The kind is inferred from the folder name."
+    },
+    {
+      "id": "agents-md-permissions",
+      "agent": "agents-md",
+      "glob": ".agents/permissions.json",
+      "kind": "settings",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "No agent is verified to read .agents/. The kind is inferred from the file name."
+    },
+    {
+      "id": "agents-md-other",
+      "agent": "agents-md",
+      "glob": ".agents/**",
+      "kind": "unknown",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "No agent is verified to read .agents/."
+    },
+    {
+      "id": "codex-config",
+      "agent": "codex",
+      "glob": ".codex/**",
+      "kind": "unknown",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "Nothing is verified. Check the official Codex docs for the project files in .codex/, their kind, and when they load."
+    },
+    {
+      "id": "gemini-cli-gemini-md",
+      "agent": "gemini-cli",
+      "glob": "GEMINI.md",
+      "kind": "instructions",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "Nothing is verified. Check whether nested GEMINI.md files load, and when."
+    },
+    {
+      "id": "gemini-cli-config",
+      "agent": "gemini-cli",
+      "glob": ".gemini/**",
+      "kind": "unknown",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "Nothing is verified. Check which files in .gemini/ hold settings, permissions or hooks."
+    },
+    {
+      "id": "cursor-rules",
+      "agent": "cursor",
+      "glob": ".cursor/rules/**",
+      "kind": "instructions",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "Nothing is verified. Check the rule file format, its globs field, and nested .cursor/rules folders."
+    },
+    {
+      "id": "cursor-cursorrules",
+      "agent": "cursor",
+      "glob": ".cursorrules",
+      "kind": "instructions",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "Nothing is verified. Check whether the legacy file still loads."
+    },
+    {
+      "id": "github-copilot-instructions",
+      "agent": "github-copilot",
+      "glob": ".github/copilot-instructions.md",
+      "kind": "instructions",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "Nothing is verified. Check when it loads."
+    },
+    {
+      "id": "github-copilot-path-instructions",
+      "agent": "github-copilot",
+      "glob": ".github/instructions/**",
+      "kind": "instructions",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "Nothing is verified. Check the file name pattern and its path field."
+    },
+    {
+      "id": "windsurf-rules",
+      "agent": "windsurf",
+      "glob": ".windsurfrules",
+      "kind": "instructions",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "Nothing is verified."
+    },
+    {
+      "id": "cline-rules-file",
+      "agent": "cline",
+      "glob": ".clinerules",
+      "kind": "instructions",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "Nothing is verified. .clinerules can also be a folder."
+    },
+    {
+      "id": "cline-rules-folder",
+      "agent": "cline",
+      "glob": ".clinerules/**",
+      "kind": "instructions",
+      "loadModel": "unknown",
+      "sources": [],
+      "pending": "Nothing is verified."
+    }
+  ]
+}
