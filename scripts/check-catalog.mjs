@@ -28,6 +28,10 @@
 // - data/layer-signals.json, the signals of the layer mapping: the manifest file names, the folder names of each hint and
 //   the languages of each extension. scripts/lib/layer-signals.mjs (validateLayerSignals) documents the format and owns the checks.
 //   The file is required: the layer mapping reads it, so a root without it has an error on the file.
+// - data/injection-patterns.json, the patterns of text aimed at a coding agent: its categories, the fields of each pattern
+//   and the unique ids. scripts/lib/injection-patterns.mjs (validateInjectionPatterns) documents the format and owns the
+//   checks. The check treats the file as optional, as it treats data/agent-harness.json, but anything else at its path must be a
+//   readable regular file. The scanner needs both files: a scan without them fails.
 //
 // Emitters: scripts/lib/measured-findings.mjs exports EMITTERS, the ids of the rules that produce a
 // finding, as an array, a Set, a Map keyed by rule id, or a plain object keyed by rule id. The copy
@@ -40,6 +44,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { validateAgentHarness } from "./lib/agent-harness.mjs";
 import { parseFrontmatter } from "./lib/frontmatter.mjs";
+import { validateInjectionPatterns } from "./lib/injection-patterns.mjs";
 import { isPlainObject } from "./lib/json-out.mjs";
 import { validateLayerSignals } from "./lib/layer-signals.mjs";
 
@@ -49,6 +54,7 @@ const EMITTERS_FILE = "scripts/lib/measured-findings.mjs";
 const SOURCES_FILE = "rules/sources.json";
 const AGENT_HARNESS_FILE = "data/agent-harness.json";
 const LAYER_SIGNALS_FILE = "data/layer-signals.json";
+const INJECTION_PATTERNS_FILE = "data/injection-patterns.json";
 
 const AXIS_BY_PREFIX = new Map([
   ["RUL", "instructions"],
@@ -113,6 +119,7 @@ export function checkCatalog({ root, emitters }) {
   const sourceTypes = sources === null ? null : sources.types;
   checkAgentHarness(root, sourceTypes, errors);
   checkLayerSignals(root, errors);
+  checkInjectionPatterns(root, errors);
 
   const names = listRuleFiles(rulesDir, warnings);
   const rules = [];
@@ -629,6 +636,16 @@ function checkLayerSignals(root, errors) {
   if (read === null) return;
   for (const item of validateLayerSignals(read.data)) {
     errors.push(issue(LAYER_SIGNALS_FILE, item.pointer === "" ? "(root)" : item.pointer, item.message));
+  }
+}
+
+// Checks data/injection-patterns.json with validateInjectionPatterns. A root without the file is skipped, as for
+// data/agent-harness.json; the scanner itself needs it. A file that is not valid JSON is reported by the data checks.
+function checkInjectionPatterns(root, errors) {
+  const read = readDataFile(root, INJECTION_PATTERNS_FILE, errors);
+  if (read === null) return;
+  for (const item of validateInjectionPatterns(read.data)) {
+    errors.push(issue(INJECTION_PATTERNS_FILE, item.pointer === "" ? "(root)" : item.pointer, item.message));
   }
 }
 

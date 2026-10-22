@@ -1,5 +1,19 @@
 {
-  "candidates": [],
+  "candidates": [
+    {
+      "category": "disable-controls",
+      "excerpt": "permissionMode: bypassPermissions",
+      "file": ".claude/agents/fast-runner.md",
+      "id": "cand-1",
+      "kind": "injection-candidate",
+      "line": 4,
+      "measurementRef": "/security/injection/matches/0",
+      "patternId": "bypass-permissions-mode",
+      "rules": [
+        "SEC-06"
+      ]
+    }
+  ],
   "measuredFindings": [
     {
       "axis": "security",

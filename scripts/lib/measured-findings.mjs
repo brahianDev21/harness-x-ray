@@ -1,13 +1,14 @@
 // Measured findings and candidates. This is the derive step of the scan: it reads the merged measurements of one
-// scan (never the target) and applies the triggers of the measured MVP rules. It returns three lists:
+// scan (never the target) and applies the triggers of the measured rules. It returns three lists:
 //
 // - measuredFindings: one entry per finding of a measured rule. Its impact is the highest impact of its triggers, and
 //   each trigger names the measurement that caused it. Ids mf-N follow the order of EMITTERS, then the order of the
 //   measurements inside each emitter.
 // - candidates: what the agent must read: duplication groups (COD-01, COD-04), hook scripts (SEC-02, SEC-04),
-//   memory files (judgment rules), instruction files of other agents (agent-instructions) and the settings or hooks
-//   files that no agent loads (unloaded-control). They carry file paths and line numbers, never code text. Ids cand-N
-//   follow the order of the groups.
+//   memory files (judgment rules), instruction files of other agents (agent-instructions), the settings or hooks
+//   files that no agent loads (unloaded-control) and the lines that hold text aimed at an agent (injection-candidate,
+//   SEC-06). They carry file paths and line numbers, never code text; an injection candidate also carries the short,
+//   redacted excerpt of its line that the injection measure wrote. Ids cand-N follow the order of the groups.
 // - undeterminable: cases that a measured rule could not decide, with the reason. They are never findings.
 //
 // Every measurementRef is an RFC 6901 JSON pointer into measurements.json. Triggers are sorted by impact, high first,
@@ -55,15 +56,17 @@ const CONTROL_KINDS = Object.freeze(["settings", "hooks"]);
 const OUT_OF_EFFECT = new Set(["excluded", "not-loaded"]);
 const AGENT_INSTRUCTION_RULES = Object.freeze(["RUL-01", "RUL-02", "RUL-03", "SEC-04", "SEC-05"]);
 const CONTROL_RULES = Object.freeze(["SEC-04", "SEC-05"]);
+const INJECTION_RULES = Object.freeze(["SEC-06"]);
 
 /**
- * The emitters of the measured MVP rules, in axis order. Each takes the merged measurements and returns
+ * The emitters of the measured rules, in axis order. Each takes the merged measurements and returns
  * { findings, undeterminable }. A finding has no id yet; deriveMeasuredOutput numbers them. check-catalog.mjs reads
  * the keys of this object to check that every measured MVP rule has an emitter.
  */
 export const EMITTERS = Object.freeze({
   "RUL-04": emitBrokenReferences,
   "CTX-01": emitAlwaysLoadedBudget,
+  "CTX-04": emitSkillListing,
   "CTX-07": emitAgentsMdNotLoaded,
   "SEC-01": emitBroadPermissions,
   "SEC-02": emitDestructiveCommands,
@@ -209,6 +212,52 @@ function emitAlwaysLoadedBudget(measurements) {
   }
   const finding = measuredFinding("CTX-01", triggers, evidence, TOTAL_POINTER);
   return { findings: compact([finding]), undeterminable: [] };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// CTX-04 Skill listing: the Claude Code skills whose description is always in context, that is the items of
+// claudeConfig.skills with loadMode "always" (root skills that the model may invoke; nested skills are on demand, and a skill
+// with disable-model-invocation is not loaded). One finding, with a trigger per skill whose listed description (description
+// and when_to_use) the skill listing cuts (overLimit, medium) or that is longer than skillDescriptionMaxChars (low), and a
+// trigger when more than skillCountMax skills are listed (low), with every listed skill as evidence. A root skill that is
+// undeterminable is not counted, so the count is a lower bound. The tokens of the listing are in CTX-01's total; no trigger here
+// counts tokens, so no excess is reported by both rules. Commands and subagents are measured (claudeConfig.commands and
+// claudeConfig.subagents, with descriptionChars) and give no trigger: no note says what of them is always in context. User
+// skills (userLayer.skills) are another layer and are not counted. A root skill whose frontmatter could not be read
+// (loadMode null) is undeterminable.
+
+const SKILL_FRONTMATTER_UNDETERMINABLE =
+  "the frontmatter of the skill could not be read, so the length of its description is not known";
+
+function emitSkillListing(measurements) {
+  const triggers = [];
+  const evidence = [];
+  const undeterminable = [];
+  const listed = [];
+  listAt(measurements.claudeConfig?.skills).forEach((skill, index) => {
+    const ref = `/claudeConfig/skills/${index}`;
+    if (skill.loadMode === null && skill.scope === "root") {
+      undeterminable.push(undeterminableOf("CTX-04", ref, SKILL_FRONTMATTER_UNDETERMINABLE));
+      return;
+    }
+    if (skill.loadMode !== "always") return;
+    listed.push(skill.path);
+    if (skill.overLimit === true) {
+      triggers.push(trigger("skill-description-truncated", "medium", `${ref}/descriptionChars`));
+      evidence.push(evidenceOf(skill.path));
+    } else if (Number.isInteger(skill.descriptionChars) && skill.descriptionChars > THRESHOLDS.skillDescriptionMaxChars) {
+      const threshold = thresholdOf("skillDescriptionMaxChars");
+      triggers.push(trigger("skill-description-long", "low", `${ref}/descriptionChars`, { threshold }));
+      evidence.push(evidenceOf(skill.path));
+    }
+  });
+  // The count trigger names every listed skill as evidence, since the count is about all of them.
+  if (listed.length > THRESHOLDS.skillCountMax) {
+    const threshold = thresholdOf("skillCountMax");
+    triggers.push(trigger("skill-count-high", "low", "/claudeConfig/skills", { threshold, detail: { count: listed.length } }));
+    evidence.push(...listed.map((file) => evidenceOf(file)));
+  }
+  return { findings: compact([measuredFinding("CTX-04", triggers, evidence)]), undeterminable };
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -596,7 +645,8 @@ function emitDuplication(measurements) {
 
 // ---------------------------------------------------------------------------------------------------
 // Candidates. They are not findings: the agent reads them and judges. Groups come first, then hook scripts sorted by
-// path, then memory files in inventory order, then the agent-instructions and unloaded-control files, each sorted by file.
+// path, then memory files in inventory order, then the agent-instructions and unloaded-control files, each sorted by file,
+// then the injection matches in measurement order.
 
 function buildCandidates(measurements) {
   const candidates = [];
@@ -666,6 +716,20 @@ function buildCandidates(measurements) {
     }
   });
   candidates.push(...agentFiles.sort(byFile), ...controls.sort(byFile));
+
+  // The injection matches, in the order of the measurement: by file, line, category and pattern.
+  listAt(measurements.security?.injection?.matches).forEach((match, index) => {
+    candidates.push({
+      kind: "injection-candidate",
+      rules: [...INJECTION_RULES],
+      measurementRef: `/security/injection/matches/${index}`,
+      file: match.file,
+      line: match.line,
+      category: match.category,
+      patternId: match.patternId,
+      excerpt: match.excerpt,
+    });
+  });
   return candidates;
 }
 

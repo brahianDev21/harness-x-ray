@@ -34,6 +34,7 @@ import { agentInventoryMeasure } from "./lib/agent-inventory.mjs";
 import { claudeConfigMeasure } from "./lib/claude-config.mjs";
 import { createDestructiveCommandsMeasure, destructiveCommandsMeasure } from "./lib/destructive-commands.mjs";
 import { DEEP_DUPLICATION_OPTIONS, createDuplicationMeasure, duplicationMeasure } from "./lib/duplication.mjs";
+import { injectionMeasure } from "./lib/injection.mjs";
 import { writeStableJson } from "./lib/json-out.mjs";
 import { createLayerContextMeasure, layerFolderProblem } from "./lib/layer-context.mjs";
 import { LAYERS_FILE, PLAN_FILE, loadLayerPlan } from "./lib/layer-plan.mjs";
@@ -75,6 +76,7 @@ function measuresFor({ userLayer, ancestors, layers, depth }) {
     verificationMeasure,
     deep ? createDestructiveCommandsMeasure({ deep: true }) : destructiveCommandsMeasure,
     secretsMeasure,
+    injectionMeasure,
     structureMeasure,
     deep ? createDuplicationMeasure(DEEP_DUPLICATION_OPTIONS) : duplicationMeasure,
   ];

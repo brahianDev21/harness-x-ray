@@ -140,7 +140,7 @@
           },
           "reason": {
             "type": "string",
-            "description": "Fixed code, such as outside-root, too-large, binary or unsupported-pattern (a claudeMdExcludes pattern that is not used; the pattern is never copied). The duplication measure writes code-file-too-large, code-file-minified and code-file-unreadable (its detail is the safe-fs reason) for a code file it skips, and code-files-cut or code-bytes-cut for the files that a cap cut. The agent-harness measure writes agent-files-cut for the listed files that the file cap left out, and agent-bytes-cut for the files that the total byte cap kept from being read. The verification measure writes scope-packages-cut, with the count of the package.json files of verification.packages that the cap left out."
+            "description": "Fixed code, such as outside-root, too-large, binary or unsupported-pattern (a claudeMdExcludes pattern that is not used; the pattern is never copied). The duplication measure writes code-file-too-large, code-file-minified and code-file-unreadable (its detail is the safe-fs reason) for a code file it skips, and code-files-cut or code-bytes-cut for the files that a cap cut. The agent-harness measure writes agent-files-cut for the listed files that the file cap left out, and agent-bytes-cut for the files that the total byte cap kept from being read. The verification measure writes scope-packages-cut, with the count of the package.json files of verification.packages that the cap left out. The injection measure writes injection-file-too-large for a file above its size cap, injection-files-cut and injection-bytes-cut (path \".\") for the files that the file or byte cap left out, injection-file-matches-cut on a file whose matches passed the per-file cap, and injection-matches-cut (path \".\") for the matches that passed the cap of the scan; each cut has count=N as its detail."
           },
           "detail": {
             "type": "string",
@@ -157,7 +157,7 @@
     },
     "candidates": {
       "type": "array",
-      "description": "What the agent reads for the judgment rules. Not findings. Carry paths relative to the target and line numbers, never code text. Ids cand-N follow the order of the list: duplication groups (COD-01, COD-04), then hook scripts sorted by path (SEC-02, SEC-04), then memory and rule files in inventory order (RUL-01, RUL-02, RUL-03, VER-01, SEC-04, SEC-05, STR-01, COD-04).",
+      "description": "What the agent reads for the judgment rules. Not findings. Carry paths relative to the target and line numbers, never code text. Ids cand-N follow the order of the list: duplication groups (COD-01, COD-04), then hook scripts sorted by path (SEC-02, SEC-04), then memory and rule files in inventory order (RUL-01, RUL-02, RUL-03, VER-01, SEC-04, SEC-05, STR-01, COD-04), then the agent-instructions and unloaded-control files (each sorted by file), then the injection matches in the order of security.injection.matches (SEC-06). An injection candidate is the one kind that carries text of the target: a short, redacted excerpt.",
       "items": { "$ref": "#/$defs/candidate" }
     },
     "undeterminable": {
@@ -714,7 +714,7 @@
     },
     "security": {
       "type": "object",
-      "description": "Security-relevant configuration. permissions is read as written; destructiveCoverage simulates the rules against the commands of the data file; secrets names secret files and masks literal secrets. Nothing is run and nothing is enforced.",
+      "description": "Security-relevant configuration. permissions is read as written; destructiveCoverage simulates the rules against the commands of the data file; secrets names secret files and masks literal secrets; injection lists the lines that hold text aimed at an agent, and is present only when there is one. Nothing is run and nothing is enforced.",
       "required": ["permissions", "destructiveCoverage", "secrets"],
       "properties": {
         "permissions": {
@@ -955,6 +955,44 @@
               }
             }
           }
+        },
+        "injection": {
+          "type": "object",
+          "description": "Written by the injection measure (scripts/lib/injection.mjs) only when at least one line matches a pattern of data/injection-patterns.json; without a match the key is absent. The instruction files of every agent (with their skills, commands and subagents, and the memory files, rules and imports of Claude Code) and every other .md file are scanned, within the caps. With a scope, the harness of the scope, the memory files of Claude Code (imports included) and the .md files inside the scope folders are scanned.",
+          "required": ["filesScanned", "matches"],
+          "properties": {
+            "filesScanned": { "type": "integer", "minimum": 0, "description": "The files whose text was matched." },
+            "matches": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Sorted by file, line, category and patternId. At most one match per line and pattern, 10 per file and 100 in all; the warnings injection-file-matches-cut and injection-matches-cut count the rest.",
+              "items": {
+                "type": "object",
+                "required": ["file", "line", "category", "patternId", "fileKind", "excerpt"],
+                "properties": {
+                  "file": { "type": "string", "description": "POSIX path relative to the target." },
+                  "line": { "type": "integer", "minimum": 1 },
+                  "category": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+                    "description": "The id of the category in data/injection-patterns.json: agent-directed-phrase, download-execute, disable-controls, html-comment or invisible-unicode."
+                  },
+                  "patternId": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "description": "The id of the pattern in data/injection-patterns.json." },
+                  "fileKind": {
+                    "enum": ["instructions", "markdown"],
+                    "description": "instructions: a file that an agent reads as instructions (a candidate of a context kind in agentHarness, or a memory file, rule or import of Claude Code); only these are matched against the html-comment patterns. markdown: any other .md file."
+                  },
+                  "excerpt": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "description": "The line, redacted (the folders of this machine and token-shaped secrets), from the line start or from a little before the match, with every control, format, separator, surrogate, private-use, unassigned or default-ignorable code point written as U+XXXX, and an ellipsis where text was cut. A token that a hidden code point splits is masked too. A password in a plain assignment is not masked."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
         }
       }
     },
@@ -1423,11 +1461,11 @@
     },
     "candidate": {
       "type": "object",
-      "description": "Something the agent must read for a judgment rule. kind selects the other fields: duplication-group has lines, redundantLines and copies (file, line, endLine; never code text); hook-script and memory-file have file; memory-file has loadMode (always, on-demand, not-loaded or null for a rule that could not be read); agent-instructions has file and agents (the agents whose instructions pair is in effect: not excluded and not not-loaded); unloaded-control has file, controlKind (settings or hooks, the first of the kinds the file has) and status: not-verified when some agent could not be checked, missing when every agent checked does not load the file.",
+      "description": "Something the agent must read for a judgment rule. kind selects the other fields: duplication-group has lines, redundantLines and copies (file, line, endLine; never code text); hook-script and memory-file have file; memory-file has loadMode (always, on-demand, not-loaded or null for a rule that could not be read); agent-instructions has file and agents (the agents whose instructions pair is in effect: not excluded and not not-loaded); unloaded-control has file, controlKind (settings or hooks, the first of the kinds the file has) and status: not-verified when some agent could not be checked, missing when every agent checked does not load the file. injection-candidate has file, line, category, patternId and excerpt, copied from its entry of security.injection.matches.",
       "required": ["id", "kind", "rules", "measurementRef"],
       "properties": {
         "id": { "type": "string", "pattern": "^cand-[1-9][0-9]*$" },
-        "kind": { "enum": ["duplication-group", "hook-script", "memory-file", "agent-instructions", "unloaded-control"] },
+        "kind": { "enum": ["duplication-group", "hook-script", "memory-file", "agent-instructions", "unloaded-control", "injection-candidate"] },
         "rules": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^(RUL|CTX|SEC|VER|STR|COD)-[0-9]{2}$" } },
         "measurementRef": { "$ref": "#/$defs/measurementRef" },
         "file": { "type": "string" },
@@ -1437,7 +1475,11 @@
         "loadMode": { "enum": ["always", "on-demand", "not-loaded", null] },
         "agents": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
         "controlKind": { "enum": ["settings", "hooks"] },
-        "status": { "enum": ["not-verified", "missing"] }
+        "status": { "enum": ["not-verified", "missing"] },
+        "line": { "type": "integer", "minimum": 1 },
+        "category": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+        "patternId": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+        "excerpt": { "type": "string", "maxLength": 120 }
       },
       "additionalProperties": false
     },

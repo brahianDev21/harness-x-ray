@@ -65,7 +65,9 @@ Impact:
 
 Ancestor files (layer 3) are flagged by their existence and size. They are not counted as the repository's cost.
 
-If most of the total comes from skill descriptions, commands or subagents rather than memory, the finding still stands, but it cites that component and points the recommendation at it.
+If most of the total comes from skill descriptions, commands or subagents rather than memory, the finding still stands, and it cites that component. The recommendation for a single long or cut skill description, or for too many skills, is CTX-04's.
+
+Boundary with CTX-04: this rule counts the total in tokens and the size of each always-loaded memory file. CTX-04 judges each skill's description and the number of skills, and counts no tokens. A long skill description or a high number of skills is CTX-04's, and the total is this rule's, so an excess is reported by one rule only.
 
 ## Recommendation
 
@@ -86,6 +88,7 @@ None of these adds text to memory. A rules file or a skill is new text in the ha
 - A rules file that the scanner lists in `warnings` because it could not parse its frontmatter. Open it and check its `paths` field before reporting it as always-loaded.
 - An estimate close to a threshold. The estimate is based on characters, so tables, code and long identifiers can be over- or under-counted. Say that the figure is approximate.
 - A file in layer 3 or layer 2 presented as the repository's cost.
+- A single skill with a long or cut description, or a repository with many skills. CTX-04 reports them; this rule reports only the total they add to.
 
 ## Examples
 

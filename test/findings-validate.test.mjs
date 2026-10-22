@@ -852,8 +852,8 @@ describe("validator: argument checks", () => {
 });
 
 describe("loadRules: the rule catalog of the harness", () => {
-  test("it reads the 16 rules of rules/, sorted by id, and skips README.md", () => {
-    assert.equal(RULES.length, 16);
+  test("it reads the 18 rules of rules/, sorted by id, and skips README.md", () => {
+    assert.equal(RULES.length, 18);
     assert.deepEqual(RULES.map((rule) => rule.id), [...RULES.map((rule) => rule.id)].sort());
     assert.ok(RULES.every((rule) => rule.file.startsWith("rules/") && rule.file.endsWith(".md")));
     assert.ok(!RULES.some((rule) => rule.file.endsWith("README.md")));
@@ -864,6 +864,10 @@ describe("loadRules: the rule catalog of the harness", () => {
     assert.deepEqual(
       RULES.filter((rule) => rule.id === "RUL-01").map(({ axis, kind }) => ({ axis, kind })),
       [{ axis: "instructions", kind: "judgment" }],
+    );
+    assert.deepEqual(
+      RULES.filter((rule) => rule.id === "SEC-06").map(({ axis, kind }) => ({ axis, kind })),
+      [{ axis: "security", kind: "judgment" }],
     );
   });
 
