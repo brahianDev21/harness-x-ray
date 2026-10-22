@@ -136,7 +136,7 @@
           },
           "reason": {
             "type": "string",
-            "description": "Fixed code, such as outside-root, too-large, binary or unsupported-pattern (a claudeMdExcludes pattern that is not used; the pattern is never copied). The duplication measure writes code-file-too-large, code-file-minified and code-file-unreadable (its detail is the safe-fs reason) for a code file it skips, and code-files-cut or code-bytes-cut for the files that a cap cut. The agent-harness measure writes agent-files-cut for the listed files that the file cap left out, and agent-bytes-cut for the files that the total byte cap kept from being read."
+            "description": "Fixed code, such as outside-root, too-large, binary or unsupported-pattern (a claudeMdExcludes pattern that is not used; the pattern is never copied). The duplication measure writes code-file-too-large, code-file-minified and code-file-unreadable (its detail is the safe-fs reason) for a code file it skips, and code-files-cut or code-bytes-cut for the files that a cap cut. The agent-harness measure writes agent-files-cut for the listed files that the file cap left out, and agent-bytes-cut for the files that the total byte cap kept from being read. The verification measure writes scope-packages-cut, with the count of the package.json files of verification.packages that the cap left out."
           },
           "detail": {
             "type": "string",
@@ -169,6 +169,34 @@
         },
         "additionalProperties": false
       }
+    },
+    "scope": {
+      "type": "object",
+      "description": "The scope of the run. Present only with --scope; a run without it has no scope key and scans the whole target. The size measures (structure, code.duplication) look only inside the scope folders. The harness of the root and of the inherited folders is still read, the project permissions and hooks are global, and the verification measure also reads what lies outside the scope (see verification.packages). Each rule says in its 'How it is detected' what it looks at outside the scope.",
+      "required": ["folders", "inherited", "files"],
+      "properties": {
+        "folders": {
+          "type": "array",
+          "description": "The scope folders, relative to the target, sorted and without a folder that lies inside another one. Each was checked to be a folder inside the target, reached without a link.",
+          "items": { "type": "string" }
+        },
+        "inherited": {
+          "type": "array",
+          "description": "The folders between the root and the scope folders, the root (\".\") included and the scope folders left out, sorted. Their harness files are read, as the root's are. The parent folders of the target are not among them: they are read only with --include-ancestors, as without a scope.",
+          "items": { "type": "string" }
+        },
+        "files": {
+          "type": "object",
+          "description": "The files of the target listing (target.fileCount in total) that lie inside the scope folders, and the ones that lie outside them.",
+          "required": ["inScope", "outside"],
+          "properties": {
+            "inScope": { "type": "integer", "minimum": 0 },
+            "outside": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     },
     "userLayer": {
       "type": "object",
@@ -270,7 +298,7 @@
     },
     "agentHarness": {
       "type": "object",
-      "description": "Files that each agent reads, from the registry data/agent-harness.json (agent-harness measure). Items are one per (file, agent) pair: a file has one item for every agent whose registry entry owns it. The status of a pair is what this scan can tell. loads: the registry says the agent loads it, and no blocker was found. not-loaded: a blocker that is verified is present (blockedBy). excluded: claudeMdExcludes matches the file, so it is not loaded. unknown: the load model is not verified, or a blocker is not verified (blockedBy), or the file is nested and its model is neither always nor folder. A nested file is listed and never read. excludedBy is set on every Claude Code pair whose file claudeMdExcludes matches, whatever its status. budget of an agent: /context/alwaysLoaded for Claude Code, the shared budget, and unknownStatic for every other agent. Their context files are in unknownStatic here, not in the shared budget. budget as-before on an item marks a Claude Code entry whose load model is not verified and which the existing budget still counts.",
+      "description": "Files that each agent reads, from the registry data/agent-harness.json (agent-harness measure). Items are one per (file, agent) pair: a file has one item for every agent whose registry entry owns it. The status of a pair is what this scan can tell. loads: the registry says the agent loads it, and no blocker was found. not-loaded: a blocker that is verified is present (blockedBy). excluded: claudeMdExcludes matches the file, so it is not loaded. unknown: the load model is not verified, or a blocker is not verified (blockedBy), or the file is nested and its model is neither always nor folder. Without a scope, a nested file is listed and never read; with --scope, a nested file that the scope keeps is read like a root file. excludedBy is set on every Claude Code pair whose file claudeMdExcludes matches, whatever its status. budget of an agent: /context/alwaysLoaded for Claude Code, the shared budget, and unknownStatic for every other agent. Their context files are in unknownStatic here, not in the shared budget. budget as-before on an item marks a Claude Code entry whose load model is not verified and which the existing budget still counts.",
       "required": ["agents", "files", "items", "registry", "unknownStatic"],
       "additionalProperties": false,
       "properties": {
@@ -308,7 +336,8 @@
               "entry": { "type": "string", "description": "Id of the registry entry that owns the file for this agent." },
               "kind": { "enum": ["instructions", "settings", "hooks", "skills", "commands", "subagents", "mcp", "unknown"] },
               "loadModel": { "enum": ["always", "ancestors", "folder", "glob", "invoked", "unknown"] },
-              "nested": { "type": "boolean", "description": "True when the registry does not fix the folder of the file (a file in a subfolder, under a glob that starts with *). Nested files are never read." },
+              "nested": { "type": "boolean", "description": "True when the registry does not fix the folder of the file (a file in a subfolder, under a glob that starts with *). Without a scope, nested files are never read; with --scope, a nested file that the scope keeps is read." },
+              "base": { "type": "string", "description": "Present only on a pair found below a folder of the scope (--scope), or below a folder between the root and the scope, by matching the registry relative to that folder; its status is always unknown." },
               "status": { "enum": ["loads", "not-loaded", "excluded", "unknown"] },
               "blockedBy": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Present on not-loaded and on an unknown status caused by a blocker: the sorted paths of the blocking files." },
               "excludedBy": { "type": "string", "description": "Present on every Claude Code pair whose file claudeMdExcludes matches, whatever its status: the redacted form of the first matching pattern." },
@@ -940,7 +969,7 @@
       "properties": {
         "enforcementTools": {
           "type": "array",
-          "description": "Config files of tools that enforce rules: files at the root found by name, the workflows directly inside .github/workflows, and one entry for the .husky folder when it has files. Sorted by tool, then path.",
+          "description": "Config files of tools that enforce rules: files at the root found by name, the workflows directly inside .github/workflows, and one entry for the .husky folder when it has files. With a scope, the configs directly inside each inherited folder (other than the root), each scope folder and the folder of each package.json in verification.packages are found by name too, with their full paths. Sorted by tool, then path.",
           "items": {
             "type": "object",
             "required": ["tool", "path"],
@@ -952,7 +981,7 @@
         },
         "tree": {
           "type": "array",
-          "description": "One entry per top-level folder and per second-level folder, built from the file list. files counts the files below the folder at any depth, generated ones included. Sorted by path. Files directly in the root are not counted.",
+          "description": "One entry per top-level folder and per second-level folder, built from the file list. files counts the files below the folder at any depth, generated ones included. Sorted by path. Files directly in the root are not counted. With a scope, the entries are the first and second folder levels below each scope folder, by full path, and only the files inside the scope are counted.",
           "items": {
             "type": "object",
             "required": ["path", "files"],
@@ -964,7 +993,7 @@
         },
         "mapCoverage": {
           "type": "object",
-          "description": "Which top-level folders the memory maps. Only the folders that are not generated are counted. Memory files marked not-loaded are not read for this.",
+          "description": "Which top-level folders the memory maps. Only the folders that are not generated are counted. Memory files marked not-loaded are not read for this. With a scope, the counted folders are the first-level folders below each scope folder, by full path, and a memory file also maps one by its path relative to its harness folder when that folder is not the root and holds it.",
           "required": ["dirs", "mentioned", "byDir"],
           "properties": {
             "dirs": { "type": "integer", "minimum": 0, "description": "Number of top-level folders counted (the length of byDir)." },
@@ -976,7 +1005,7 @@
                 "type": "object",
                 "required": ["dir", "files", "mentioned", "mentions"],
                 "properties": {
-                  "dir": { "type": "string", "description": "Name of the top-level folder." },
+                  "dir": { "type": "string", "description": "Name of the top-level folder; with a scope, the full path of a first-level folder below a scope folder." },
                   "files": { "type": "integer", "minimum": 1, "description": "Files below the folder, at any depth." },
                   "mentioned": { "type": "boolean" },
                   "mentions": {
@@ -1031,7 +1060,7 @@
     },
     "verification": {
       "type": "object",
-      "description": "How the target checks its work. The scripts come from the root package.json, read as data; the command text is not output.",
+      "description": "How the target checks its work. The scripts come from the root package.json, read as data; the command text is not output. With a scope, commands still reads only the root package.json, and packages lists the other package.json files of the target.",
       "required": ["commands", "mentioned"],
       "properties": {
         "commands": {
@@ -1062,6 +1091,41 @@
               "file": { "type": "string" },
               "line": { "type": "integer", "minimum": 1, "description": "1-based line in the memory file." },
               "text": { "type": "string", "description": "The call as written, from the manager on." }
+            }
+          }
+        },
+        "packages": {
+          "type": "array",
+          "description": "Only with a scope (measurements.scope is present). The package.json files of the target other than the root one, except those under a node_modules folder, sorted by where (scope, inherited, other), then by path. At most 100 are kept; the cut is one warning with reason scope-packages-cut. The check scripts of these packages count as listed names for mentioned.",
+          "items": {
+            "type": "object",
+            "required": ["path", "where", "status", "commands"],
+            "properties": {
+              "path": { "type": "string", "description": "POSIX path relative to the target." },
+              "where": {
+                "enum": ["scope", "inherited", "other"],
+                "description": "scope: the folder is a scope folder or lies inside one. inherited: the folder is an inherited folder. other: any other folder, such as one of another layer."
+              },
+              "status": {
+                "enum": ["ok", "unreadable", "invalid"],
+                "description": "unreadable: the file cannot be read, or it was listed but is not there when read. invalid: not JSON, not an object, or a scripts field that is not an object."
+              },
+              "commands": {
+                "type": "array",
+                "description": "The check scripts, as verification.commands lists them, sorted by name. Empty unless status is ok.",
+                "items": {
+                  "type": "object",
+                  "required": ["name", "categories"],
+                  "properties": {
+                    "name": { "type": "string" },
+                    "categories": {
+                      "type": "array",
+                      "uniqueItems": true,
+                      "items": { "enum": ["build", "format", "lint", "test", "typecheck", "verify"] }
+                    }
+                  }
+                }
+              }
             }
           }
         }

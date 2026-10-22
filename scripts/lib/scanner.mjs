@@ -11,6 +11,10 @@
 // items whose size is unknown. It sorts them, and it sets the total and the method. A measure never
 // sets the total.
 //
+// With a scope (see scope.mjs), ctx.scope holds it and the result gets a scope section: the scope folders, the inherited
+// folders and how many listed files lie inside and outside the scope. Without one, ctx.scope is null and the result has no
+// scope key. ctx.files always lists the whole target: each measure decides what the scope limits.
+//
 // After the merge, the optional derive function runs once on a frozen copy of the result (no context, so it
 // cannot read the target). The keys it returns are the DERIVED_KEYS: the measured findings, the candidates and
 // the undeterminable cases of measured-findings.mjs. A measure cannot write them.
@@ -20,6 +24,7 @@ import path from "node:path";
 import { DEFAULT_MAX_BYTES, createTargetFs } from "./safe-fs.mjs";
 import { listFiles } from "./safe-git.mjs";
 import { isPlainObject, toStableJson } from "./json-out.mjs";
+import { createScope } from "./scope.mjs";
 import { ESTIMATE_METHOD } from "./tokens.mjs";
 
 /** Layout version of measurements.json. Change it only when an existing field changes meaning. */
@@ -49,14 +54,17 @@ export const DERIVED_KEYS = Object.freeze(["candidates", "measuredFindings", "un
  *   returns a plain object whose keys are DERIVED_KEYS; those keys are added to the result.
  * @param {{ userLayer: boolean, ancestors: boolean }} [options.include] The opt-in flags of the run. When it is given,
  *   meta.include records them. Without it, the output has no meta.include.
+ * @param {string[]} [options.scope] The scope folders, as resolveScopeFolders (scope.mjs) returns them. When it is given,
+ *   ctx.scope is set and the result has a scope section. Without it, ctx.scope is null and there is no scope section.
  * @returns {Promise<object>} The measurements object, ready for toStableJson.
  * @throws {Error} If a measure fails, two measures set the same value, a measure sets a derived key, or derive
  *   returns something malformed.
  */
-export async function scan({ root, measures = [], now = new Date(), derive, include }) {
+export async function scan({ root, measures = [], now = new Date(), derive, include, scope }) {
   validateMeasures(measures);
   if (derive !== undefined && typeof derive !== "function") throw new TypeError("derive must be a function");
   if (include !== undefined) validateInclude(include);
+  const scopeView = scope === undefined ? null : createScope(scope);
   const fsView = createTargetFs(root);
   const listing = await listFiles(root);
   const ctx = Object.freeze({
@@ -74,6 +82,8 @@ export async function scan({ root, measures = [], now = new Date(), derive, incl
     // Data that opt-in measures read from outside the target, keyed by layer ("user" for the user layer). It is empty
     // unless such a measure runs, and the measures that run after it can read it.
     outside: new Map(),
+    // The scope of the run (scope.mjs), or null when the whole target is scanned.
+    scope: scopeView,
   });
 
   const result = {
@@ -94,6 +104,7 @@ export async function scan({ root, measures = [], now = new Date(), derive, incl
   };
 
   if (include !== undefined) result.meta.include = { userLayer: include.userLayer, ancestors: include.ancestors };
+  if (scopeView !== null) result.scope = scopeSection(scopeView, listing.files);
 
   const owners = new Map();
   for (const measure of measures) {
@@ -135,6 +146,16 @@ function deepFreeze(value) {
 function readToolName() {
   const manifest = JSON.parse(fs.readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
   return `${manifest.name}@${manifest.version}`;
+}
+
+// The scope section: the scope folders, the inherited folders, and how many listed files lie inside and outside the scope.
+function scopeSection(scopeView, files) {
+  const inScope = files.filter((file) => scopeView.contains(file.path)).length;
+  return {
+    folders: [...scopeView.folders],
+    inherited: [...scopeView.inherited],
+    files: { inScope, outside: files.length - inScope },
+  };
 }
 
 function validateInclude(include) {

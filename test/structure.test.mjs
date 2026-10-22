@@ -10,6 +10,7 @@ import { scan } from "../scripts/lib/scanner.mjs";
 import { MAX_GENERATED_ENTRIES, structureMeasure } from "../scripts/lib/structure.mjs";
 import { THRESHOLDS } from "../scripts/lib/thresholds.mjs";
 import { makeFixture } from "./helpers/make-fixture.mjs";
+import { schemaProblems } from "./helpers/schema-check.mjs";
 
 const execFileAsync = promisify(execFile);
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -476,6 +477,129 @@ test("the CLI gives the same JSON on two runs except meta, lists both cases, and
     false,
     "no absolute path of this machine outside meta",
   );
+});
+
+// Runs the memory measure, then the structure measure, with a scope. The ancestor walk stops at the fixture folder.
+function scopedStructureScan(fixture, scope) {
+  return scan({
+    root: fixture.root,
+    measures: [
+      createMemoryMeasure({ ancestorLimit: fixture.base, home: path.join(fixture.base, "no-home") }),
+      structureMeasure,
+    ],
+    now: FIXED_NOW,
+    scope,
+  });
+}
+
+// A monorepo: two apps with source, a generated folder and a large file each, and a shared package. The root memory names
+// the web app's source folder by its full path.
+function monorepoFiles() {
+  return {
+    "CLAUDE.md": "# Monorepo\n\nPages live in `apps/web/src/`.\n",
+    "apps/web/src/index.ts": "export {};\n",
+    "apps/web/src/components/Button.tsx": "export const Button = 1;\n",
+    "apps/web/dist/app.js": "built\n",
+    "apps/web/data/dump.bin": twoMebibytes(),
+    "apps/api/src/server.ts": "export {};\n",
+    "apps/api/data/dump.bin": twoMebibytes(0x2f),
+    "packages/shared/src/types.ts": "export {};\n",
+  };
+}
+
+test("scope: the tree, the map and the large and generated files cover only the scope folders, by full path", async (t) => {
+  const fixture = freshFixture(t, { files: monorepoFiles() });
+  const { structure } = await scopedStructureScan(fixture, ["apps/web"]);
+
+  assert.deepEqual(structure.tree, [
+    { path: "apps/web/data", files: 1 },
+    { path: "apps/web/dist", files: 1 },
+    { path: "apps/web/src", files: 2 },
+    { path: "apps/web/src/components", files: 1 },
+  ]);
+  // dist is a generated folder, so it is not a mapCoverage folder; the root line names apps/web/src by its full path.
+  assert.deepEqual(structure.mapCoverage, {
+    dirs: 2,
+    mentioned: 1,
+    byDir: [
+      { dir: "apps/web/data", files: 1, mentioned: false, mentions: [] },
+      { dir: "apps/web/src", files: 2, mentioned: true, mentions: [{ file: "CLAUDE.md", line: 3 }] },
+    ],
+  });
+  assert.deepEqual(
+    structure.largeFiles.map((file) => file.path),
+    ["apps/web/data/dump.bin"],
+    "the large file of apps/api is outside the scope",
+  );
+  assert.deepEqual(
+    structure.generatedFiles.map((entry) => [entry.kind, entry.path]),
+    [["folder", "apps/web/dist"]],
+  );
+
+  // The scoped tree and map are the ones the schema describes. The large and generated lists are not checked here: their
+  // protection is { read, edit }, while the schema's protection definition describes one verdict (an existing mismatch).
+  const schema = JSON.parse(fs.readFileSync(SCHEMA_FILE, "utf8"));
+  for (const key of ["tree", "mapCoverage"]) {
+    assert.deepEqual(schemaProblems(schema.properties.structure.properties[key], structure[key], "", schema), [], key);
+  }
+});
+
+test("scope: positive control, the same monorepo without a scope counts the top-level folders and every large file", async (t) => {
+  const fixture = freshFixture(t, { files: monorepoFiles() });
+  const { structure } = await structureScan(fixture);
+
+  assert.deepEqual(structure.tree, [
+    { path: "apps", files: 6 },
+    { path: "apps/api", files: 2 },
+    { path: "apps/web", files: 4 },
+    { path: "packages", files: 1 },
+    { path: "packages/shared", files: 1 },
+  ]);
+  assert.deepEqual(structure.mapCoverage, {
+    dirs: 2,
+    mentioned: 1,
+    byDir: [
+      { dir: "apps", files: 6, mentioned: true, mentions: [{ file: "CLAUDE.md", line: 3 }] },
+      { dir: "packages", files: 1, mentioned: false, mentions: [] },
+    ],
+  });
+  assert.deepEqual(structure.largeFiles.map((file) => file.path), ["apps/api/data/dump.bin", "apps/web/data/dump.bin"]);
+});
+
+test("scope: a memory file maps a scope folder by its path relative to its harness folder, and the root does not", async (t) => {
+  const fixture = freshFixture(t, {
+    files: {
+      // The root names src/, which is relative to the root only: it cannot map apps/web/src.
+      "CLAUDE.md": "# Monorepo\n\nShared code is in `src/` at the root.\n",
+      "apps/web/CLAUDE.md": "# Web\n\nPages are in `src/`.\n",
+      "apps/web/src/index.ts": "export {};\n",
+      "apps/web/data/notes.ts": "export {};\n",
+    },
+  });
+  const { structure } = await scopedStructureScan(fixture, ["apps/web"]);
+  const src = structure.mapCoverage.byDir.find((item) => item.dir === "apps/web/src");
+
+  assert.deepEqual(src, {
+    dir: "apps/web/src",
+    files: 1,
+    mentioned: true,
+    mentions: [{ file: "apps/web/CLAUDE.md", line: 3 }],
+  });
+  assert.equal(structure.mapCoverage.byDir.find((item) => item.dir === "apps/web/data").mentioned, false);
+});
+
+test("scope: a folder outside the scope is not judged, and the scope folder itself is never a map entry", async (t) => {
+  const fixture = freshFixture(t, {
+    files: {
+      "CLAUDE.md": "# Monorepo\n\nSee `apps/web/` and `packages/shared/`.\n",
+      "apps/web/src/index.ts": "export {};\n",
+      "packages/shared/src/types.ts": "export {};\n",
+    },
+  });
+  const { structure } = await scopedStructureScan(fixture, ["apps/web"]);
+
+  assert.deepEqual(structure.mapCoverage.byDir.map((item) => item.dir), ["apps/web/src"]);
+  assert.deepEqual(structure.tree.map((item) => item.path), ["apps/web/src"]);
 });
 
 test("the measurements schema documents every structure field and the protection verdict", () => {

@@ -8,6 +8,10 @@
 // because their size cannot be known without running them. Every string copied from the target goes
 // through the redactor. Env and header values are never copied: only their key names. The parsed
 // configuration is shared with other measures through loadClaudeConfig, which parses the files once per scan.
+//
+// With a scope (--scope, see scope.mjs), a nested skill whose path ctx.scope.keepsHarness rejects is left out: it is not read,
+// not in the inventory and not in claudeConfig. The root skills, the commands, the subagents, .mcp.json, the settings and the
+// hooks are global, so a scope does not change them.
 
 import { parseFrontmatter } from "./frontmatter.mjs";
 import { classifyScriptPath, findScriptWord, hookWords } from "./hook-command.mjs";
@@ -133,9 +137,11 @@ function parseClaudeConfig(ctx) {
   // not, and without git the disk walk also lists copies, such as .claude/worktrees/*/.claude/skills/*. A path that the root
   // walk already found is a root skill, so it is not listed again as nested (a skill inside another skill's folder).
   const rootSkillFiles = new Set(skillFiles);
+  // With a scope (--scope), a nested skill outside it is left out before it is read: it is in neither the inventory nor skills.
+  const scope = ctx.scope ?? null;
   const nestedSkillFiles = ctx.files
     .map((file) => file.path)
-    .filter((rel) => isNestedSkill(rel) && !rootSkillFiles.has(rel))
+    .filter((rel) => isNestedSkill(rel) && !rootSkillFiles.has(rel) && (scope === null || scope.keepsHarness(rel)))
     .sort(compareText);
   // Root skills and nested skills share one list. Each item says its scope, and only the root items count in the budget.
   const skills = [

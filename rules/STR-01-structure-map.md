@@ -45,6 +45,8 @@ Impact: medium when criteria 1 and 2 hold for many first-level folders. Low when
 
 A memory file that pastes a full directory tree is also flagged. The map is there, but the tree costs tokens in every session and goes stale. Its impact is low, and the recommendation is to replace the tree with a few lines per folder.
 
+With a scope (the `scope` section of measurements.json is present), the tree and the map are relative to the scope folders: `structure.tree` lists the first two folder levels below each scope folder, by full path, and `structure.mapCoverage` counts the first-level folders below each scope folder. The memory files of the root, of the inherited folders and of the scope count as mapping: a root line that names `apps/web/src/` maps that folder, and so does `apps/web/CLAUDE.md` when it names `src/`. Folders outside the scope are not judged.
+
 ## Recommendation
 
 Each change below edits a memory file, which is a harness change. Take them in this order.

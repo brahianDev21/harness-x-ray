@@ -13,6 +13,7 @@ import { scan } from "../scripts/lib/scanner.mjs";
 import { defaultOutputDir, formatStamp, isInside } from "../scripts/lib/target.mjs";
 import { makeFixture, symlinkSupport } from "./helpers/make-fixture.mjs";
 import { runRender } from "./helpers/report-run.mjs";
+import { schemaProblems } from "./helpers/schema-check.mjs";
 
 const execFileAsync = promisify(execFile);
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -596,7 +597,7 @@ test("containment ignores letter case on Windows", { skip: process.platform === 
 });
 
 // The top-level key that only an opt-in flag writes (--include-user-layer). The schema documents it, but does not require it.
-const OPT_IN_KEYS = ["userLayer"];
+const OPT_IN_KEYS = ["scope", "userLayer"];
 
 test("the measurements schema documents every top-level key", () => {
   const schema = JSON.parse(fs.readFileSync(SCHEMA_FILE, "utf8"));
@@ -806,7 +807,7 @@ test("scan: --include-ancestors reads the memory file of the parent folder, and 
   assert.equal(Object.hasOwn(plainData.meta, "include"), false);
 });
 
-test("scan: an unknown flag still exits 2, and the usage line names the two opt-in flags", async (t) => {
+test("scan: an unknown flag still exits 2, and the usage line names the two opt-in flags and --scope", async (t) => {
   const { target, base } = copyOfEmptyFixture(t);
   const out = path.join(base, "out");
 
@@ -815,7 +816,7 @@ test("scan: an unknown flag still exits 2, and the usage line names the two opt-
   assert.equal(result.code, 2);
   assert.equal(
     result.stderr.trimEnd().split("\n").at(-1),
-    "usage: node scripts/scan.mjs <target> [--out <dir>] [--include-user-layer] [--include-ancestors]",
+    "usage: node scripts/scan.mjs <target> [--out <dir>] [--include-user-layer] [--include-ancestors] [--scope <folder>]...",
   );
   assert.equal(fs.existsSync(out), false);
 });
@@ -890,4 +891,111 @@ test("scan e2e: a user allow of rm is attributed to the user layer in the report
   assert.ok(plainReport.includes(labels["limits.notRead"]), "the limits do not keep the not-read statement");
   assert.equal(plainReport.includes(labels["limits.readUser"]), false);
   assert.equal(plainReport.includes(labels["layer.user"]), false);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// --scope on the command line
+
+// A monorepo with a root harness (CLAUDE.md, AGENTS.md, .claude/settings.json) and a harness in apps/web and in apps/api.
+const SCOPE_MONOREPO = {
+  "package.json": JSON.stringify({ name: "mono", private: true, workspaces: ["packages/*", "apps/*"] }),
+  "README.md": "# Mono\n",
+  "CLAUDE.md": "# Mono\n\nRun the tests.\n",
+  "AGENTS.md": "# Mono agents\n",
+  ".claude/settings.json": `${JSON.stringify({ permissions: { allow: ["Read(README.md)"] } })}\n`,
+  "packages/a/package.json": '{"name":"a"}\n',
+  "packages/a/src/index.ts": "export const a = 1;\n",
+  "packages/b/package.json": '{"name":"b"}\n',
+  "packages/b/src/index.ts": "export const b = 2;\n",
+  "apps/web/package.json": '{"name":"web"}\n',
+  "apps/web/src/App.tsx": "export const App = () => null;\n",
+  "apps/web/AGENTS.md": "# Web\n\nKeep components small.\n",
+  "apps/web/.agents/skills/x/SKILL.md": "---\nname: x\ndescription: The x skill.\n---\nSteps.\n",
+  "apps/api/AGENTS.md": "# API\n",
+};
+
+// The measurements that a scan wrote to its output folder.
+function measurementsIn(dir) {
+  return JSON.parse(fs.readFileSync(path.join(dir, "measurements.json"), "utf8"));
+}
+
+test("scan: --scope apps/web keeps the root harness and the harness of apps/web, and leaves out the nested harness of apps/api", async (t) => {
+  const fixture = makeFixture({ files: SCOPE_MONOREPO });
+  t.after(fixture.cleanup);
+  const out = path.join(fixture.base, "out");
+
+  const result = await runScan([fixture.root, "--out", out, "--scope", "apps/web"]);
+
+  assert.equal(result.code, 0, result.stderr);
+  const data = measurementsIn(out);
+  assert.deepEqual(schemaProblems(JSON.parse(fs.readFileSync(SCHEMA_FILE, "utf8")), data), [], "the output matches the schema");
+  assert.ok(data.inventory.some((item) => item.path === "CLAUDE.md"), "the root CLAUDE.md is in the inventory");
+  assert.ok(data.inventory.some((item) => item.path === "AGENTS.md"), "the root AGENTS.md is in the inventory");
+  assert.equal(data.inventory.some((item) => item.path === "apps/api/AGENTS.md"), false, "apps/api is outside the scope");
+  const files = new Map(data.agentHarness.files.map((file) => [file.path, file]));
+  for (const rel of [".claude/settings.json", "CLAUDE.md", "AGENTS.md", "apps/web/AGENTS.md"]) {
+    assert.ok(files.has(rel), `${rel} is listed in agentHarness.files`);
+  }
+  assert.equal(files.get("apps/web/AGENTS.md").read, true);
+  assert.equal(files.has("apps/api/AGENTS.md"), false);
+  // The skill below apps/web is found by matching the registry below its harness folder: its pair has a base and an unknown status.
+  const skillPairs = data.agentHarness.items.filter((item) => item.path === "apps/web/.agents/skills/x/SKILL.md");
+  assert.deepEqual(skillPairs.map((item) => [item.agent, item.status, item.base]), [["agents-md", "unknown", "apps/web"]]);
+  assert.deepEqual(data.scope, {
+    folders: ["apps/web"],
+    inherited: [".", "apps"],
+    files: { inScope: 4, outside: data.target.fileCount - 4 },
+  });
+
+  // Positive control: without --scope there is no scope section, the nested AGENTS.md is listed and not read, and the skill has no pair.
+  const plainOut = path.join(fixture.base, "out-plain");
+  const plain = await runScan([fixture.root, "--out", plainOut]);
+  assert.equal(plain.code, 0, plain.stderr);
+  const plainData = measurementsIn(plainOut);
+  assert.equal(Object.hasOwn(plainData, "scope"), false);
+  const plainFiles = new Map(plainData.agentHarness.files.map((file) => [file.path, file]));
+  assert.equal(plainFiles.get("apps/web/AGENTS.md").read, false);
+  assert.ok(plainFiles.has("apps/api/AGENTS.md"), "without a scope apps/api/AGENTS.md is listed");
+  assert.equal(plainData.agentHarness.items.some((item) => item.path === "apps/web/.agents/skills/x/SKILL.md"), false);
+});
+
+test("scan: --scope with a missing folder, a folder that leaves the target, an absolute path or a file exits 2 and writes nothing", async (t) => {
+  const fixture = makeFixture({ files: SCOPE_MONOREPO });
+  t.after(fixture.cleanup);
+  const refused = ["missing", "../x", path.join(fixture.root, "apps", "web"), "README.md"];
+
+  for (const [index, folder] of refused.entries()) {
+    const out = path.join(fixture.base, `out-${index}`);
+    const result = await runScan([fixture.root, "--out", out, "--scope", folder]);
+    assert.equal(result.code, 2, `--scope ${folder}: ${result.stderr}`);
+    assert.equal(fs.existsSync(out), false, `nothing is written for --scope ${folder}`);
+  }
+  // Positive control: a valid folder with the same flags exits 0 and writes the file.
+  const valid = path.join(fixture.base, "out-valid");
+  const result = await runScan([fixture.root, "--out", valid, "--scope", "apps/web"]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(fs.existsSync(path.join(valid, "measurements.json")), true);
+});
+
+test("scan: --scope with --include-ancestors reads the same parent folders as --include-ancestors alone", async (t) => {
+  const fixture = makeFixture({ files: SCOPE_MONOREPO, outside: { "home/README.txt": "A fake home folder.\n" } });
+  t.after(fixture.cleanup);
+  // The target is <base>/repo, so its parent folder is <base>.
+  fs.writeFileSync(path.join(fixture.base, "CLAUDE.md"), "# Parent memory\n\nRead me.\n");
+  const env = envWithHome(path.join(fixture.outsideDir, "home"));
+  const scopedOut = path.join(fixture.base, "out-scoped");
+  const plainOut = path.join(fixture.base, "out-plain");
+
+  const scoped = await runScan([fixture.root, "--out", scopedOut, "--scope", "apps/web", "--include-ancestors"], { env });
+  const plain = await runScan([fixture.root, "--out", plainOut, "--include-ancestors"], { env });
+
+  assert.equal(scoped.code, 0, scoped.stderr);
+  assert.equal(plain.code, 0, plain.stderr);
+  const scopedData = measurementsIn(scopedOut);
+  const plainData = measurementsIn(plainOut);
+  assert.deepEqual(scopedData.context.ancestors, plainData.context.ancestors, "the parent folders are the target's, not the scope's");
+  const parent = scopedData.context.ancestors.find((item) => item.path === "../CLAUDE.md");
+  assert.equal(parent.read, true);
+  assert.equal(parent.lines, 3);
+  assert.deepEqual(scopedData.meta.include, { userLayer: false, ancestors: true });
 });

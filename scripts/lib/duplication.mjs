@@ -5,6 +5,8 @@
 // Candidates. The files of ctx.files with an extension in CODE_EXTENSIONS, that are not generated (generatedPatternOf
 // from structure.mjs; they are left out without a warning, because the structure measure lists them) and whose name does
 // not look minified (a warning). A test file (isTestPath) is counted apart, in inTests, and never enters the main numbers.
+// With a scope (ctx.scope), only the files inside the scope folders are candidates: the scope filter runs before the caps,
+// so a file outside the scope is not read and is in no warning.
 // Caps apply in this order: non-test files by path, then test files by path. A file above MAX_FILE_BYTES is skipped
 // before it is read, using the size from ctx.files. Files beyond MAX_FILES and files beyond MAX_TOTAL_BYTES are skipped,
 // and each cap writes one warning with the count. A file that is read and has a line longer than MINIFIED_LINE_CHARS is
@@ -39,7 +41,8 @@
 // Metric. For a group, lines is the normalized line count of the block. redundantLines of the group is lines multiplied
 // by (copies - 1): every copy except the first one (by file, then by line). The redundantLines of the whole scan counts
 // each normalized line once over all candidates. duplicatedLinesPct is that number divided by the normalized lines
-// scanned, times 100, rounded to two decimals; it is 0 when nothing was scanned.
+// scanned, times 100, rounded to two decimals; it is 0 when nothing was scanned. With a scope, the share is over the
+// files inside the scope, and a copy outside it is not seen.
 //
 // Known limits. The lines inside a multi-line block comment are kept as code unless they start with "*", so the closing
 // text of such a comment is measured. HTML and CSS are not measured (not in CODE_EXTENSIONS). Two groups can share lines of
@@ -48,7 +51,7 @@
 
 import crypto from "node:crypto";
 import path from "node:path";
-import { generatedPatternOf, loadGeneratedPatterns } from "./structure.mjs";
+import { filesInScope, generatedPatternOf, loadGeneratedPatterns } from "./structure.mjs";
 
 export const MEASURE_ID = "duplication";
 
@@ -194,7 +197,7 @@ function readSettings(options) {
 // Reads the target only through ctx: ctx.files for the list and sizes, ctx.readText for the content.
 function collectDuplication(ctx, settings) {
   const warnings = [];
-  const candidates = selectCandidates(ctx.files, settings, warnings);
+  const candidates = selectCandidates(filesInScope(ctx.files, ctx.scope), settings, warnings);
   const files = readCandidates(ctx, candidates, settings, warnings);
   const main = analyse(files.filter((file) => !file.inTests), settings);
   const tests = analyse(files.filter((file) => file.inTests), settings);

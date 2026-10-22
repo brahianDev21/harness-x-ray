@@ -689,3 +689,115 @@ test("hostile instructions of another agent: nothing is run, and the output hold
     [[".cursorrules", "docs/missing-guide.md", "not-found"]],
   );
 });
+
+// ---------------------------------------------------------------------------------------------------
+// Scope (--scope): a nested file outside the scope is dropped, a kept one is read, and the registry is matched below the
+// harness folder of the scope or of an inherited folder
+
+// The root, apps (inherited by apps/web) and apps/web (the scope) have harness files; packages/a is outside the scope.
+const SCOPED_HARNESS = {
+  "AGENTS.md": "# Root\n",
+  "apps/AGENTS.md": "# Apps\n",
+  "apps/web/AGENTS.md": "# Web\n\nKeep components small.\n",
+  "apps/api/AGENTS.md": "# API\n",
+  "apps/web/.agents/skills/x/SKILL.md": "---\nname: x\ndescription: The x skill.\n---\nSteps.\n",
+  "apps/.cursor/rules/a.mdc": "---\ndescription: style\n---\nUse tabs.\n",
+  "apps/web/src/index.ts": "export {};\n",
+  "packages/a/AGENTS.md": "# A\n",
+};
+const SCOPE = ["apps/web"];
+
+// The agentHarness section of a scan with the agent measure alone and the given scope.
+async function scopedHarness(root, scope) {
+  const measurements = await scan({ root, measures: [createAgentInventoryMeasure()], scope, now: FIXED_NOW });
+  return measurements.agentHarness;
+}
+
+test("agent-harness: with a scope, a nested file outside it is dropped, and a nested file inside it or in an inherited folder is read", async (t) => {
+  const fixture = freshFixture(t, SCOPED_HARNESS);
+  const scoped = await scopedHarness(fixture.root, SCOPE);
+  const plain = await scanWith(fixture.root);
+
+  // Dropped: not listed, and not an item of any agent.
+  assert.equal(fileOf(scoped, "apps/api/AGENTS.md"), undefined);
+  assert.equal(fileOf(scoped, "packages/a/AGENTS.md"), undefined);
+  assert.equal(scoped.items.some((item) => item.path === "apps/api/AGENTS.md"), false);
+  // Kept and read: a nested file of the scope, and one of the inherited folder apps.
+  assert.equal(fileOf(scoped, "apps/web/AGENTS.md").read, true);
+  assert.equal(fileOf(scoped, "apps/web/AGENTS.md").nested, true);
+  assert.equal(fileOf(scoped, "apps/AGENTS.md").read, true);
+  // Positive control: without a scope the same nested files are listed and not read.
+  assert.equal(fileOf(plain, "apps/web/AGENTS.md").read, false);
+  assert.equal(fileOf(plain, "apps/web/AGENTS.md").notReadReason, "nested");
+  assert.ok(fileOf(plain, "apps/api/AGENTS.md"), "without a scope apps/api/AGENTS.md is listed");
+  assert.ok(fileOf(plain, "packages/a/AGENTS.md"), "without a scope packages/a/AGENTS.md is listed");
+});
+
+test("agent-harness: with a scope, the registry is matched below the harness folder of the scope or of an inherited folder, with base", async (t) => {
+  const fixture = freshFixture(t, SCOPED_HARNESS);
+  const scoped = await scopedHarness(fixture.root, SCOPE);
+  const plain = await scanWith(fixture.root);
+
+  assert.deepEqual(pairOf(scoped, "apps/web/.agents/skills/x/SKILL.md", "agents-md"), {
+    path: "apps/web/.agents/skills/x/SKILL.md",
+    agent: "agents-md",
+    entry: "agents-md-skills",
+    kind: "skills",
+    loadModel: "unknown",
+    nested: true,
+    status: "unknown",
+    base: "apps/web",
+  });
+  assert.deepEqual(pairOf(scoped, "apps/.cursor/rules/a.mdc", "cursor"), {
+    path: "apps/.cursor/rules/a.mdc",
+    agent: "cursor",
+    entry: "cursor-rules",
+    kind: "instructions",
+    loadModel: "unknown",
+    nested: true,
+    status: "unknown",
+    base: "apps",
+  });
+  // Positive control: without a scope neither file has a pair, and a full-path pair never has a base.
+  assert.equal(pairOf(plain, "apps/web/.agents/skills/x/SKILL.md", "agents-md"), undefined);
+  assert.equal(pairOf(plain, "apps/.cursor/rules/a.mdc", "cursor"), undefined);
+  assert.equal(Object.hasOwn(pairOf(scoped, "apps/web/AGENTS.md", "claude-code"), "base"), false);
+});
+
+test("agent-harness: with a scope, a secret file and a file that claudeMdExcludes matches are listed and not read", async (t) => {
+  const fixture = freshFixture(t, {
+    ...SCOPED_HARNESS,
+    "apps/web/CLAUDE.md": "# Web Claude\n",
+    "apps/.cursor/rules/.env": "FAKE_VALUE=1\n",
+    ".claude/settings.json": `${JSON.stringify({ claudeMdExcludes: ["apps/web/CLAUDE.md"] })}\n`,
+  });
+  const scoped = await scopedHarness(fixture.root, SCOPE);
+
+  const claude = fileOf(scoped, "apps/web/CLAUDE.md");
+  assert.equal(claude.read, false);
+  assert.equal(claude.notReadReason, "claude-md-excludes");
+  assert.equal(pairOf(scoped, "apps/web/CLAUDE.md", "claude-code").status, "excluded");
+  assert.equal(pairOf(scoped, "apps/web/CLAUDE.md", "claude-code").excludedBy, "apps/web/CLAUDE.md");
+  const secret = fileOf(scoped, "apps/.cursor/rules/.env");
+  assert.equal(secret.read, false);
+  assert.equal(secret.notReadReason, "secret-name");
+  // Positive control: the same scope without the setting reads the CLAUDE.md, and the rule of the same folder is read.
+  const control = freshFixture(t, { ...SCOPED_HARNESS, "apps/web/CLAUDE.md": "# Web Claude\n" });
+  const plain = await scopedHarness(control.root, SCOPE);
+  assert.equal(fileOf(plain, "apps/web/CLAUDE.md").read, true);
+  assert.equal(fileOf(scoped, "apps/.cursor/rules/a.mdc").read, true);
+});
+
+test("agent-harness: with a scope, an untracked file below an inherited folder is found by the walk of that folder", async (t) => {
+  const fixture = makeFixture({ git: true, files: { "apps/web/src/index.ts": "export {};\n" } });
+  t.after(fixture.cleanup);
+  // Written after the commit, so git does not list it: only the walk of the inherited folder apps can find it.
+  fs.mkdirSync(path.join(fixture.root, "apps", ".cursor", "rules"), { recursive: true });
+  fs.writeFileSync(path.join(fixture.root, "apps", ".cursor", "rules", "untracked.mdc"), "---\ndescription: u\n---\nUse tabs.\n");
+
+  const scoped = await scopedHarness(fixture.root, SCOPE);
+  assert.equal(pairOf(scoped, "apps/.cursor/rules/untracked.mdc", "cursor").base, "apps");
+  // Positive control: without a scope the walk does not enter apps, so the file is not listed.
+  const plain = await scanWith(fixture.root);
+  assert.equal(fileOf(plain, "apps/.cursor/rules/untracked.mdc"), undefined);
+});

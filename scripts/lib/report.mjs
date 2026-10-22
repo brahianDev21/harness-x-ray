@@ -9,6 +9,8 @@
 // agent; renderReport lists those so the command line can warn about them. Evidence outside the target carries its layer
 // and is marked in its row; the limits say what the scan read beyond the target, from meta.include. The skipped items
 // outside the target (the user layer's warnings and the parent-folder files that were not read) are marked in the limits table.
+// With a scope (measurements.scope), the header names the scope folders, and the limits say what was measured inside them,
+// what was read outside them and what was not analyzed.
 
 import { KINDS } from "./agent-harness.mjs";
 import { AXES, DEFAULT_LANGUAGE } from "./findings-validate.mjs";
@@ -342,6 +344,7 @@ function renderHeader(ctx) {
   const head = m.target.git.head;
   const lines = [
     field(t("header.target"), ctx.code(m.target.name)),
+    ...scopeFields(ctx),
     field(t("header.commit"), head === null ? t("value.none") : ctx.code(head)),
     field(t("header.scanDate"), utcDate(m.meta.scannedAt)),
     field(t("header.axes"), AXES.map((axis) => t(`axis.${axis}`)).join(t("list.separator"))),
@@ -352,6 +355,16 @@ function renderHeader(ctx) {
     ),
   ];
   return [`# ${t("header.title")}`, lines.join("\n"), renderAgents(ctx)].join("\n\n");
+}
+
+// The scope of the run, as one header field, when the scan had one: its folders and the inherited folders, as code. Nothing
+// is written without a scope, so a report of a scan without one is unchanged.
+function scopeFields(ctx) {
+  const { t, measurements: m } = ctx;
+  if (m.scope === undefined) return [];
+  const folders = m.scope.folders.map((folder) => ctx.code(folder)).join(t("list.separator"));
+  const inherited = m.scope.inherited.map((folder) => ctx.code(folder)).join(t("list.separator"));
+  return [field(t("header.scope"), t("header.scopeValue", { folders, inherited }))];
 }
 
 // The agents that the scan detected, one row each, in the order of agentHarness.agents. Every kind of Claude Code is evaluated:
@@ -622,6 +635,7 @@ function listOrNone(ctx, items) {
 function renderLimits(ctx) {
   const { t, measurements: m } = ctx;
   const blocks = [`## ${t("limits.title")}`, readLimitText(ctx)];
+  if (m.scope !== undefined) blocks.push(t("limits.scope", { outside: ctx.num(m.scope.files.outside) }));
   blocks.push(t("limits.estimate", { method: ctx.text(m.context.alwaysLoaded.estMethod) }));
   blocks.push(t("limits.thresholds", { status: statusText(ctx) }));
   const mode = usedMode(m);

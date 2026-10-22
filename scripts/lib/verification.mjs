@@ -6,15 +6,24 @@
 // - verification.commands: the scripts of the root package.json that run a check (test, lint, typecheck,
 //   format, verify, build), with their categories. The command text is not output: it may hold secrets.
 // - verification.mentioned: the calls that the memory text makes to those scripts.
+// - verification.packages (only with a scope): the package.json files of the target other than the root one, each with
+//   where it lies ("scope", "inherited" or "other"), its status ("ok", "unreadable" or "invalid") and its check scripts.
+//   Sorted by where, then path. At most MAX_SCOPE_PACKAGES are kept, and the cut is one warning, scope-packages-cut.
+//   Paths with a node_modules segment are skipped. Their check scripts are listed names for verification.mentioned.
 // - instructions.packageManager: the manager that the packageManager field names, the lockfiles at the
 //   root, the managers that the memory text names (mentions), the files that name a manager with the agents
 //   that own them (byFile), and whether all of them disagree (conflict). The texts of the other agents' instruction
 //   files (ctx.agentInstructions) count toward conflict and byFile, not toward mentions.
-// - structure.enforcementTools: the configs of tools that enforce rules, found by file name.
+// - structure.enforcementTools: the configs of tools that enforce rules, found by file name. With a scope, the configs
+//   directly inside each inherited folder, each scope folder and the folder of each package.json in verification.packages
+//   count too, so a lint or typecheck config at the root of another layer counts.
 //
-// The package.json warnings belong to the references measure, which reads the same file, so this measure
-// adds none. Every text in the output is redacted.
+// With a scope, verification.commands still reads only the root package.json: it lies outside the scope, and it still
+// counts. The CI workflows and husky stay at the root, as without a scope. The package.json warnings belong to the
+// references measure, which reads the same file, so this measure adds none, except scope-packages-cut. Every text in the
+// output is redacted.
 
+import path from "node:path";
 import { instructionTextsOf } from "./agent-inventory.mjs";
 import { markdownLines } from "./markdown.mjs";
 import { packageScripts, readPackageJson } from "./package-json.mjs";
@@ -22,6 +31,11 @@ import { createRedactor } from "./redact.mjs";
 import { scriptCallsInLine } from "./script-calls.mjs";
 
 export const MEASURE_ID = "verification";
+
+/** The most package.json files that verification.packages lists, with a scope. The rest are counted in one warning. */
+export const MAX_SCOPE_PACKAGES = 100;
+// The order of the where values in verification.packages.
+const WHERE_ORDER = Object.freeze(["scope", "inherited", "other"]);
 
 // Script names by category. "exact" matches the whole name, "prefix" the start (test: matches test:unit)
 // and "suffix" the end (:test matches unit:test).
@@ -111,22 +125,26 @@ function collectVerification(ctx) {
   const scripts = listed !== null && listed.ok ? listed.scripts : new Map();
 
   const classified = classifyScripts(scripts);
-  const commands = classified
-    .map(({ name, categories }) => ({ name: redact(name), categories }))
-    .sort((a, b) => compareText(a.name, b.name));
-  const listedNames = new Set(classified.map((item) => item.name));
+  // With a scope, the check scripts of the listed packages are listed names too (see verification.packages).
+  const packages = ctx.scope ? scopePackages(ctx) : null;
+  const packageChecks = packages === null ? [] : packages.entries.flatMap((entry) => entry.classified);
+  const listedNames = new Set([...classified, ...packageChecks].map((item) => item.name));
+  // The folders of the listed package.json files: their tool configs count too (enforcementTools).
+  const packageFolders = packages === null ? [] : packages.entries.map((entry) => path.posix.dirname(entry.path));
 
   return {
     verification: {
-      commands,
+      commands: commandsOf(classified, redact),
       mentioned: scriptMentions(ctx.memory, listedNames, redact),
+      ...(packages === null ? {} : { packages: packages.entries.map((entry) => packageOutput(entry, redact)) }),
     },
     instructions: {
       packageManager: packageManagerOf(ctx, data, redact),
     },
     structure: {
-      enforcementTools: enforcementTools(ctx.files),
+      enforcementTools: enforcementTools(ctx.files, ctx.scope, packageFolders),
     },
+    warnings: packages === null ? [] : packages.warnings,
   };
 }
 
@@ -138,6 +156,54 @@ function classifyScripts(scripts) {
     if (categories.length > 0) classified.push({ name, categories });
   }
   return classified;
+}
+
+// The output form of the check scripts: names redacted, sorted by name.
+function commandsOf(classified, redact) {
+  return classified
+    .map(({ name, categories }) => ({ name: redact(name), categories }))
+    .sort((a, b) => compareText(a.name, b.name));
+}
+
+// The package.json files other than the root one, with a scope. Each is placed by its folder, read through readPackageJson,
+// and kept with its raw script names (packageOutput redacts them). Only the first MAX_SCOPE_PACKAGES of the sorted list are
+// kept. The entries are { path, where, status, classified }; warnings holds the one cut warning, when there is one.
+function scopePackages(ctx) {
+  const found = ctx.files
+    .filter((file) => isOtherPackageFile(file.path))
+    .map(({ path: rel }) => ({ path: rel, where: whereOf(ctx.scope, rel), ...scriptsOfPackage(readPackageJson(ctx, rel)) }))
+    .sort((a, b) => WHERE_ORDER.indexOf(a.where) - WHERE_ORDER.indexOf(b.where) || compareText(a.path, b.path));
+  const warnings =
+    found.length > MAX_SCOPE_PACKAGES
+      ? [{ path: ".", reason: "scope-packages-cut", detail: `count=${found.length - MAX_SCOPE_PACKAGES}` }]
+      : [];
+  return { entries: found.slice(0, MAX_SCOPE_PACKAGES), warnings };
+}
+
+// A package.json that is not the root one and does not lie under a node_modules folder.
+function isOtherPackageFile(rel) {
+  return rel !== "package.json" && path.posix.basename(rel) === "package.json" && !rel.split("/").includes("node_modules");
+}
+
+// The layer of a package.json by its folder: a scope folder or a folder inside one, an inherited folder, or any other.
+function whereOf(scope, rel) {
+  const folder = path.posix.dirname(rel);
+  if (scope.contains(folder)) return "scope";
+  return scope.isInherited(folder) ? "inherited" : "other";
+}
+
+// The status of one package.json and its check scripts. An absent file is reported as unreadable: it was listed, so it is
+// not there when read. Only an ok status has check scripts.
+function scriptsOfPackage(read) {
+  if (read.status === "absent" || read.status === "unreadable") return { status: "unreadable", classified: [] };
+  if (read.status === "invalid") return { status: "invalid", classified: [] };
+  const listed = packageScripts(read.data);
+  if (!listed.ok) return { status: "invalid", classified: [] };
+  return { status: "ok", classified: classifyScripts(listed.scripts) };
+}
+
+function packageOutput({ path: rel, where, status, classified }, redact) {
+  return { path: rel, where, status, commands: commandsOf(classified, redact) };
 }
 
 function nameCategories(name) {
@@ -247,19 +313,27 @@ function managerNamed(name) {
   return MANAGERS.has(name) ? name : null;
 }
 
-// The config files of the tools that enforce rules. Only names are read: a file is listed, never opened.
-function enforcementTools(files) {
+// The config files of the tools that enforce rules. Only names are read: a file is listed, never opened. A config counts when
+// it lies directly in one of the config folders (configFolders). Workflows and husky are found at the root only.
+function enforcementTools(files, scope, packageFolders) {
+  const folders = configFolders(scope, packageFolders);
   const found = new Map();
   const add = (tool, rel) => found.set(JSON.stringify([tool, rel]), { tool, path: rel });
   for (const { path: rel } of files) {
     if (WORKFLOW.test(rel)) add("github-actions", rel);
     if (rel.startsWith(`${HUSKY_FOLDER}/`)) add("husky", HUSKY_FOLDER);
-    if (rel.includes("/")) continue;
+    if (!folders.has(path.posix.dirname(rel))) continue;
     for (const [tool, pattern] of ROOT_TOOLS) {
-      if (pattern.test(rel)) add(tool, rel);
+      if (pattern.test(path.posix.basename(rel))) add(tool, rel);
     }
   }
   return [...found.values()].sort((a, b) => compareText(a.tool, b.tool) || compareText(a.path, b.path));
+}
+
+// The folders whose directly contained files are tool configs: the root, and with a scope also the inherited folders (the
+// root included, once), the scope folders and the folders of the listed package.json files of the other layers.
+function configFolders(scope, packageFolders) {
+  return new Set(!scope ? ["."] : [".", ...scope.inherited, ...scope.folders, ...packageFolders]);
 }
 
 function sortedFiles(memory) {

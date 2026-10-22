@@ -35,6 +35,8 @@ Flag the repository when one of these holds:
 1. **No way at all.** `verification.commands` is empty, `structure.enforcementTools` lists no checking tool and no CI workflow, and no instruction file describes a manual way to confirm a change. Impact: high.
 2. **Not mentioned.** `verification.commands` lists a test, lint or typecheck command, and `verification.mentioned` does not include it, and no instruction file tells the agent to run any check before finishing. Impact: medium.
 
+With a scope (the `scope` section of measurements.json is present), the checks outside the scope still count. The root package.json scripts, the root tool configs, the CI workflows and husky lie outside the scope, and they are read as without a scope. `verification.packages` lists the package.json files of the scope, of the inherited folders and of other layers, with their check scripts. The tool configs found at the root of the scope, of the inherited folders and of the other layers that `verification.packages` lists count as well, so a check configured there is found. A check found in any of these places means that the case "No way at all" does not apply. When the scan has the warning `scope-packages-cut`, that list is incomplete, so do not flag that case.
+
 Do not flag a repository in which a documented way exists:
 
 - a manual check written out step by step, even when no automated test exists;

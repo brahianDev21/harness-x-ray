@@ -246,7 +246,11 @@ function buildScenarios() {
   const ancestors = flagged({ userLayer: false, ancestors: true }, [ancestorEvidence]);
   const both = flagged({ userLayer: true, ancestors: true }, [userEvidence, ancestorEvidence]);
 
-  return { golden, rich, empty, userLayer, ancestors, both };
+  // A scan with a scope: the header names it, and the limits say what was measured inside it and what was read outside.
+  const scoped = cloneOf(run.measurements);
+  scoped.scope = { folders: ["apps/web"], inherited: [".", "apps"], files: { inScope: 3, outside: 5 } };
+  const scopedScenario = { measurements: scoped, findings: readGoldenFindings("findings.en.json"), catalog };
+  return { golden, rich, empty, userLayer, ancestors, both, scoped: scopedScenario };
 }
 
 // The agentHarness of a scan that detects every registry agent, sorted by id as the scan writes them. Claude Code has every

@@ -107,6 +107,48 @@ describe("golden reports", () => {
   });
 });
 
+describe("scope", () => {
+  // The labels of both languages, read from templates/, so that the tests compare with the exact text of the report.
+  const labelsEn = loadLabels(HARNESS_ROOT, "en");
+  const labelsEs = loadLabels(HARNESS_ROOT, "es");
+
+  // The scan's measurements with a scope: 3 files inside it and 5 outside.
+  function scopedMeasurements() {
+    const measurements = structuredClone(run.measurements);
+    measurements.scope = { folders: ["apps/web"], inherited: [".", "apps"], files: { inScope: 3, outside: 5 } };
+    return measurements;
+  }
+
+  test("with a scope, the header names the scope and the inherited folders, and the limits say what was measured and read", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json"), measurements: scopedMeasurements() });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.ok(report.includes("- **Scope:** folders `apps/web`; inherited folders `.`, `apps`\n"), "the Scope header field");
+    assert.ok(report.includes(`${labelsEn["limits.scope"].replace("{outside}", "5")}\n`), "the scope paragraph of the limits");
+    assert.match(report, /^## Limits of this scan\n\n/m);
+  });
+
+  test("with a scope in Spanish, the report has the Alcance field and the Spanish scope paragraph", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.es.json"), measurements: scopedMeasurements() });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.ok(report.includes("- **Alcance:** carpetas `apps/web`; carpetas heredadas `.`, `apps`\n"), "the Alcance header field");
+    assert.ok(report.includes(`${labelsEs["limits.scope"].replace("{outside}", "5")}\n`), "the Spanish scope paragraph");
+    assert.doesNotMatch(report, /\*\*Scope:\*\*|The scan was limited to a scope/, "no English scope text in a Spanish report");
+  });
+
+  test("positive control: without a scope there is no scope field and no scope paragraph", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = reportOf(dir);
+    assert.doesNotMatch(report, /\*\*Scope:\*\*/);
+    assert.doesNotMatch(report, /The scan was limited to a scope/);
+  });
+});
+
 describe("trigger notes", () => {
   // A copy of the scan with one measured SEC-02 finding, whose only trigger is hook-not-verified.
   function withHookNotVerified() {

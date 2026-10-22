@@ -532,3 +532,101 @@ test("other agents' instruction files: a broken reference in .cursorrules and GE
   const withoutAgents = await referencesScan(fixture);
   assert.deepEqual(withoutAgents.instructions.brokenRefs, []);
 });
+
+// Runs the memory measure, then the references measure, with a scope (see scope.mjs). The ancestor walk and the home folder
+// are as in referencesScan.
+function scopedReferencesScan(fixture, scope) {
+  return scan({
+    root: fixture.root,
+    measures: [
+      createMemoryMeasure({ ancestorLimit: fixture.base, home: path.join(fixture.base, "no-home") }),
+      referencesMeasure,
+    ],
+    now: FIXED_NOW,
+    scope,
+  });
+}
+
+const packageJsonText = (fields) => `${JSON.stringify(fields)}\n`;
+
+// A monorepo: the root package.json has test, the web app has lint, and the memory files name the scripts. The root CLAUDE.md
+// names lint too, but a root file keeps the root scripts only.
+const LAYERED = {
+  "package.json": packageJsonText({ scripts: { test: "node --test" } }),
+  "CLAUDE.md": "Run `npm run test`, and `npm run lint` for the web app.\n",
+  "apps/web/package.json": packageJsonText({ name: "web", scripts: { lint: "eslint ." } }),
+  "apps/web/CLAUDE.md": "Run `npm run lint`.\nAlso `npm run ghost`.\n",
+  "apps/web/src/AGENTS.md": "Test with `npm test` and lint with `npm run lint`.\n",
+};
+
+test("scoped references: a script of the scope's own package.json is known to its files, and a script that exists nowhere is broken", async (t) => {
+  const fixture = freshFixture(t, { files: LAYERED });
+  const scoped = await scopedReferencesScan(fixture, ["apps/web"]);
+
+  assert.deepEqual(scoped.instructions.brokenRefs, [
+    { file: "CLAUDE.md", line: 1, text: "npm run lint", kind: "script", reason: "missing-script", script: "lint" },
+    { file: "apps/web/CLAUDE.md", line: 2, text: "npm run ghost", kind: "script", reason: "missing-script", script: "ghost" },
+  ]);
+  // Positive control: without a scope the subfolder files are not read, so only the root file is checked, against the root scripts.
+  const plain = await referencesScan(fixture);
+  assert.deepEqual(plain.instructions.brokenRefs, [
+    { file: "CLAUDE.md", line: 1, text: "npm run lint", kind: "script", reason: "missing-script", script: "lint" },
+  ]);
+});
+
+test("scoped references: a file below the scope is judged by the folders above its harness folder, up to the root", async (t) => {
+  const fixture = freshFixture(t, { files: LAYERED });
+  const scoped = await scopedReferencesScan(fixture, ["apps/web"]);
+
+  // apps/web/src/AGENTS.md names test (the root) and lint (apps/web): both are known to it, so it adds no entry.
+  assert.equal(scoped.instructions.brokenRefs.some((entry) => entry.file === "apps/web/src/AGENTS.md"), false);
+  // Positive control: the same file with a script that nothing defines is reported.
+  const control = freshFixture(t, { files: { ...LAYERED, "apps/web/src/AGENTS.md": "Run `npm run deploy`.\n" } });
+  const reported = await scopedReferencesScan(control, ["apps/web"]);
+  assert.deepEqual(
+    reported.instructions.brokenRefs.filter((entry) => entry.file === "apps/web/src/AGENTS.md"),
+    [{ file: "apps/web/src/AGENTS.md", line: 1, text: "npm run deploy", kind: "script", reason: "missing-script", script: "deploy" }],
+  );
+});
+
+test("scoped references: a missing package.json adds nothing, and an invalid one gives no answer and no warning", async (t) => {
+  const invalid = freshFixture(t, {
+    files: {
+      "package.json": packageJsonText({ scripts: { test: "node --test" } }),
+      "apps/web/package.json": '{ "scripts": ',
+      "apps/web/CLAUDE.md": "Run `npm run lint`.\nAlso `npm run ghost`.\n",
+    },
+  });
+  const result = await scopedReferencesScan(invalid, ["apps/web"]);
+
+  assert.deepEqual(result.instructions.brokenRefs, [], "the invalid file may define lint and ghost, so neither is reported");
+  assert.deepEqual(referenceWarnings(result), [], "a package.json below the root is never a warning of this measure");
+  // Positive control: the same folder with a valid package.json that does not define ghost reports it, and lint is still known.
+  const valid = freshFixture(t, {
+    files: {
+      "package.json": packageJsonText({ scripts: { test: "node --test" } }),
+      "apps/web/package.json": packageJsonText({ scripts: { lint: "eslint ." } }),
+      "apps/web/CLAUDE.md": "Run `npm run lint`.\nAlso `npm run ghost`.\n",
+    },
+  });
+  const validResult = await scopedReferencesScan(valid, ["apps/web"]);
+  assert.deepEqual(validResult.instructions.brokenRefs, [
+    { file: "apps/web/CLAUDE.md", line: 2, text: "npm run ghost", kind: "script", reason: "missing-script", script: "ghost" },
+  ]);
+});
+
+test("scoped references: when no folder above a file has a package.json, its script calls are no-package-json", async (t) => {
+  const fixture = freshFixture(t, {
+    files: {
+      "apps/api/CLAUDE.md": "Run `npm test`.\n",
+      "apps/web/package.json": packageJsonText({ scripts: { lint: "eslint ." } }),
+      "apps/web/CLAUDE.md": "Run `npm run lint`, then `npm run test`.\n",
+    },
+  });
+  const result = await scopedReferencesScan(fixture, ["apps"]);
+
+  assert.deepEqual(result.instructions.brokenRefs, [
+    { file: "apps/api/CLAUDE.md", line: 1, text: "npm test", kind: "script", reason: "no-package-json", script: "test" },
+    { file: "apps/web/CLAUDE.md", line: 1, text: "npm run test", kind: "script", reason: "missing-script", script: "test" },
+  ]);
+});

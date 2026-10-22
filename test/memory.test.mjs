@@ -40,10 +40,11 @@ function freshFixture(t, description = {}) {
 
 // Runs the memory measure. The ancestor walk stops at the fixture folder, so the real parent folders
 // of the temp folder never count. The home folder defaults to a folder that does not exist.
-function memoryScan(root, base, { home, extra = [], includeAncestors } = {}) {
+function memoryScan(root, base, { home, extra = [], includeAncestors, scope } = {}) {
   return scan({
     root,
     measures: [createMemoryMeasure({ ancestorLimit: base, home: home ?? path.join(base, "no-home"), includeAncestors }), ...extra],
+    scope,
     now: FIXED_NOW,
   });
 }
@@ -1009,3 +1010,106 @@ function assertNoWitness(result, seen) {
   assert.equal(toStableJson(result).includes(WITNESS), false, "the witness is not in the output");
   assert.equal(JSON.stringify(seen.entries).includes(WITNESS), false, "the witness is not in ctx.memory");
 }
+
+// ---------------------------------------------------------------------------------------------------
+// Scope (--scope): a subfolder memory file that the scope keeps is read as on-demand memory, the others are left out
+
+// Root memory, and subfolder memory inside and outside apps/web. The root CLAUDE.md imports notes.md.
+const SCOPED_MEMORY = {
+  "CLAUDE.md": "# Root\n\nSee @notes.md.\n",
+  "notes.md": "Notes.\n",
+  "apps/web/CLAUDE.md": "# Web\n\nUse hooks. See @docs/extra.md.\n",
+  "apps/web/docs/extra.md": "Extra.\n",
+  "apps/web/src/AGENTS.md": "# Src\n",
+  "apps/api/CLAUDE.md": "# API\n",
+};
+const SUBFOLDER_LOAD_REASON = "subfolder memory, loaded when a file in its folder is read";
+const pathsOf = (result) => result.inventory.map((entry) => entry.path);
+
+test("memory: with a scope, a subfolder file inside it is read as on-demand memory, and one outside it is left out", async (t) => {
+  const fixture = freshFixture(t, { files: SCOPED_MEMORY });
+  const scoped = memoryProbe();
+  const plain = memoryProbe();
+  const withScope = await memoryScan(fixture.root, fixture.base, { scope: ["apps/web"], extra: [scoped.probe] });
+  const without = await memoryScan(fixture.root, fixture.base, { extra: [plain.probe] });
+
+  assert.equal(pathsOf(withScope).includes("apps/api/CLAUDE.md"), false, "outside the scope: left out");
+  const web = item(withScope, "apps/web/CLAUDE.md");
+  assert.equal(web.loadMode, "on-demand");
+  assert.equal(web.loadReason, SUBFOLDER_LOAD_REASON);
+  assert.equal(web.lines, 3);
+  assert.equal(item(withScope, "apps/web/src/AGENTS.md").lines, 1, "a subfolder AGENTS.md inside the scope is read too");
+  const texts = new Map(scoped.seen.entries);
+  assert.equal(texts.get("apps/web/CLAUDE.md").loadMode, "on-demand");
+  assert.match(texts.get("apps/web/CLAUDE.md").text, /Use hooks/);
+  assert.equal(pathsOf(withScope).includes("apps/web/docs/extra.md"), false, "an import of a subfolder file is not followed");
+  assert.equal(importsOf(withScope).some((found) => found.from === "apps/web/CLAUDE.md"), false);
+  assert.deepEqual(withScope.context.alwaysLoaded, without.context.alwaysLoaded, "the always-loaded budget does not change");
+  assert.deepEqual(item(withScope, "CLAUDE.md"), item(without, "CLAUDE.md"), "the root file does not change");
+  assert.ok(
+    importsOf(withScope).some((found) => found.from === "CLAUDE.md" && found.path === "notes.md" && found.status === "ok"),
+    "the import of a root file is still followed",
+  );
+  // Positive control: without a scope the same subfolder files are listed by size and never read.
+  assert.equal(pathsOf(without).includes("apps/api/CLAUDE.md"), true);
+  assert.equal(item(without, "apps/web/CLAUDE.md").lines, null);
+  assert.equal(new Map(plain.seen.entries).has("apps/web/CLAUDE.md"), false);
+});
+
+test("memory: with a scope, a subfolder file that claudeMdExcludes matches is listed and never read", async (t) => {
+  const excludes = { ".claude/settings.json": `${JSON.stringify({ claudeMdExcludes: ["apps/web/src/AGENTS.md"] })}\n` };
+  const fixture = freshFixture(t, { files: { ...SCOPED_MEMORY, ...excludes } });
+  const { seen, probe } = memoryProbe();
+  const result = await memoryScan(fixture.root, fixture.base, { scope: ["apps/web"], extra: [probe] });
+
+  const excluded = item(result, "apps/web/src/AGENTS.md");
+  assert.equal(excluded.loadMode, "not-loaded");
+  assert.equal(excluded.loadReason, "claude-md-excludes");
+  assert.equal(excluded.excludedBy, "apps/web/src/AGENTS.md");
+  assert.equal(excluded.lines, null);
+  assert.equal(new Map(seen.entries).has("apps/web/src/AGENTS.md"), false, "an excluded file is not in ctx.memory");
+
+  // Positive control: the same scope without the setting reads the file.
+  const control = freshFixture(t, { files: SCOPED_MEMORY });
+  const plain = await memoryScan(control.root, control.base, { scope: ["apps/web"] });
+  assert.equal(item(plain, "apps/web/src/AGENTS.md").lines, 1);
+});
+
+test("memory: with a scope, a subfolder file over the size cap is skipped and reported, as a root file is", async (t) => {
+  const size = DEFAULT_MAX_BYTES + 1;
+  const files = { ...SCOPED_MEMORY, "apps/web/big/CLAUDE.md": Buffer.alloc(size, 0x61) };
+  const fixture = freshFixture(t, { files });
+  const result = await memoryScan(fixture.root, fixture.base, { scope: ["apps/web"] });
+
+  const big = item(result, "apps/web/big/CLAUDE.md");
+  assert.equal(big.loadMode, "not-loaded");
+  assert.equal(big.bytes, size);
+  assert.deepEqual(result.context.limits.find((limit) => limit.path === "apps/web/big/CLAUDE.md"), {
+    path: "apps/web/big/CLAUDE.md",
+    limit: "memory-bytes",
+    value: size,
+    threshold: DEFAULT_MAX_BYTES,
+  });
+  assert.ok(memoryWarnings(result).some((warning) => warning.path === "apps/web/big/CLAUDE.md" && warning.reason === "too-large"));
+
+  // Positive control: without a scope the file is listed by size only, with no limit and no warning.
+  const control = await memoryScan(fixture.root, fixture.base);
+  assert.equal(item(control, "apps/web/big/CLAUDE.md").loadMode, "on-demand");
+  assert.equal(control.context.limits.some((limit) => limit.path === "apps/web/big/CLAUDE.md"), false);
+  assert.equal(memoryWarnings(control).some((warning) => warning.path === "apps/web/big/CLAUDE.md"), false);
+});
+
+test("memory: with a scope, a subfolder file in an ordinary dot folder of an inherited folder is neither listed nor read", async (t) => {
+  const files = { ...SCOPED_MEMORY, "apps/CLAUDE.md": "# Apps\n", "apps/.venv/pkg/AGENTS.md": "# Venv package\n" };
+  const fixture = freshFixture(t, { files });
+  const probe = memoryProbe();
+  const scoped = await memoryScan(fixture.root, fixture.base, { scope: ["apps/web"], extra: [probe.probe] });
+
+  assert.equal(pathsOf(scoped).includes("apps/.venv/pkg/AGENTS.md"), false, "not listed: it belongs to apps/.venv/pkg");
+  assert.equal(new Map(probe.seen.entries).has("apps/.venv/pkg/AGENTS.md"), false, "not read");
+  // Positive control: without a scope the file is listed by size, and with the scope the file of the inherited folder apps is read.
+  const plain = await memoryScan(fixture.root, fixture.base);
+  assert.ok(pathsOf(plain).includes("apps/.venv/pkg/AGENTS.md"), "without a scope the file is listed");
+  assert.equal(item(scoped, "apps/CLAUDE.md").loadMode, "on-demand", "positive control: a file of an inherited folder is kept");
+  assert.equal(item(scoped, "apps/CLAUDE.md").lines, 1);
+});

@@ -1,12 +1,19 @@
 // Measure "references": the paths and the commands that the memory files mention, and which of them
 // the target does not have. It reads the texts that the memory measure left in ctx.memory, the texts of the
 // other agents' instruction files that the agent-harness measure left in ctx.agentInstructions (checked the same
-// way), and the root package.json through ctx.readText, which it parses as data. It runs nothing and reads nothing else.
+// way), and the package.json files that it needs through ctx.readText, which it parses as data. It runs nothing
+// and reads nothing else.
 //
 // Paths are looked for in inline code spans whose content is one token, and in relative Markdown links
 // and images. A token must contain "/" or end in a known extension. Commands (npm, pnpm, yarn and bun)
 // are looked for in inline code and in fenced blocks, and are compared with the scripts of the root
 // package.json. Fenced blocks are never checked for paths.
+//
+// With a scope (ctx.scope, see scope.mjs), a file whose harness folder H (harnessFolderOf) is not the root is compared with the
+// union of the scripts of the package.json of H and of each folder above H, up to the root, because the scope's own
+// package.json is where its scripts are. A missing package.json adds nothing. An invalid or unreadable one adds nothing and
+// writes no warning, but it may define the script, so while it is in the union, a script that no other package.json defines is
+// not reported. A file whose H is the root is compared with the root package.json only, as without a scope.
 //
 // Absolute paths and home paths are external: they are listed, and never stat-ed or read. A relative path
 // that leaves the target is external too, and it is recognized without a stat. Every text in the output
@@ -20,6 +27,7 @@ import { instructionTextsOf } from "./agent-inventory.mjs";
 import { codeSpans, markdownLines, maskCodeSpans, MASK } from "./markdown.mjs";
 import { packageScripts, readPackageJson } from "./package-json.mjs";
 import { scriptCallsInLine } from "./script-calls.mjs";
+import { harnessFolderOf } from "./scope.mjs";
 import { createRedactor } from "./redact.mjs";
 
 export const MEASURE_ID = "references";
@@ -65,7 +73,8 @@ function collectReferences(ctx) {
     const key = JSON.stringify([clean.file, clean.line, clean.text, clean.kind, clean.reason ?? null, clean.script ?? null]);
     if (!found.has(key)) found.set(key, clean);
   };
-  const state = { ctx, scripts, report };
+  // folders: the scripts of each package.json below the root, read once. known: the union for each harness folder (scriptsFor).
+  const state = { ctx, scripts, report, folders: new Map(), known: new Map() };
 
   // The memory texts and the texts of the other agents' instruction files, in path order. Each one is checked by its own text;
   // nothing is read again.
@@ -213,15 +222,65 @@ function linkTargets(text) {
 // ---------------------------------------------------------------------------------------------------
 // Commands
 
-// Checks one script call (see script-calls.mjs) against the root package.json.
+// Checks one script call (see script-calls.mjs) against the scripts that its file may use (scriptsFor).
 function checkCommand(state, where, command) {
-  const { scripts } = state;
+  const scripts = scriptsFor(state, where.file);
   // A package.json that cannot be read or parsed gives no answer: its commands are not reported.
   if (scripts.status === "absent") {
     reportCommand(state, where, command, "no-package-json");
   } else if (scripts.status === "ok" && !scripts.names.has(command.script)) {
     reportCommand(state, where, command, "missing-script");
   }
+}
+
+// The scripts that a file may use. Without a scope, and for a file whose harness folder is the root, these are the root scripts.
+// With a scope, the others are the union of the folders above the harness folder (knownScripts).
+function scriptsFor(state, file) {
+  const folder = state.ctx.scope ? harnessFolderOf(file) : ".";
+  return folder === "." ? state.scripts : knownScripts(state, folder);
+}
+
+// The union of the scripts of a folder and of each folder above it, up to the root. Cached per folder.
+function knownScripts(state, folder) {
+  if (!state.known.has(folder)) {
+    state.known.set(folder, unionOf(foldersAbove(folder).map((item) => scriptsOfFolder(state, item))));
+  }
+  return state.known.get(folder);
+}
+
+// The folder, then each folder above it, up to the root, which comes last as ".".
+function foldersAbove(folder) {
+  const folders = [];
+  for (let current = folder; ; current = path.posix.dirname(current)) {
+    folders.push(current);
+    if (current === ".") return folders;
+  }
+}
+
+// The scripts of the package.json of one folder. The root one is read by readScripts, with its warnings. Any other one is
+// read once, without a warning.
+function scriptsOfFolder(state, folder) {
+  if (folder === ".") return state.scripts;
+  if (!state.folders.has(folder)) state.folders.set(folder, readFolderScripts(state.ctx, folder));
+  return state.folders.get(folder);
+}
+
+// The same answer readScripts gives for the root package.json, but with no warning. An unreadable or invalid file is "invalid".
+function readFolderScripts(ctx, folder) {
+  const read = readPackageJson(ctx, `${folder}/package.json`);
+  if (read.status === "absent") return { status: "absent" };
+  if (read.status !== "ok") return { status: "invalid" };
+  const listed = packageScripts(read.data);
+  return listed.ok ? { status: "ok", names: new Set(listed.scripts.keys()) } : { status: "invalid" };
+}
+
+// The union of the scripts of several folders, in the shape readScripts returns. One invalid package.json makes the union
+// invalid, because it may define the script. Missing ones add nothing, and when all of them are missing the union is absent.
+function unionOf(reads) {
+  if (reads.some((read) => read.status === "invalid")) return { status: "invalid" };
+  const found = reads.filter((read) => read.status === "ok");
+  if (found.length === 0) return { status: "absent" };
+  return { status: "ok", names: new Set(found.flatMap((read) => [...read.names])) };
 }
 
 function reportCommand(state, where, command, reason) {

@@ -3,14 +3,15 @@
 // unreadable or invalid is seen the same way everywhere. The warnings are the caller's to record.
 
 /**
- * Reads and parses the root package.json through ctx.readText.
+ * Reads and parses a package.json of the target through ctx.readText.
  * @param {{ readText: (rel: string) => object }} ctx
+ * @param {string} [rel] The file, relative to the target. The root package.json by default.
  * @returns {{ status: "absent" } | { status: "unreadable" } | { status: "invalid", detail: string } | { status: "ok", data: object }}
  *   "absent": no file. "unreadable": the file exists but cannot be read (a skipped read of any reason but
  *   not-found). "invalid": not JSON ("not-json") or not a JSON object ("not-object").
  */
-export function readPackageJson(ctx) {
-  const read = ctx.readText("package.json");
+export function readPackageJson(ctx, rel = "package.json") {
+  const read = ctx.readText(rel);
   if (!read.ok) return read.reason === "not-found" ? { status: "absent" } : { status: "unreadable" };
   let data;
   try {

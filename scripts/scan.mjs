@@ -1,5 +1,5 @@
 // Command line entry point of the scanner: node scripts/scan.mjs <target> [--out <dir>] [--include-user-layer]
-// [--include-ancestors].
+// [--include-ancestors] [--scope <folder>]...
 //
 // It checks the arguments and the target, runs the measures and writes measurements.json to the
 // output folder, then prints a short summary. The output folder must lie inside runs/ of
@@ -9,6 +9,11 @@
 //
 // The two flags are opt-in. --include-user-layer reads ~/.claude (user layer, see lib/user-layer.mjs) and
 // --include-ancestors reads the memory files of the parent folders. Without them nothing outside the target is read.
+//
+// --scope, which can be repeated, limits the scan to folders of the target (see lib/scope.mjs). Each folder is relative to
+// the target and must exist inside it; a folder that does not exist, is not a folder or leaves the target exits with 2. The
+// harness of the root and of the folders between the root and the scope is still read, and --include-ancestors still reads
+// the parent folders of the target, not those of the scope.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -24,6 +29,7 @@ import { createMemoryMeasure, memoryMeasure } from "./lib/memory.mjs";
 import { referencesMeasure } from "./lib/references.mjs";
 import { checkRunDir, checkRunFile } from "./lib/run-dir.mjs";
 import { scan } from "./lib/scanner.mjs";
+import { ScopeError, resolveScopeFolders } from "./lib/scope.mjs";
 import { secretsMeasure } from "./lib/secrets.mjs";
 import { structureMeasure } from "./lib/structure.mjs";
 import { UsageError, checkOutputDir, defaultOutputDir, resolveTarget } from "./lib/target.mjs";
@@ -31,7 +37,8 @@ import { createUserLayerMeasure } from "./lib/user-layer.mjs";
 import { verificationMeasure } from "./lib/verification.mjs";
 
 const HARNESS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const USAGE = "usage: node scripts/scan.mjs <target> [--out <dir>] [--include-user-layer] [--include-ancestors]";
+const USAGE =
+  "usage: node scripts/scan.mjs <target> [--out <dir>] [--include-user-layer] [--include-ancestors] [--scope <folder>]...";
 
 // The measures, in the order they run, for the given flags. Each measure adds its import and one line here. The references,
 // verification and structure measures read the memory texts, so they run after the memory measure. The user layer runs right
@@ -58,8 +65,9 @@ process.exitCode = await main(process.argv.slice(2));
 
 async function main(argv) {
   try {
-    const { target: input, out, userLayer, ancestors } = parseCommandLine(argv);
+    const { target: input, out, userLayer, ancestors, scopes } = parseCommandLine(argv);
     const target = resolveTarget(input, HARNESS_ROOT);
+    const scope = scopes.length === 0 ? undefined : scopeFoldersOf(target.root, scopes);
     const outDir =
       out === undefined
         ? defaultOutputDir({ harnessRoot: HARNESS_ROOT, targetName: target.name, now: new Date() })
@@ -75,6 +83,7 @@ async function main(argv) {
       measures: measuresFor({ userLayer, ancestors }),
       derive: deriveMeasuredOutput,
       include,
+      scope,
     });
     // Second check, right before mkdir: the scan takes time, and a link put into runs/ meanwhile must be
     // refused before mkdir could create folders behind it. A link swapped in after this check can still
@@ -113,6 +122,7 @@ function parseCommandLine(argv) {
         out: { type: "string" },
         "include-user-layer": { type: "boolean" },
         "include-ancestors": { type: "boolean" },
+        scope: { type: "string", multiple: true },
       },
     });
   } catch (error) {
@@ -127,13 +137,25 @@ function parseCommandLine(argv) {
     out: values.out,
     userLayer: values["include-user-layer"] === true,
     ancestors: values["include-ancestors"] === true,
+    scopes: values.scope ?? [],
   };
 }
 
-// Six lines at most. Nothing else is printed on success.
+// The checked scope folders. A folder that cannot be used is a usage error, so the run exits with 2 before the scan.
+function scopeFoldersOf(root, scopes) {
+  try {
+    return resolveScopeFolders(root, scopes);
+  } catch (error) {
+    if (error instanceof ScopeError) throw new UsageError(error.message);
+    throw error;
+  }
+}
+
+// Six lines at most. Nothing else is printed on success. With a scope, the files line also counts the files inside it.
 function printSummary(measurements, file) {
-  const { target, warnings, measuredFindings } = measurements;
-  const listed = target.fileListSource === "git" ? "listed by git" : "listed by walking the folder";
+  const { target, warnings, measuredFindings, scope } = measurements;
+  const listing = target.fileListSource === "git" ? "listed by git" : "listed by walking the folder";
+  const listed = scope === undefined ? listing : `${listing}; ${scope.files.inScope} in the scope`;
   const perAxis = Object.entries(countByAxis(measuredFindings)).map(([axis, count]) => `${axis} ${count}`).join(", ");
   console.log(`target: ${target.name}`);
   console.log(`files: ${target.fileCount} (${listed})`);

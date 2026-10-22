@@ -12,7 +12,17 @@
 //
 // Pairs. The inventory has one item per (file, agent) pair, so AGENTS.md has one for each agent that owns it. statusOf gives
 // the status of a pair: what this scan can tell. Only the target is looked at. The files of the parent folders are not
-// blockers and are not listed: they are the scope of V02-05 and V02-10.
+// blockers and are not listed (V02-05).
+//
+// Scope (--scope, see scope.mjs). Without a scope nothing here changes. With one, a nested candidate (see isNested) whose path
+// ctx.scope.keepsHarness rejects is dropped first: it is not listed, not in ctx.agentOwners and not a blocker. A kept nested file
+// is read like a root file (see Reading). Re-rooting: for a kept path whose harness folder H (harnessFolderOf) is not the root,
+// the registry is matched against the path relative to H, for each agent that does not own the path through the full-path match.
+// The first entry of that agent, in file order, whose glob matches the relative path owns the pair. Such a pair has base H,
+// is nested, and has status unknown, because the load models of the registry describe the root only. It is never a blocker and
+// it is never blocked. The paths come from ctx.files and from a walk of the root names under each inherited folder other than
+// the root and under each scope folder. NOT VERIFIED by a note: that an agent reads a file below a subfolder through the
+// root-level glob of its registry entry, which re-rooting assumes.
 //
 // Listing. At most maxFiles files (MAX_FILES by default) are listed, in path order. The files beyond are left out of files and
 // items, and one warning agent-files-cut counts them. The statuses are worked out from every candidate, so a blocker that is
@@ -24,8 +34,9 @@
 // memoized, so the texts are not kept for the rest of the scan, except the texts that ctx.agentInstructions keeps (see below). A
 // file is not read when its name or its link target is a secret name (secret-name), when its link leaves the target or cannot be
 // resolved, when its claude-code pair matches claudeMdExcludes and no other agent owns it (claude-md-excludes: memory.mjs never
-// reads an excluded file), when it is nested (nested), or when the total byte cap would be passed (bytes-cap). A nested file is
-// listed with its size and never read. Only the line count and, for a file of a context kind, the estimate are kept, and the text
+// reads an excluded file), when it is nested and no scope keeps it (nested), or when the total byte cap would be passed
+// (bytes-cap). Without a scope a nested file is listed with its size and never read. With a scope, a kept nested file is read
+// like a root file. Only the line count and, for a file of a context kind, the estimate are kept, and the text
 // of an instruction file that ctx.agentInstructions keeps.
 //
 // Output. The section agentHarness. Two warnings can come from this measure: agent-files-cut counts the listed files left out
@@ -47,6 +58,7 @@ import { loadClaudeConfig, MAX_WALK_DEPTH } from "./claude-config.mjs";
 import { MAX_FILES, MAX_TOTAL_BYTES } from "./duplication.mjs";
 import { claudeMdExclusionOf, countsOf, EXCLUDED_REASON } from "./memory.mjs";
 import { DEFAULT_MAX_BYTES } from "./safe-fs.mjs";
+import { harnessFolderOf } from "./scope.mjs";
 import { secretFileKind } from "./secret-patterns.mjs";
 
 /** The id of the measure. Its section is agentHarness. */
@@ -123,12 +135,12 @@ function collectAgentHarness(ctx, model, { maxFiles, maxTotalBytes }) {
   const candidates = findCandidates(ctx, model.entries);
   const excludes = loadClaudeConfig(ctx).claudeMdExcludes;
   for (const file of candidates) {
-    file.claudeExclusion = file.owners.has(CLAUDE_CODE) ? claudeMdExclusionOf(excludes, file.path) : null;
+    file.claudeExclusion = agentsOfFile(file).includes(CLAUDE_CODE) ? claudeMdExclusionOf(excludes, file.path) : null;
   }
   // The statuses come from every candidate, so the cap below changes only what is listed.
   const env = { model, byPath: new Map(candidates.map((file) => [file.path, file])) };
   const pairs = buildPairs(candidates, env);
-  for (const file of candidates) ctx.agentOwners.set(file.path, [...file.owners.keys()].sort(compareText));
+  for (const file of candidates) ctx.agentOwners.set(file.path, agentsOfFile(file));
   const listed = candidates.slice(0, maxFiles);
   const cut = candidates.length - listed.length;
   const listedPaths = new Set(listed.map((file) => file.path));
@@ -163,19 +175,28 @@ function collectAgentHarness(ctx, model, { maxFiles, maxTotalBytes }) {
 // ---------------------------------------------------------------------------------------------------
 // Candidates
 
-// The files that some entry owns, sorted by path. Each has its owners (agent id to entry) and what is known before any read
-// (see describe). A path that no entry owns is left out.
+// The files that some entry owns, sorted by path. Each has its owners (agent id to entry), the owners found by re-rooting
+// (rerooted, see rerootedOf), and what is known before any read (see describe). A path that no entry owns is left out.
 function findCandidates(ctx, entries) {
+  const scope = scopeOf(ctx);
+  const names = rootNamesOf(entries);
   const seen = new Set();
   const owned = new Map();
   const consider = (rel) => {
     if (seen.has(rel)) return;
     seen.add(rel);
-    const owners = ownersOf(entries, rel);
-    if (owners.size > 0) owned.set(rel, owners);
+    const ownership = ownershipOf(entries, rel, scope, names);
+    if (ownership !== null) owned.set(rel, ownership);
   };
   for (const file of ctx.files) consider(file.path);
-  walkRootNames(ctx, rootNamesOf(entries), consider);
+  walkRootNames(ctx, names, consider);
+  // With a scope, the folders between the root and the scope, and the scope folders, are walked too, so that their harness
+  // is seen.
+  if (scope !== null) {
+    for (const folder of [...scope.inherited, ...scope.folders]) {
+      if (folder !== ".") walkRootNames(ctx, names, consider, folder);
+    }
+  }
   const found = [];
   for (const rel of [...owned.keys()].sort(compareText)) {
     const candidate = describe(ctx, rel, owned.get(rel));
@@ -184,29 +205,76 @@ function findCandidates(ctx, entries) {
   return found;
 }
 
+// The scope of the run (scope.mjs), or null when the whole target is scanned.
+function scopeOf(ctx) {
+  return ctx.scope ?? null;
+}
+
+// The owners of one path: the full-path owners (ownersOf) and, with a scope, the re-rooted owners (rerootedOf). Null when the
+// path has no owner, or when the scope drops it. Without a scope the result is the one the scan has always had.
+function ownershipOf(entries, rel, scope, names) {
+  const owners = ownersOf(entries, rel);
+  if (scope === null) return owners.size > 0 ? { owners, rerooted: null } : null;
+  // A nested file outside the scope is dropped first: it is not listed, not in ctx.agentOwners and not a blocker.
+  if (isNested(rel, owners) && !scope.keepsHarness(rel)) return null;
+  const rerooted = rerootedOf(entries, rel, owners, scope, names);
+  return owners.size > 0 || rerooted !== null ? { owners, rerooted } : null;
+}
+
+// The owners that a path gets below its harness folder H (harnessFolderOf), with a scope only. The path is matched against the
+// registry relative to H, for each agent that does not own the path through the full-path match (owners): the first entry of
+// that agent, in file order, whose glob matches the relative path owns it. Only a path whose H is not the root, that the scope
+// keeps, and whose first segment below H is a registry root name is matched. Returns { base: H, owners } or null.
+function rerootedOf(entries, rel, owners, scope, names) {
+  const base = harnessFolderOf(rel);
+  if (base === "." || !scope.keepsHarness(rel)) return null;
+  const relative = rel.slice(base.length + 1);
+  if (!names.has(relative.split("/")[0])) return null;
+  const found = ownersOf(entries, relative, new Set(owners.keys()));
+  return found.size > 0 ? { base, owners: found } : null;
+}
+
+// The ids of the agents that own a candidate, sorted: the full-path owners and the re-rooted ones.
+function agentsOfFile(file) {
+  const rerooted = file.rerooted === null ? [] : [...file.rerooted.owners.keys()];
+  return [...file.owners.keys(), ...rerooted].sort(compareText);
+}
+
+// The registry entries that own a candidate: the full-path ones and the re-rooted ones.
+function entriesOf(file) {
+  const rerooted = file.rerooted === null ? [] : [...file.rerooted.owners.values()];
+  return [...file.owners.values(), ...rerooted];
+}
+
 // What is known about one owned path before any read: its size, the real location that its links lead to, and the reason it
 // cannot be read, when there is one. Null for a path that is not a file: a folder, or a link that does not resolve. A link that
-// leaves the target keeps the outside-root reason and no size.
-function describe(ctx, rel, owners) {
-  const nested = isNested(rel, owners);
+// leaves the target keeps the outside-root reason and no size. A path with re-rooted owners is nested. scoped tells that a scope
+// is given, which is what lets a kept nested file be read (see unreadableReasonOf).
+function describe(ctx, rel, ownership) {
+  const known = {
+    path: rel,
+    owners: ownership.owners,
+    rerooted: ownership.rerooted,
+    nested: isNested(rel, ownership.owners) || ownership.rerooted !== null,
+    scoped: scopeOf(ctx) !== null,
+    claudeExclusion: null,
+  };
   const probe = ctx.fs.stat(rel);
   if (!probe.ok) {
     if (probe.reason !== "outside-root") return null;
-    return { path: rel, bytes: null, owners, nested, target: null, reason: "outside-root", claudeExclusion: null };
+    return { ...known, bytes: null, target: null, reason: "outside-root" };
   }
   if (probe.type !== "file") return null;
   const resolved = ctx.fs.resolve(rel);
-  if (!resolved.ok) {
-    return { path: rel, bytes: probe.bytes, owners, nested, target: null, reason: resolved.reason, claudeExclusion: null };
-  }
-  return { path: rel, bytes: probe.bytes, owners, nested, target: resolved.target, reason: null, claudeExclusion: null };
+  if (!resolved.ok) return { ...known, bytes: probe.bytes, target: null, reason: resolved.reason };
+  return { ...known, bytes: probe.bytes, target: resolved.target, reason: null };
 }
 
-// The agent id to the first entry of that agent, in file order, whose glob matches rel.
-function ownersOf(entries, rel) {
+// The agent id to the first entry of that agent, in file order, whose glob matches rel. The agents in taken are left out.
+function ownersOf(entries, rel, taken = new Set()) {
   const owners = new Map();
   for (const entry of entries) {
-    if (!owners.has(entry.agent) && matchHarnessGlob(entry.glob, rel)) owners.set(entry.agent, entry);
+    if (!owners.has(entry.agent) && !taken.has(entry.agent) && matchHarnessGlob(entry.glob, rel)) owners.set(entry.agent, entry);
   }
   return owners;
 }
@@ -229,14 +297,15 @@ function rootNamesOf(entries) {
   return names;
 }
 
-// Passes every path under the root-level names to consider.
-function walkRootNames(ctx, names, consider) {
-  const top = ctx.fs.listDir(".");
+// Passes every path under the given names at the base folder (the root by default) to consider.
+function walkRootNames(ctx, names, consider, base = ".") {
+  const top = ctx.fs.listDir(base);
   if (!top.ok) return;
   for (const entry of top.entries) {
     if (!names.has(entry.name)) continue;
-    if (entry.type === "dir") walkFolder(ctx, entry.name, 0, consider);
-    else if (isFileEntry(ctx, entry.name, entry.type)) consider(entry.name);
+    const rel = base === "." ? entry.name : `${base}/${entry.name}`;
+    if (entry.type === "dir") walkFolder(ctx, rel, 0, consider);
+    else if (isFileEntry(ctx, rel, entry.type)) consider(rel);
   }
 }
 
@@ -287,6 +356,20 @@ function buildPairs(candidates, env) {
   for (const file of candidates) {
     for (const [agent, entry] of file.owners) {
       pairs.push({ file, agent, entry, ...excludedFieldOf(agent, file), ...statusOf(file, agent, entry, env) });
+    }
+    // A re-rooted pair (see rerootedOf) has its base and always the status unknown: the registry's load models describe
+    // the root.
+    if (file.rerooted !== null) {
+      for (const [agent, entry] of file.rerooted.owners) {
+        pairs.push({
+          file,
+          agent,
+          entry,
+          base: file.rerooted.base,
+          ...excludedFieldOf(agent, file),
+          status: STATUS.unknown,
+        });
+      }
     }
   }
   return pairs.sort((a, b) => compareText(a.file.path, b.file.path) || compareText(a.agent, b.agent));
@@ -389,6 +472,7 @@ function itemOf(pair) {
     nested: pair.file.nested,
     status: pair.status,
   };
+  if (pair.base !== undefined) item.base = pair.base;
   if (pair.blockedBy !== undefined) item.blockedBy = pair.blockedBy;
   if (pair.excludedBy !== undefined) item.excludedBy = pair.excludedBy;
   if (isCountedAsBefore(pair.agent, pair.entry)) item.budget = AS_BEFORE;
@@ -444,8 +528,8 @@ function unreadableReasonOf(file) {
   if (file.reason !== null) return file.reason;
   // claudeMdExcludes is a Claude Code setting. A file that only Claude Code owns is not read when the setting matches it. A file
   // that another agent owns is still read for that agent; its claude-code pair keeps the status excluded and the excludedBy.
-  if (file.claudeExclusion !== null && file.owners.size === 1) return EXCLUDED_REASON;
-  if (file.nested) return NESTED_REASON;
+  if (file.claudeExclusion !== null && agentsOfFile(file).length === 1) return EXCLUDED_REASON;
+  if (file.nested && !file.scoped) return NESTED_REASON;
   return null;
 }
 
@@ -455,7 +539,7 @@ function readOne(ctx, file, keep) {
   const read = ctx.fs.readText(file.target);
   if (!read.ok) return unread(read.reason);
   const counts = countsOf(read.text);
-  const context = [...file.owners.values()].some((entry) => CONTEXT_KINDS.has(entry.kind));
+  const context = entriesOf(file).some((entry) => CONTEXT_KINDS.has(entry.kind));
   const outcome = { read: true, notReadReason: null, lines: counts.lines, estTokens: context ? counts.estTokens : null };
   if (keep) outcome.text = read.text;
   return outcome;
