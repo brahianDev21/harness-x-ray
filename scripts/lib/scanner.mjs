@@ -67,6 +67,10 @@ export async function scan({ root, measures = [], now = new Date(), derive, incl
     commit: listing.commit,
     readText: createMemoizedReader(fsView),
     memory: new Map(),
+    // The texts of the instruction files of the other agents that the agent-harness measure reads (path -> { text, agents }),
+    // and the agents that own each file it lists (path -> sorted agent ids). Both are empty unless that measure runs.
+    agentInstructions: new Map(),
+    agentOwners: new Map(),
     // Data that opt-in measures read from outside the target, keyed by layer ("user" for the user layer). It is empty
     // unless such a measure runs, and the measures that run after it can read it.
     outside: new Map(),

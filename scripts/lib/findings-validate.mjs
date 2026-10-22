@@ -27,6 +27,9 @@
 // file of a parent folder (../). The validator never reads such a file. The file must be one that measurements.json lists
 // for its layer (its userLayer section, or context.ancestors with read true), a quote is refused, and a line must lie
 // inside the lines count that measurements.json gives the file. Without a layer, evidence is a file of the target.
+//
+// Agents (errors). A finding may name the agents it applies to. Each must be an agent that the scan detected
+// (agentHarness.agents of measurements.json), named once. A scan without agentHarness detected none.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -43,12 +46,15 @@ export const KINDS = Object.freeze(["measured", "judgment"]);
 export const IMPACTS = Object.freeze(["high", "medium", "low"]);
 /** The fields the validator accepts. The schema in schemas/findings.schema.json must document the same sets. */
 export const TOP_LEVEL_FIELDS = Object.freeze(["findings", "language"]);
+/** The pattern of an agent id, as the schema writes it. An id is also the id of an agent of agentHarness.agents. */
+export const AGENT_ID_PATTERN = "^[a-z0-9-]+$";
 export const FINDING_FIELDS = Object.freeze([
   "rule",
   "axis",
   "kind",
   "measuredFindingId",
   "measuredSupport",
+  "agents",
   "evidence",
   "impact",
   "summary",
@@ -74,6 +80,7 @@ export const REQUIRED_FINDING_FIELDS = Object.freeze([
 const RULE_FILE = /^[A-Z]{3}-\d{2}(?:-[a-z0-9]+(?:-[a-z0-9]+)*)?\.md$/;
 // A segment that Windows reads as the parent folder ("..", "... " and so on). The same rule as safe-fs.
 const PARENT_SEGMENT = /^[. ]*\.\.[. ]*$/;
+const AGENT_ID = new RegExp(AGENT_ID_PATTERN);
 const READ_PROBLEMS = Object.freeze({
   "outside-root": "is outside the target folder",
   "not-found": "does not exist in the target",
@@ -129,6 +136,7 @@ export function validateFindings({ findings, measurements, rules, targetRoot }) 
     measured: measuredById(measurements),
     numbers: numbersIn(measurements, new Set()),
     outside: outsideFilesOf(measurements),
+    agents: agentIdsOf(measurements),
     target: createTargetFs(targetRoot),
     reads: new Map(),
   };
@@ -253,6 +261,7 @@ function checkFinding(item, index, ctx) {
   }
 
   checkMeasuredFields(item, { index, rule, fail, warn, ctx });
+  checkAgents(item, { fail, ctx });
   if (item.impact !== undefined && !IMPACTS.includes(item.impact)) {
     fail("impact", `must be high, medium or low, found ${show(item.impact)}`);
   }
@@ -321,6 +330,47 @@ function checkMeasuredFields(item, { index, rule, fail, warn, ctx }) {
       }
     });
   }
+}
+
+// The agents of a finding: a non-empty list of unique ids, each one an agent that the scan detected. A scan without
+// agentHarness detected none, so any id is an error there. The message shows an id with show(), so a secret is hidden.
+function checkAgents(item, { fail, ctx }) {
+  const list = item.agents;
+  if (list === undefined) return;
+  if (!Array.isArray(list)) {
+    fail("agents", 'must be a list of agent ids, such as ["claude-code"]');
+    return;
+  }
+  if (list.length === 0) {
+    fail("agents", "is an empty list; name the agents the finding applies to, or remove the field");
+    return;
+  }
+  const named = new Set();
+  const detected = [...ctx.agents].sort(compareText).join(", ") || "none";
+  list.forEach((id, position) => {
+    const at = `agents[${position}]`;
+    if (typeof id !== "string" || !AGENT_ID.test(id)) {
+      fail(at, `${show(id)} is not an agent id; ids are lowercase letters, digits and hyphens`);
+      return;
+    }
+    if (named.has(id)) {
+      fail(at, `${show(id)} is listed more than once; name each agent once`);
+      return;
+    }
+    named.add(id);
+    if (!ctx.agents.has(id)) {
+      fail(at, `${show(id)} is not an agent that the scan detected; the detected agents are ${detected}`);
+    }
+  });
+}
+
+// The ids of the agents that agentHarness lists: the detected agents of the scan. Empty when the scan has none.
+function agentIdsOf(measurements) {
+  const ids = new Set();
+  for (const item of listOf(measurements.agentHarness?.agents)) {
+    if (isPlainObject(item) && typeof item.id === "string") ids.add(item.id);
+  }
+  return ids;
 }
 
 // Evidence -----------------------------------------------------------------------------------------

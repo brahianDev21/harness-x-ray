@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { createAgentInventoryMeasure } from "../scripts/lib/agent-inventory.mjs";
 import { isPlainObject } from "../scripts/lib/json-out.mjs";
 import { createMemoryMeasure } from "../scripts/lib/memory.mjs";
 import {
@@ -1389,4 +1390,148 @@ test("a finding takes the highest impact of its triggers, and the ref of the fir
   assert.equal(finding.impact, "high");
   assert.equal(finding.measurementRef, "/security/secrets/files/0");
   assert.deepEqual(finding.triggers.map((item) => item.impact), ["high", "high", "medium"]);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// Agents: the agents field of CTX-07, and the agent-instructions and unloaded-control candidates
+
+test("CTX-07: the finding names claude-code as its agent, and a finding of another rule has no agents field (positive control)", () => {
+  const m = measured({
+    inventory: [
+      { path: "AGENTS.md", kind: "memory", loadMode: "not-loaded", lines: 120, estTokens: 800, bytes: 4000 },
+      { path: "CLAUDE.md", kind: "memory", loadMode: "always", lines: 30, estTokens: 200, bytes: 900 },
+    ],
+    instructions: { brokenRefs: [{ file: "CLAUDE.md", line: 3, text: "docs/a.md", kind: "path", reason: "not-found" }] },
+  });
+  assert.deepEqual(findingsOf(m, "CTX-07")[0].agents, ["claude-code"]);
+  assert.equal(Object.hasOwn(findingsOf(m, "RUL-04")[0], "agents"), false);
+});
+
+// A scan with the memory measure and the agent-inventory measure, with the measured output derived. The registry is optional.
+async function agentScan(t, files, { registry } = {}) {
+  const fixture = makeFixture({ files });
+  t.after(fixture.cleanup);
+  const measures = [
+    createMemoryMeasure({ ancestorLimit: fixture.base, home: path.join(fixture.base, "no-home") }),
+    createAgentInventoryMeasure({ registry }),
+  ];
+  return scan({ root: fixture.root, measures, derive: deriveMeasuredOutput, now: FIXED_NOW });
+}
+
+test("candidates: other agents' instruction files and the settings or hooks that no agent loads, after the memory files; AGENTS.md is a memory file, not an agent-instructions candidate", async (t) => {
+  const measurements = await agentScan(t, {
+    "AGENTS.md": "# Layered\n",
+    ".agents/permissions.json": '{"deny": ["Read(./dist/**)"]}\n',
+    ".agents/hooks/pre-commit.mjs": "export const ready = true;\n",
+    ".cursorrules": "Prefer small functions.\n",
+  });
+  const { candidates, agentHarness } = measurements;
+  assert.deepEqual(candidates.map((candidate) => candidate.id), ["cand-1", "cand-2", "cand-3", "cand-4"]);
+  assert.deepEqual(candidates.map((candidate) => candidate.kind), [
+    "memory-file",
+    "agent-instructions",
+    "unloaded-control",
+    "unloaded-control",
+  ]);
+  const indexOf = (rel) => agentHarness.files.findIndex((file) => file.path === rel);
+  assert.deepEqual(candidates[1], {
+    id: "cand-2",
+    kind: "agent-instructions",
+    rules: ["RUL-01", "RUL-02", "RUL-03", "SEC-04", "SEC-05"],
+    file: ".cursorrules",
+    agents: ["cursor"],
+    measurementRef: `/agentHarness/files/${indexOf(".cursorrules")}`,
+  });
+  // Sorted by file. Both controls are not-verified: agents-md is unknown for them.
+  assert.deepEqual(candidates.slice(2).map((candidate) => [candidate.file, candidate.controlKind, candidate.status]), [
+    [".agents/hooks/pre-commit.mjs", "hooks", "not-verified"],
+    [".agents/permissions.json", "settings", "not-verified"],
+  ]);
+  assert.deepEqual(candidates[2].rules, ["SEC-04", "SEC-05"]);
+  assert.equal(candidates[2].measurementRef, `/agentHarness/files/${indexOf(".agents/hooks/pre-commit.mjs")}`);
+});
+
+test("candidates: a settings file that a verified blocker stops from loading is missing, not not-verified (positive control: without the blocker it loads and is no candidate)", async (t) => {
+  const registry = {
+    agents: [{ id: "demo-agent", name: "Demo agent", type: "agent" }],
+    files: [
+      { id: "demo-agent-control", agent: "demo-agent", glob: "DEMO.json", kind: "settings", loadModel: "ancestors", sources: ["cc-docs-settings"], unless: ["demo-agent-stop"] },
+      { id: "demo-agent-stop", agent: "demo-agent", glob: "STOP.md", kind: "instructions", loadModel: "always", sources: ["cc-docs-settings"] },
+    ],
+  };
+  const blocked = await agentScan(t, { "DEMO.json": "{}\n", "STOP.md": "Stop.\n" }, { registry });
+  assert.deepEqual(
+    blocked.candidates.filter((candidate) => candidate.kind === "unloaded-control").map((candidate) => [candidate.file, candidate.status]),
+    [["DEMO.json", "missing"]],
+  );
+  assert.deepEqual(
+    blocked.candidates.filter((candidate) => candidate.kind === "agent-instructions").map((candidate) => [candidate.file, candidate.agents]),
+    [["STOP.md", ["demo-agent"]]],
+  );
+  const loads = await agentScan(t, { "DEMO.json": "{}\n" }, { registry });
+  assert.deepEqual(loads.candidates, [], "the file loads for the demo agent, so it is no control candidate");
+});
+
+test("the schema lists the two candidate kinds with their fields, and the agents field of a measured finding", () => {
+  const schema = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "schemas", "measurements.schema.json"), "utf8"));
+  const candidate = schema.$defs.candidate;
+  assert.deepEqual(candidate.properties.kind.enum, [
+    "duplication-group",
+    "hook-script",
+    "memory-file",
+    "agent-instructions",
+    "unloaded-control",
+  ]);
+  assert.deepEqual(candidate.properties.controlKind.enum, ["settings", "hooks"]);
+  assert.deepEqual(candidate.properties.status.enum, ["not-verified", "missing"]);
+  assert.equal(schema.$defs.measuredFinding.properties.agents.uniqueItems, true);
+  assert.equal(schema.$defs.measuredFinding.required.includes("agents"), false);
+});
+
+test("candidates: a root AGENTS.md that claudeMdExcludes keeps out of memory is an agent-instructions candidate; one that loads is a memory file (positive control)", async (t) => {
+  const excluded = await agentScan(t, {
+    "AGENTS.md": "# Excluded from Claude Code\n",
+    ".claude/settings.json": JSON.stringify({ claudeMdExcludes: ["AGENTS.md"] }),
+    ".cursorrules": "Prefer small functions.\n",
+  });
+  assert.deepEqual(
+    excluded.candidates.filter((candidate) => candidate.kind === "agent-instructions").map((candidate) => [candidate.file, candidate.agents]),
+    [
+      [".cursorrules", ["cursor"]],
+      // The claude-code pair of the file is excluded, so only agents-md reads it.
+      ["AGENTS.md", ["agents-md"]],
+    ],
+  );
+  assert.equal(
+    excluded.candidates.some((candidate) => candidate.kind === "memory-file" && candidate.file === "AGENTS.md"),
+    false,
+    "an excluded file is not a memory-file candidate",
+  );
+
+  const loads = await agentScan(t, { "AGENTS.md": "# Layered\n", ".cursorrules": "Prefer small functions.\n" });
+  assert.deepEqual(
+    loads.candidates.filter((candidate) => candidate.kind === "agent-instructions").map((candidate) => candidate.file),
+    [".cursorrules"],
+    "a loading AGENTS.md is no agent-instructions candidate",
+  );
+  assert.deepEqual(
+    loads.candidates.filter((candidate) => candidate.kind === "memory-file").map((candidate) => candidate.file),
+    ["AGENTS.md"],
+  );
+});
+
+test("candidates: files of an unknown kind give no candidate, and a settings file that Claude Code loads gives no unloaded-control (positive control: .agents/permissions.json does)", async (t) => {
+  const result = await agentScan(t, {
+    ".gemini/settings.json": '{"theme": "dark"}\n',
+    ".codex/config.toml": 'model = "placeholder"\n',
+    ".claude/settings.json": '{"permissions": {"allow": []}}\n',
+    ".agents/permissions.json": '{"deny": ["Read(./dist/**)"]}\n',
+  });
+  assert.deepEqual(result.candidates.map((candidate) => [candidate.kind, candidate.file]), [
+    ["unloaded-control", ".agents/permissions.json"],
+  ]);
+  assert.deepEqual(
+    result.candidates.map((candidate) => [candidate.controlKind, candidate.status]),
+    [["settings", "not-verified"]],
+  );
 });

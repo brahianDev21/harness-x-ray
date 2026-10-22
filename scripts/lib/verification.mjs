@@ -7,12 +7,15 @@
 //   format, verify, build), with their categories. The command text is not output: it may hold secrets.
 // - verification.mentioned: the calls that the memory text makes to those scripts.
 // - instructions.packageManager: the manager that the packageManager field names, the lockfiles at the
-//   root, the managers that the memory text names, and whether those disagree (conflict).
+//   root, the managers that the memory text names (mentions), the files that name a manager with the agents
+//   that own them (byFile), and whether all of them disagree (conflict). The texts of the other agents' instruction
+//   files (ctx.agentInstructions) count toward conflict and byFile, not toward mentions.
 // - structure.enforcementTools: the configs of tools that enforce rules, found by file name.
 //
 // The package.json warnings belong to the references measure, which reads the same file, so this measure
 // adds none. Every text in the output is redacted.
 
+import { instructionTextsOf } from "./agent-inventory.mjs";
 import { markdownLines } from "./markdown.mjs";
 import { packageScripts, readPackageJson } from "./package-json.mjs";
 import { createRedactor } from "./redact.mjs";
@@ -190,30 +193,48 @@ function packageManagerOf(ctx, data, redact) {
     .filter((entry) => LOCKFILE_MANAGERS.has(entry.path))
     .map((entry) => ({ path: entry.path, manager: LOCKFILE_MANAGERS.get(entry.path) }))
     .sort((a, b) => compareText(a.path, b.path));
-  const mentions = managerMentions(ctx.memory);
+  // The lines of the memory texts and of the other agents' instruction texts that name a manager. Conflict counts all of them;
+  // mentions keeps the memory lines only, as it always did.
+  const allMentions = managerMentions(instructionTextsOf(ctx));
 
-  const named = new Set([...lockfiles, ...mentions].map((item) => item.manager));
+  const named = new Set([...lockfiles, ...allMentions].map((item) => item.manager));
   if (fieldManager !== null) named.add(fieldManager);
   return {
     field: declared === null ? null : redact(declared),
     fieldManager,
     lockfiles,
-    mentions,
+    mentions: allMentions.filter((item) => ctx.memory.has(item.file)),
+    byFile: byFileOf(allMentions, ctx.agentOwners),
     conflict: named.size > 1,
   };
 }
 
-// The memory lines that name a package manager: one entry per manager, file and line.
-function managerMentions(memory) {
+// The lines that name a package manager, for [file, text] pairs: one entry per manager, file and line.
+function managerMentions(texts) {
   const found = [];
-  for (const file of sortedFiles(memory)) {
-    for (const line of markdownLines(memory.get(file).text)) {
+  for (const [file, text] of texts) {
+    for (const line of markdownLines(text)) {
       for (const manager of managersIn(line.text)) found.push({ manager, file, line: line.number });
     }
   }
   return found.sort(
     (a, b) => compareText(a.file, b.file) || a.line - b.line || compareText(a.manager, b.manager),
   );
+}
+
+// The files that name a manager, sorted by file, with the managers each names (sorted) and the agents that own the file in the
+// agent inventory (ctx.agentOwners; [] when none does). A file is listed only when it names at least one manager.
+function byFileOf(mentions, owners) {
+  const managersOf = new Map();
+  for (const { manager, file } of mentions) {
+    if (!managersOf.has(file)) managersOf.set(file, new Set());
+    managersOf.get(file).add(manager);
+  }
+  return [...managersOf.keys()].sort(compareText).map((file) => ({
+    file,
+    managers: [...managersOf.get(file)].sort(compareText),
+    agents: [...(owners.get(file) ?? [])],
+  }));
 }
 
 function managersIn(text) {

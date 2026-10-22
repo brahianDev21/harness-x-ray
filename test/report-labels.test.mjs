@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
+import { KINDS } from "../scripts/lib/agent-harness.mjs";
 import { loadRules, validateFindings } from "../scripts/lib/findings-validate.mjs";
 import { readCatalog } from "../scripts/lib/report-catalog.mjs";
 import { loadLabels, parseLabels, placeholdersOf } from "../scripts/lib/report-labels.mjs";
@@ -63,6 +64,18 @@ describe("labels files", () => {
     assert.throws(() => parseLabels({ "a.b": "" }, "x"), /must be non-empty text/);
     assert.throws(() => parseLabels({ "a.b": 3 }, "x"), /must be non-empty text/);
     assert.throws(() => parseLabels([], "x"), /JSON object/);
+  });
+
+  test("every agent of the registry and every harness kind has a label in both languages", () => {
+    const registry = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "data", "agent-harness.json"), "utf8"));
+    for (const agent of registry.agents) {
+      for (const labels of [labelsEn, labelsEs]) assert.ok(Object.hasOwn(labels, `agent.${agent.id}`), `agent.${agent.id}`);
+      // The English label is the registry name, so the report names an agent as the registry does.
+      assert.equal(labelsEn[`agent.${agent.id}`], agent.name, `the English label of ${agent.id}`);
+    }
+    for (const kind of KINDS) {
+      for (const labels of [labelsEn, labelsEs]) assert.ok(Object.hasOwn(labels, `harnessKind.${kind}`), `harnessKind.${kind}`);
+    }
   });
 });
 
@@ -129,6 +142,18 @@ function buildScenarios() {
   m.warnings.push({ source: "fs", path: "notes/big.md", reason: "too-large", detail: { bytes: 300000 } });
   m.target.git.head = "0123456789abcdef0123456789abcdef01234567";
   m.probe = { yes: true, no: false, nothing: null, list: [1, 2], label: "text" };
+  m.agentHarness = allAgentsHarness();
+  // A measured finding that names agents, and that no finding cites: its agents are shown in its own block.
+  m.measuredFindings.push({
+    id: "mf-200",
+    rule: "CTX-07",
+    axis: "context",
+    impact: "medium",
+    measurementRef: "/agentHarness/agents/0/items",
+    evidence: [{ file: ".claude/settings.json" }],
+    triggers: [],
+    agents: ["cursor"],
+  });
   m.measuredFindings.push(
     {
       id: "mf-7",
@@ -189,6 +214,8 @@ function buildScenarios() {
     recommendation: "Reuse the existing reader before adding another.",
     testInFunction2: "Compare the diff size with and without the reuse rule.",
   });
+  // A finding that names agents, so the Agents field is rendered from a finding (the other one comes from the measure above).
+  findings.findings[0].agents = ["claude-code", "cursor"];
   const noSourceRules = new Map(catalog.rules);
   noSourceRules.set("SEC-05", { ...catalog.rules.get("SEC-05"), evidence: "common-practice", sources: [] });
   const rich = { measurements: m, findings, catalog: { ...catalog, rules: noSourceRules } };
@@ -219,6 +246,31 @@ function buildScenarios() {
   const both = flagged({ userLayer: true, ancestors: true }, [userEvidence, ancestorEvidence]);
 
   return { golden, rich, empty, userLayer, ancestors, both };
+}
+
+// The agentHarness of a scan that detects every registry agent, sorted by id as the scan writes them. Claude Code has every
+// kind, so every harness kind label is rendered; each other agent has instructions and hooks, and hooks is not evaluated.
+function allAgentsHarness() {
+  const registry = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "data", "agent-harness.json"), "utf8"));
+  const agents = [...registry.agents].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const kindsOf = (id) => (id === "claude-code" ? KINDS : ["instructions", "hooks"]);
+  return {
+    registry: "data/agent-harness.json",
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      type: agent.type,
+      verified: agent.id === "claude-code",
+      items: kindsOf(agent.id).length,
+      budget: agent.id === "claude-code" ? "/context/alwaysLoaded" : "unknownStatic",
+      unverifiedInBudget: [],
+    })),
+    items: agents.flatMap((agent) =>
+      kindsOf(agent.id).map((kind) => ({ path: `${agent.id}/${kind}`, agent: agent.id, entry: `${agent.id}-${kind}`, kind })),
+    ),
+    files: [],
+    unknownStatic: [],
+  };
 }
 
 function probeFinding(id, measurementRef, trigger) {

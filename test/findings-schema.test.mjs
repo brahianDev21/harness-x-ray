@@ -4,6 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  AGENT_ID_PATTERN,
   AXES,
   EVIDENCE_FIELDS,
   EVIDENCE_LAYERS,
@@ -57,6 +58,18 @@ test("findings schema: the rule pattern accepts every rule of the catalog", () =
   const rules = loadRules(HARNESS_ROOT);
   assert.ok(rules.length > 0);
   for (const rule of rules) assert.match(rule.id, pattern);
+});
+
+test("findings schema: agents is a list of unique agent ids, with the validator's pattern", () => {
+  const agents = SCHEMA.$defs.finding.properties.agents;
+  assert.equal(agents.type, "array");
+  assert.equal(agents.minItems, 1, "an empty list is an error");
+  assert.equal(agents.uniqueItems, true);
+  assert.equal(agents.items.type, "string");
+  assert.equal(agents.items.pattern, AGENT_ID_PATTERN);
+  const pattern = new RegExp(agents.items.pattern);
+  assert.match("claude-code", pattern, "positive control: a registry id passes");
+  assert.doesNotMatch("Claude Code", pattern);
 });
 
 test("findings schema: measuredFindingId is for measured findings only, and measuredSupport for judgment only", () => {

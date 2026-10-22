@@ -4,9 +4,10 @@
 // - measuredFindings: one entry per finding of a measured rule. Its impact is the highest impact of its triggers, and
 //   each trigger names the measurement that caused it. Ids mf-N follow the order of EMITTERS, then the order of the
 //   measurements inside each emitter.
-// - candidates: what the agent must read: duplication groups (COD-01, COD-04), hook scripts (SEC-02, SEC-04) and
-//   memory files (judgment rules). They carry file paths and line numbers, never code text. Ids cand-N follow the
-//   order of the three groups.
+// - candidates: what the agent must read: duplication groups (COD-01, COD-04), hook scripts (SEC-02, SEC-04),
+//   memory files (judgment rules), instruction files of other agents (agent-instructions) and the settings or hooks
+//   files that no agent loads (unloaded-control). They carry file paths and line numbers, never code text. Ids cand-N
+//   follow the order of the groups.
 // - undeterminable: cases that a measured rule could not decide, with the reason. They are never findings.
 //
 // Every measurementRef is an RFC 6901 JSON pointer into measurements.json. Triggers are sorted by impact, high first,
@@ -47,6 +48,13 @@ const DUPLICATION_POINTER = "/code/duplication/duplicatedLinesPct";
 const DUPLICATION_RULES = Object.freeze(["COD-01", "COD-04"]);
 const HOOK_RULES = Object.freeze(["SEC-02", "SEC-04"]);
 const MEMORY_RULES = Object.freeze(["RUL-01", "RUL-02", "RUL-03", "VER-01", "SEC-04", "SEC-05", "STR-01", "COD-04"]);
+const CLAUDE_CODE_AGENT = "claude-code";
+const INSTRUCTIONS_KIND = "instructions";
+const CONTROL_KINDS = Object.freeze(["settings", "hooks"]);
+// The statuses of an agent-harness pair that say the agent does not read the file (see agent-inventory.mjs).
+const OUT_OF_EFFECT = new Set(["excluded", "not-loaded"]);
+const AGENT_INSTRUCTION_RULES = Object.freeze(["RUL-01", "RUL-02", "RUL-03", "SEC-04", "SEC-05"]);
+const CONTROL_RULES = Object.freeze(["SEC-04", "SEC-05"]);
 
 /**
  * The emitters of the measured MVP rules, in axis order. Each takes the merged measurements and returns
@@ -208,7 +216,8 @@ function emitAlwaysLoadedBudget(measurements) {
 // in the target when the inventory has one that loads, otherwise a CLAUDE file in an ancestor folder. An AGENTS file that
 // claudeMdExcludes matches is not counted: it is not loaded because of that setting, not because of a CLAUDE file. An
 // AGENTS file whose only root CLAUDE files are excluded (loadReason claude-md-excluded-agents-unverified) is undeterminable:
-// whether Claude Code loads it is not verified by a note, so it is never a finding.
+// whether Claude Code loads it is not verified by a note, so it is never a finding. A finding carries agents: ["claude-code"],
+// the agent the rule is about; no other measured finding has an agents field.
 
 const CLAUDE_EXCLUDED_UNDETERMINABLE =
   "the root CLAUDE.md files match claudeMdExcludes, so whether Claude Code loads this AGENTS file is not verified (not verified by a note)";
@@ -246,7 +255,9 @@ function emitAgentsMdNotLoaded(measurements) {
     if (cause.file !== undefined) evidence.push(evidenceOf(cause.file, undefined, undefined, cause.layer));
     const detail = { causedBy: cause.causedBy };
     const triggers = [trigger("agents-md-not-loaded", "medium", pointer, { detail })];
-    findings.push(measuredFinding("CTX-07", triggers, evidence));
+    const finding = measuredFinding("CTX-07", triggers, evidence);
+    // The rule is about Claude Code, the agent that does not load AGENTS.md beside a CLAUDE.md file.
+    findings.push(finding === null ? null : { ...finding, agents: [CLAUDE_CODE_AGENT] });
   });
   return { findings: compact(findings), undeterminable };
 }
@@ -585,7 +596,7 @@ function emitDuplication(measurements) {
 
 // ---------------------------------------------------------------------------------------------------
 // Candidates. They are not findings: the agent reads them and judges. Groups come first, then hook scripts sorted by
-// path, then memory files in inventory order.
+// path, then memory files in inventory order, then the agent-instructions and unloaded-control files, each sorted by file.
 
 function buildCandidates(measurements) {
   const candidates = [];
@@ -612,9 +623,13 @@ function buildCandidates(measurements) {
   }
 
   // A memory or rule file that claudeMdExcludes matches is not read by Claude Code, so it is not a candidate.
+  // The memory and rule files that Claude Code reads. A file that claudeMdExcludes matches is not one of them, so an instruction
+  // file of another agent that the exclusion keeps out of memory is still judged as an agent-instructions candidate.
+  const memoryPaths = new Set();
   listAt(measurements.inventory).forEach((item, index) => {
     if (item.kind !== "memory" && item.kind !== "rule") return;
     if (item.loadReason === EXCLUDED_REASON) return;
+    memoryPaths.add(item.path);
     candidates.push({
       kind: "memory-file",
       rules: [...MEMORY_RULES],
@@ -623,7 +638,53 @@ function buildCandidates(measurements) {
       loadMode: item.loadMode,
     });
   });
+
+  // The files of the agent-harness measure, in two kinds, each sorted by file. The measurementRef of both is the file's record.
+  const itemsOf = itemsByPath(measurements.agentHarness?.items);
+  const agentFiles = [];
+  const controls = [];
+  listAt(measurements.agentHarness?.files).forEach((file, index) => {
+    const items = itemsOf.get(file.path) ?? [];
+    const measurementRef = `/agentHarness/files/${index}`;
+    // The agents whose instructions pair is in effect: not excluded and not not-loaded. A pair that claudeMdExcludes matches (the
+    // claude-code pair of an excluded AGENTS.md) does not count as an agent that reads the file.
+    const agents = unique(
+      items
+        .filter((item) => item.kind === INSTRUCTIONS_KIND && !OUT_OF_EFFECT.has(item.status))
+        .map((item) => item.agent),
+    ).sort(compareText);
+    // An instruction file of another agent that was read, when no memory or rule file of Claude Code is it (AGENTS.md at the root
+    // that loads is one of those, and it is judged as a memory file).
+    if (file.read === true && !memoryPaths.has(file.path) && agents.some((agent) => agent !== CLAUDE_CODE_AGENT)) {
+      agentFiles.push({ kind: "agent-instructions", rules: [...AGENT_INSTRUCTION_RULES], file: file.path, agents, measurementRef });
+    }
+    // A settings or hooks file that no agent loads. The first kind of the file gives controlKind.
+    const controlKind = CONTROL_KINDS.find((kind) => items.some((item) => item.kind === kind));
+    if (controlKind !== undefined && listAt(file.loadedBy).length === 0) {
+      const status = listAt(file.unknownFor).length > 0 ? "not-verified" : "missing";
+      controls.push({ kind: "unloaded-control", rules: [...CONTROL_RULES], file: file.path, controlKind, status, measurementRef });
+    }
+  });
+  candidates.push(...agentFiles.sort(byFile), ...controls.sort(byFile));
   return candidates;
+}
+
+// The agent-harness items of each file, by path. A file with no item is absent.
+function itemsByPath(items) {
+  const groups = new Map();
+  for (const item of listAt(items)) {
+    if (!groups.has(item.path)) groups.set(item.path, []);
+    groups.get(item.path).push(item);
+  }
+  return groups;
+}
+
+function byFile(a, b) {
+  return compareText(a.file, b.file);
+}
+
+function unique(values) {
+  return [...new Set(values)];
 }
 
 // The non-null items of a list.

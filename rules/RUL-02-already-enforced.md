@@ -13,7 +13,7 @@ status: draft
 
 ## What it checks
 
-Instruction lines that restate a check a tool already runs on the repository: a formatter's style choice, a linter's rule, an import-order or layering rule, a type check, or a secret scanner. The memory file repeats the tool's rule as text, so the agent gets the same rule twice, once as a sentence and once as a tool.
+Instruction lines that restate a check a tool already runs on the repository: a formatter's style choice, a linter's rule, an import-order or layering rule, a type check, or a secret scanner. The memory file repeats the tool's rule as text, so the agent gets the same rule twice, once as a sentence and once as a tool. The line can sit in `CLAUDE.md`, `AGENTS.md` or the root instruction file of another agent, such as `.cursorrules`.
 
 ## Why it matters
 
@@ -26,7 +26,8 @@ Hooks are the documented way to make a step happen every time. A hook on the `Pr
 This is a judgment rule. Use the measured support to find the tools and hooks, then compare them with the instruction lines.
 
 - `structure.enforcementTools` lists the tools present in the repository (for example eslint, prettier, biome, tsconfig, secretlint or gitleaks).
-- `claudeConfig.hooks[]` lists each hook with its `event`, `matcher` and `command`.
+- `claudeConfig.hooks[]` lists each hook with its `event`, `matcher` and `command`. These are the hooks of Claude Code only.
+- `candidates` of kind `agent-instructions` name the root instruction files of the other agents, with their `agents`. Read each one as a memory file.
 
 Flag an instruction line when all of these hold:
 
@@ -34,11 +35,11 @@ Flag an instruction line when all of these hold:
 2. The tool's configuration covers the files the line is about. A tool turned off or overridden for a folder does not cover that folder.
 3. The line does not add a reason, exception or context that the tool cannot express.
 
-Check the hook only to decide the recommendation. A line is flagged on the tool's coverage alone, not on whether a hook exists.
+Check the hook only to decide the recommendation. A line is flagged on the tool's coverage alone, not on whether a hook exists. The tools in `structure.enforcementTools` run on the repository, so they cover a line in any agent's file. The scan does not evaluate the settings or hooks of the other agents, so for them it cannot say whether a hook runs.
 
 ## Recommendation
 
-First, make the control reach the agent. Add a `PostToolUse` hook for file edits that runs the formatter or linter on the changed file, or make sure the verification command the agent runs includes the check (see VER-01). A check that runs only in CI does not show the agent its output while it works, so do not rely on it for this.
+First, make the control reach the agent. Add a `PostToolUse` hook for file edits that runs the formatter or linter on the changed file, or make sure the verification command the agent runs includes the check (see VER-01). A check that runs only in CI does not show the agent its output while it works, so do not rely on it for this. For a line in another agent's file, the control goes in that agent's own settings, which the scan does not evaluate.
 
 Then delete the duplicate line from the memory file. The line costs tokens in every session, and the tool keeps enforcing the rule.
 
@@ -62,6 +63,16 @@ Bad, `.prettierrc.json` with `"singleQuote": true` and `"semi": false`, and in `
 ```
 
 Good: the line is deleted, and a `PostToolUse` hook runs `prettier --write` on the edited file. The formatter enforces the style on every edit.
+
+### Applies: formatter style in another agent's file
+
+Bad, `.prettierrc.json` with `"singleQuote": true` and `"semi": false`, and in `.cursorrules`, the root instruction file of Cursor:
+
+```text
+Use single quotes and no semicolons.
+```
+
+Good: the line is deleted. The formatter runs on each edit through a `PostToolUse` hook in `.claude/settings.json`, or through the verification command. The scan does not evaluate Cursor's settings, so it cannot confirm a formatter step for Cursor.
 
 ### Applies: import order repeated in memory
 

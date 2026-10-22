@@ -21,16 +21,24 @@
 // Reading. A listed file is read with ctx.fs.readText and the default file cap, in path order, while the bytes read in total stay
 // within maxTotalBytes (MAX_TOTAL_BYTES by default, as duplication.mjs caps its reads). The size from the stat is checked before
 // each read, and a file over the per-file cap is not charged, because readText refuses it without reading it. The read is not
-// memoized, so the texts are not kept for the rest of the scan. A file is not read when its name or its link target is a secret
-// name (secret-name), when its link leaves the target or cannot be resolved, when its claude-code pair matches claudeMdExcludes
-// and no other agent owns it (claude-md-excludes: memory.mjs never reads an excluded file), when it is nested (nested), or when
-// the total byte cap would be passed (bytes-cap). A nested file is listed with its size and never read. Only the line count and,
-// for a file of a context kind, the estimate are kept.
+// memoized, so the texts are not kept for the rest of the scan, except the texts that ctx.agentInstructions keeps (see below). A
+// file is not read when its name or its link target is a secret name (secret-name), when its link leaves the target or cannot be
+// resolved, when its claude-code pair matches claudeMdExcludes and no other agent owns it (claude-md-excludes: memory.mjs never
+// reads an excluded file), when it is nested (nested), or when the total byte cap would be passed (bytes-cap). A nested file is
+// listed with its size and never read. Only the line count and, for a file of a context kind, the estimate are kept, and the text
+// of an instruction file that ctx.agentInstructions keeps.
 //
 // Output. The section agentHarness. Two warnings can come from this measure: agent-files-cut counts the listed files left out
 // by the file cap, and agent-bytes-cut counts the files not read for the byte cap. The failed reads also write the usual fs
 // warnings. The shared budget (context.alwaysLoaded) is not changed here. Claude Code's budget is that shared one. The other
 // agents are listed in agentHarness.unknownStatic, which is not part of the shared budget.
+//
+// Texts for the other measures. The text of a file that this measure reads, that has at least one pair of kind instructions
+// and whose path is not in ctx.memory, is kept in ctx.agentInstructions: path -> { text, agents }, where agents are the sorted
+// ids of the agents whose pair for the file is of kind instructions. A file already in ctx.memory is not kept twice. A nested
+// file is never read, so it is never kept. ctx.agentOwners (path -> sorted agent ids of all pairs) is set for every candidate,
+// before any read. The scanner core creates both channels empty; this measure is the only writer. The texts are not output:
+// the measures that read them (references, verification) redact what they write.
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,6 +59,7 @@ const UNVERIFIED_MODEL = "unknown";
 const ALWAYS_MODEL = "always";
 const FOLDER_MODEL = "folder";
 const CONTEXT_KINDS = new Set(["instructions", "skills", "commands", "subagents"]);
+const INSTRUCTIONS_KIND = "instructions";
 // Folders that are never walked, at any depth.
 const SKIPPED_NAMES = new Set([".git", "node_modules"]);
 // Claude Code entries whose load model the registry does not verify, but which the budget that exists today counts: commands
@@ -119,11 +128,19 @@ function collectAgentHarness(ctx, model, { maxFiles, maxTotalBytes }) {
   // The statuses come from every candidate, so the cap below changes only what is listed.
   const env = { model, byPath: new Map(candidates.map((file) => [file.path, file])) };
   const pairs = buildPairs(candidates, env);
+  for (const file of candidates) ctx.agentOwners.set(file.path, [...file.owners.keys()].sort(compareText));
   const listed = candidates.slice(0, maxFiles);
   const cut = candidates.length - listed.length;
   const listedPaths = new Set(listed.map((file) => file.path));
   const shownPairs = pairs.filter((pair) => listedPaths.has(pair.file.path));
-  const { outcomes, bytesCut } = readFiles(ctx, listed, maxTotalBytes);
+  const instructionAgents = instructionAgentsOf(shownPairs);
+  // Only a file with an instructions pair that the memory measure did not read is kept: ctx.memory already holds the others.
+  const keepText = (rel) => instructionAgents.has(rel) && !ctx.memory.has(rel);
+  const { outcomes, bytesCut } = readFiles(ctx, listed, maxTotalBytes, keepText);
+  for (const file of listed) {
+    const text = outcomes.get(file.path).text;
+    if (text !== undefined) ctx.agentInstructions.set(file.path, { text, agents: instructionAgents.get(file.path) });
+  }
   const pairsOf = groupByPath(shownPairs);
   const files = listed.map((file) => fileRecord(file, pairsOf.get(file.path), outcomes.get(file.path), model));
   const agents = agentsOf(model, shownPairs);
@@ -381,12 +398,25 @@ function itemOf(pair) {
 // ---------------------------------------------------------------------------------------------------
 // Reading
 
+// The agents whose pair of each listed file is of kind instructions: path -> sorted agent ids. A file with no such pair is absent.
+function instructionAgentsOf(pairs) {
+  const agents = new Map();
+  for (const pair of pairs) {
+    if (pair.entry.kind !== INSTRUCTIONS_KIND) continue;
+    if (!agents.has(pair.file.path)) agents.set(pair.file.path, []);
+    agents.get(pair.file.path).push(pair.agent);
+  }
+  for (const list of agents.values()) list.sort(compareText);
+  return agents;
+}
+
 // Reads the listed files in path order, while the bytes read in total stay within maxTotalBytes. A file is read through ctx.fs,
-// not the memoized reader, so its text is not kept for the scan. Only a file that will be read is charged: the size from the stat
-// counts toward the total before the read, as duplication.mjs counts its reads. A file over DEFAULT_MAX_BYTES is refused by readText
-// (too-large) without being read, so it is not charged, and it is still passed to readText, which keeps the fs warning. Each file
-// gets an outcome: whether it was read, the reason when it was not, and its counts.
-function readFiles(ctx, listed, maxTotalBytes) {
+// not the memoized reader, so its text is not kept for the scan, unless keepText asks for it (see readOne). Only a file that will
+// be read is charged: the size from the stat counts toward the total before the read, as duplication.mjs counts its reads. A file
+// over DEFAULT_MAX_BYTES is refused by readText (too-large) without being read, so it is not charged, and it is still passed to
+// readText, which keeps the fs warning. Each file gets an outcome: whether it was read, the reason when it was not, its counts,
+// and its text when keepText asks for it.
+function readFiles(ctx, listed, maxTotalBytes, keepText) {
   const outcomes = new Map();
   let bytesRead = 0;
   let bytesCut = 0;
@@ -400,7 +430,7 @@ function readFiles(ctx, listed, maxTotalBytes) {
       outcomes.set(file.path, unread(BYTES_REASON));
     } else {
       if (!overFileCap) bytesRead += file.bytes;
-      outcomes.set(file.path, readOne(ctx, file));
+      outcomes.set(file.path, readOne(ctx, file, keepText(file.path)));
     }
   }
   return { outcomes, bytesCut };
@@ -419,13 +449,16 @@ function unreadableReasonOf(file) {
   return null;
 }
 
-// Reads the real location that describe resolved, so the file that was checked is the one that is read.
-function readOne(ctx, file) {
+// Reads the real location that describe resolved, so the file that was checked is the one that is read. The text is put in the
+// outcome only when keep is true, so the texts of the other files are not held after they are counted.
+function readOne(ctx, file, keep) {
   const read = ctx.fs.readText(file.target);
   if (!read.ok) return unread(read.reason);
   const counts = countsOf(read.text);
   const context = [...file.owners.values()].some((entry) => CONTEXT_KINDS.has(entry.kind));
-  return { read: true, notReadReason: null, lines: counts.lines, estTokens: context ? counts.estTokens : null };
+  const outcome = { read: true, notReadReason: null, lines: counts.lines, estTokens: context ? counts.estTokens : null };
+  if (keep) outcome.text = read.text;
+  return outcome;
 }
 
 function unread(reason) {
@@ -502,6 +535,20 @@ function groupByPath(pairs) {
 function compareText(a, b) {
   if (a < b) return -1;
   return a > b ? 1 : 0;
+}
+
+/**
+ * The [file, text] pairs of a scan's instruction texts: the memory texts (ctx.memory) and the texts of the other agents'
+ * instruction files (ctx.agentInstructions), merged and sorted by file. The two maps never hold the same file.
+ * @param {object} ctx The scan context. Both channels must exist; the scanner core creates them.
+ * @returns {Array<[string, string]>}
+ */
+export function instructionTextsOf(ctx) {
+  const texts = [
+    ...[...ctx.memory].map(([file, node]) => [file, node.text]),
+    ...[...ctx.agentInstructions].map(([file, entry]) => [file, entry.text]),
+  ];
+  return texts.sort(([a], [b]) => compareText(a, b));
 }
 
 /** The measure with the registry of this repository and the default caps. */

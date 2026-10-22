@@ -1,6 +1,6 @@
 ---
 id: CTX-07
-title: AGENTS.md is not loaded next to a CLAUDE.md
+title: Claude Code does not load AGENTS.md next to a CLAUDE.md
 axis: context
 kind: measured
 measuredSupport: []
@@ -16,6 +16,8 @@ status: draft
 Whether the repository has an `AGENTS.md` (or `.claude/AGENTS.md`) that Claude Code will not read, because a `CLAUDE.md` exists next to it or above it and nothing imports the `AGENTS.md` file.
 
 The check covers a `CLAUDE.md` in the repository and a `CLAUDE.md` in an ancestor folder of the repository. Both cause the same result.
+
+This is a finding about Claude Code only. Whether another agent reads an `AGENTS.md` next to a `CLAUDE.md` is not verified (see `agentHarness.agents`), so the scan names no other agent in it.
 
 ## Why it matters
 
@@ -33,6 +35,7 @@ This is a measured rule. The threshold is not numeric: any matching entry is a f
 
 - Field: the `inventory[]` entry for `AGENTS.md` or `.claude/AGENTS.md` with `loadMode: "not-loaded"`.
 - `loadReason` says whether the `CLAUDE.md` that causes this sits in the target repository or in an ancestor folder. Cite it in the finding.
+- The finding carries `agents: ["claude-code"]`, the id of Claude Code in `agentHarness.agents`.
 - Threshold: no `THRESHOLDS` key applies. Any such entry is a finding.
 
 With `--include-ancestors`, a parent-folder `CLAUDE.md` that causes the finding is cited with `layer: "ancestor"`, and its `context.ancestors` item says whether the scan read it (`read`). Without that flag the parent file is cited without a layer, and the scan knows only its size.

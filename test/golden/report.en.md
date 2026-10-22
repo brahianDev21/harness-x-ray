@@ -5,7 +5,13 @@
 - **Scan date (UTC):** 2026-10-18
 - **Axes reviewed:** Instructions, Context, Security, Verification, Structure, Code
 - **Tool:** `harness-x-ray@0.0.0`
-- **Catalog:** 16 rules, SHA-256 `8661dfdd6b0a`
+- **Catalog:** 16 rules, SHA-256 `3a85f7e2822e`
+
+**Agents detected:**
+
+| Agent | Evaluated | Detected, content not evaluated |
+| --- | --- | --- |
+| Claude Code | settings, subagents | none |
 
 ---
 

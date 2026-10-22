@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { createAgentInventoryMeasure } from "../scripts/lib/agent-inventory.mjs";
 import { createMemoryMeasure } from "../scripts/lib/memory.mjs";
 import { scan } from "../scripts/lib/scanner.mjs";
 import { verificationMeasure } from "../scripts/lib/verification.mjs";
@@ -88,6 +89,7 @@ test("empty: no commands, no mentions, no package manager, and no tools", async 
     fieldManager: null,
     lockfiles: [],
     mentions: [],
+    byFile: [],
     conflict: false,
   });
   assert.deepEqual(result.structure, { enforcementTools: [] });
@@ -117,6 +119,7 @@ test("minimal-good: test, lint, typecheck and format are classified, and the mem
     fieldManager: null,
     lockfiles: [{ path: "package-lock.json", manager: "npm" }],
     mentions: [7, 8, 9, 12, 13].map((line) => ({ manager: "npm", file: "CLAUDE.md", line })),
+    byFile: [{ file: "CLAUDE.md", managers: ["npm"], agents: [] }],
     conflict: false,
   });
   assert.deepEqual(result.structure, { enforcementTools: [] });
@@ -131,6 +134,7 @@ test("pm-conflict: the lockfile names pnpm, the memory names npm, and conflict i
     fieldManager: null,
     lockfiles: [{ path: "pnpm-lock.yaml", manager: "pnpm" }],
     mentions: [{ manager: "npm", file: "CLAUDE.md", line: 3 }],
+    byFile: [{ file: "CLAUDE.md", managers: ["npm"], agents: [] }],
     conflict: true,
   });
   assert.deepEqual(result.verification, { commands: [], mentioned: [] });
@@ -145,6 +149,7 @@ test("packageManager: the field is kept as written, its manager is the name befo
     fieldManager: "pnpm",
     lockfiles: [{ path: "pnpm-lock.yaml", manager: "pnpm" }],
     mentions: [],
+    byFile: [],
     conflict: false,
   });
 
@@ -156,6 +161,7 @@ test("packageManager: the field is kept as written, its manager is the name befo
     fieldManager: "npm",
     lockfiles: [{ path: "pnpm-lock.yaml", manager: "pnpm" }],
     mentions: [],
+    byFile: [],
     conflict: true,
   });
 
@@ -165,6 +171,7 @@ test("packageManager: the field is kept as written, its manager is the name befo
     fieldManager: null,
     lockfiles: [],
     mentions: [],
+    byFile: [],
     conflict: false,
   });
 });
@@ -400,14 +407,53 @@ test("a lockfile's content never reaches the output, and a package.json that can
   assert.deepEqual(verificationWarnings(result), [], "the references measure reports package.json, not this one");
 });
 
+// Runs the memory measure, the agent-inventory measure and the verification measure.
+function verificationWithAgents(fixture) {
+  return scan({
+    root: fixture.root,
+    measures: [
+      createMemoryMeasure({ ancestorLimit: fixture.base, home: path.join(fixture.base, "no-home") }),
+      createAgentInventoryMeasure(),
+      verificationMeasure,
+    ],
+    now: FIXED_NOW,
+  });
+}
+
+test("byFile: AGENTS.md that says pnpm and .cursorrules that says npm give a conflict, with each file and the agents that own it", async (t) => {
+  const fixture = freshFixture(t, { files: { "AGENTS.md": "Install with pnpm.\n", ".cursorrules": "Test with npm test.\n" } });
+  const manager = (await verificationWithAgents(fixture)).instructions.packageManager;
+  assert.equal(manager.conflict, true);
+  assert.deepEqual(manager.byFile, [
+    { file: ".cursorrules", managers: ["npm"], agents: ["cursor"] },
+    { file: "AGENTS.md", managers: ["pnpm"], agents: ["agents-md", "claude-code"] },
+  ]);
+  assert.deepEqual(manager.mentions, [{ manager: "pnpm", file: "AGENTS.md", line: 1 }], "mentions keeps the memory lines only");
+  // Without the agent-inventory measure the agent text is not read, so it does not count, and the memory file has no agent.
+  const memoryOnly = (await verificationScan(fixture)).instructions.packageManager;
+  assert.equal(memoryOnly.conflict, false);
+  assert.deepEqual(memoryOnly.byFile, [{ file: "AGENTS.md", managers: ["pnpm"], agents: [] }]);
+});
+
+test("byFile: AGENTS.md and .cursorrules that both say pnpm give no conflict (positive control)", async (t) => {
+  const fixture = freshFixture(t, { files: { "AGENTS.md": "Install with pnpm.\n", ".cursorrules": "Install with pnpm install.\n" } });
+  const manager = (await verificationWithAgents(fixture)).instructions.packageManager;
+  assert.equal(manager.conflict, false);
+  assert.deepEqual(manager.byFile, [
+    { file: ".cursorrules", managers: ["pnpm"], agents: ["cursor"] },
+    { file: "AGENTS.md", managers: ["pnpm"], agents: ["agents-md", "claude-code"] },
+  ]);
+});
+
 test("verification: the measurements schema documents the verification, structure and packageManager fields", () => {
   const schema = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "schemas", "measurements.schema.json"), "utf8"));
   assert.deepEqual(schema.properties.verification.required, ["commands", "mentioned"]);
   assert.deepEqual(schema.properties.structure.required, ["enforcementTools", "generatedFiles", "largeFiles", "mapCoverage", "tree"]);
   assert.ok(schema.properties.instructions.required.includes("packageManager"));
   const manager = schema.properties.instructions.properties.packageManager;
-  assert.deepEqual(manager.required, ["field", "fieldManager", "lockfiles", "mentions", "conflict"]);
+  assert.deepEqual(manager.required, ["field", "fieldManager", "lockfiles", "mentions", "byFile", "conflict"]);
   assert.deepEqual(manager.properties.fieldManager.enum, ["npm", "pnpm", "yarn", "bun", null]);
+  assert.deepEqual(manager.properties.byFile.items.required, ["file", "managers", "agents"]);
   assert.deepEqual(schema.properties.verification.properties.commands.items.properties.categories.items.enum, [
     "build",
     "format",

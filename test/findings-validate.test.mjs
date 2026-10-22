@@ -685,6 +685,97 @@ describe("validator: a secret inside the target", () => {
   });
 });
 
+describe("validator: the agents of a finding", () => {
+  let scanned = null;
+  before(async () => {
+    scanned = await scanFixture({ fromDir: PERMISSIVE });
+  });
+  after(() => {
+    scanned?.cleanup();
+  });
+  const targetOf = () => scanned.measurements.meta.targetRoot;
+  // The good findings, with the agents given to the measured finding of SEC-01 (its first finding).
+  const withAgents = (agents) => {
+    const findings = goodFindings(scanned.measurements);
+    findings.findings[0].agents = agents;
+    return findings;
+  };
+
+  test("agents that the scan detected pass, on a measured and on a judgment finding (positive control)", () => {
+    assert.deepEqual(
+      scanned.measurements.agentHarness.agents.map((agent) => agent.id),
+      ["claude-code"],
+      "the permissive scan detects Claude Code only",
+    );
+    const findings = goodFindings(scanned.measurements);
+    findings.findings[0].agents = ["claude-code"];
+    findings.findings[2].agents = ["claude-code"];
+    const result = validate(findings, scanned.measurements, targetOf());
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.warnings, []);
+    assert.equal(result.ok, true);
+  });
+
+  test("an agent that the scan did not detect is an error, and the message names the detected agents", () => {
+    const result = validate(withAgents(["cursor"]), scanned.measurements, targetOf());
+    assert.equal(result.ok, false);
+    expectIssue(result.errors, {
+      index: 0,
+      field: "findings[0].agents[0]",
+      rule: "SEC-01",
+      message: /is not an agent that the scan detected; the detected agents are claude-code$/,
+    });
+  });
+
+  test("a second entry of the same agent is an error on that entry, and the first one is kept", () => {
+    const result = validate(withAgents(["claude-code", "claude-code"]), scanned.measurements, targetOf());
+    expectIssue(result.errors, { index: 0, field: "findings[0].agents[1]", rule: "SEC-01", message: /listed more than once/ });
+    assert.equal(result.errors.filter((issue) => issue.field.startsWith("findings[0].agents")).length, 1);
+  });
+
+  test("a value that is not a list, or an empty list, is an error on agents", () => {
+    for (const value of ["claude-code", null, { id: "claude-code" }]) {
+      const result = validate(withAgents(value), scanned.measurements, targetOf());
+      expectIssue(result.errors, { index: 0, field: "findings[0].agents", rule: "SEC-01", message: /must be a list of agent ids/ });
+    }
+    const empty = validate(withAgents([]), scanned.measurements, targetOf());
+    expectIssue(empty.errors, { index: 0, field: "findings[0].agents", rule: "SEC-01", message: /is an empty list/ });
+  });
+
+  test("an entry that is not an agent id (a name, a number, an upper-case id) is an error", () => {
+    for (const id of ["Claude Code", 7, "Cursor", ""]) {
+      const result = validate(withAgents([id]), scanned.measurements, targetOf());
+      expectIssue(result.errors, { index: 0, field: "findings[0].agents[0]", rule: "SEC-01", message: /is not an agent id/ });
+    }
+  });
+
+  test("a secret-shaped agent id is an error, and its value is not printed", () => {
+    const token = ["sk", "ant", "api03", "b".repeat(24)].join("-");
+    const result = validate(withAgents([token]), scanned.measurements, targetOf());
+    assert.equal(result.ok, false);
+    assert.ok(result.errors.some((issue) => issue.field === "findings[0].agents[0]"), "the entry is not reported");
+    const printed = result.errors.map((issue) => formatIssue(issue)).join("\n");
+    assert.equal(printed.includes(token), false, "the secret is printed");
+  });
+
+  test("a scan that detected no agent (no agentHarness, or an empty list) rejects any agent, and accepts no agent (positive control)", () => {
+    const noSection = structuredClone(scanned.measurements);
+    delete noSection.agentHarness;
+    const emptyList = structuredClone(scanned.measurements);
+    emptyList.agentHarness.agents = [];
+    for (const measurements of [noSection, emptyList]) {
+      assert.deepEqual(validate(goodFindings(scanned.measurements), measurements, targetOf()).errors, []);
+      const result = validate(withAgents(["claude-code"]), measurements, targetOf());
+      expectIssue(result.errors, {
+        index: 0,
+        field: "findings[0].agents[0]",
+        rule: "SEC-01",
+        message: /the detected agents are none$/,
+      });
+    }
+  });
+});
+
 describe("validator: argument checks", () => {
   test("a wrong argument throws a TypeError that names the argument", () => {
     assert.throws(() => validateFindings({ findings: {}, measurements: null, rules: RULES, targetRoot: HARNESS_ROOT }), /measurements must be/);
