@@ -200,5 +200,8 @@
   "intake.access.legend": "Reads outside the target",
   "intake.access.help": "Each box allows one read outside the target. Leave them unchecked to read only the target.",
   "intake.access.userLayer": "The user layer: your Claude files in ~/.claude (memory, settings, rules, skills and subagents).",
-  "intake.access.ancestors": "The parent folders: the memory files of the folders above the target, for their counts only."
+  "intake.access.ancestors": "The parent folders: the memory files of the folders above the target, for their counts only.",
+  "html.filter.legend": "Filter the findings",
+  "html.filter.axes": "Axes",
+  "html.filter.help": "Uncheck a box to hide the findings that it marks. If the page cannot apply the filters, every finding is shown."
 }

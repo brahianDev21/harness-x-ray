@@ -200,5 +200,8 @@
   "intake.access.legend": "Lecturas fuera del objetivo",
   "intake.access.help": "Cada casilla permite una lectura fuera del objetivo. Déjalas sin marcar para leer solo el objetivo.",
   "intake.access.userLayer": "La capa de usuario: tus archivos de Claude en ~/.claude (memoria, configuración, reglas, skills y subagentes).",
-  "intake.access.ancestors": "Las carpetas padre: los archivos de memoria de las carpetas por encima del objetivo, solo para sus conteos."
+  "intake.access.ancestors": "Las carpetas padre: los archivos de memoria de las carpetas por encima del objetivo, solo para sus conteos.",
+  "html.filter.legend": "Filtrar los hallazgos",
+  "html.filter.axes": "Ejes",
+  "html.filter.help": "Desmarca una casilla para ocultar los hallazgos que marca. Si la página no puede aplicar los filtros, se muestran todos los hallazgos."
 }

@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src &#39;none&#39;; style-src &#39;sha256-8xh+Tnedr/ymXCj1RAUfho7pOlHzZ7JYifdBAFnE2ns=&#39;; img-src &#39;none&#39;; base-uri &#39;none&#39;; form-action &#39;none&#39;">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Informe de Harness X-Ray</title>
+<style>/* Shared stylesheet of the Harness X-Ray pages: color tokens for light and dark mode, spacing, type and base styles.
+   Dark mode follows the system setting. No external resource: no URLs, no imports, system fonts only. */
+
+:root {
+  color-scheme: light dark;
+  --color-background: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-text: #1b1f24;
+  --color-muted: #55606b;
+  --color-border: #c9ced6;
+  --color-accent: #1f5fbf;
+  --color-accent-text: #ffffff;
+  --color-danger: #b42318;
+  --color-focus: #1f5fbf;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 1rem;
+  --space-4: 1.5rem;
+  --radius: 6px;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-background: #101418;
+    --color-surface: #1a2028;
+    --color-text: #e6e9ee;
+    --color-muted: #a7b0bc;
+    --color-border: #3a4450;
+    --color-accent: #7aa7f0;
+    --color-accent-text: #0b1220;
+    --color-danger: #ff8a80;
+    --color-focus: #7aa7f0;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: var(--space-3);
+  background: var(--color-background);
+  color: var(--color-text);
+  font: 1rem/1.5 var(--font-sans);
+}
+
+main {
+  max-width: 46rem;
+  margin: 0 auto;
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin: var(--space-3) 0 var(--space-2);
+}
+
+h2 {
+  font-size: 1.125rem;
+  margin: var(--space-4) 0 var(--space-2);
+}
+
+p {
+  margin: 0 0 var(--space-3);
+}
+
+small,
+.muted {
+  color: var(--color-muted);
+  font-size: 0.875rem;
+}
+
+form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+fieldset {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
+legend {
+  padding: 0 var(--space-2);
+  font-weight: 600;
+}
+
+label {
+  cursor: pointer;
+}
+
+input[type="radio"],
+input[type="checkbox"] {
+  accent-color: var(--color-accent);
+}
+
+button {
+  font: inherit;
+  padding: var(--space-2) var(--space-4);
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--color-accent);
+  color: var(--color-accent-text);
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* The rules of the report page, after the shared stylesheet of theme.css. They use the color tokens of theme.css only, so both
+   modes follow the system setting. The layout works at phone width: a table scrolls inside its wrapper, and no other element
+   is wider than the page. */
+
+main {
+  max-width: 60rem;
+}
+
+section {
+  margin: 0 0 var(--space-4);
+}
+
+h3 {
+  font-size: 1.0625rem;
+  margin: var(--space-4) 0 var(--space-2);
+}
+
+h4 {
+  font-size: 1rem;
+  margin: 0 0 var(--space-2);
+}
+
+a {
+  color: var(--color-accent);
+}
+
+/* A long word breaks at the edge of its line, so text never widens the page. A table cell keeps its longest word, so a wide
+   table scrolls in its wrapper instead. */
+body {
+  overflow-wrap: break-word;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.875em;
+}
+
+.fields dt {
+  font-weight: 600;
+}
+
+.fields dd {
+  margin: 0 0 var(--space-2);
+}
+
+.table-wrap {
+  overflow-x: auto;
+  margin: 0 0 var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+table {
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+th,
+td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  font-weight: 600;
+  background: var(--color-background);
+}
+
+article.finding {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
+.filters {
+  margin: 0 0 var(--space-4);
+}
+
+.filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+}
+
+.filter-title {
+  margin: 0 var(--space-2) 0 0;
+  font-weight: 600;
+}
+
+/* Each label is a chip: a square that is filled when its box is checked, and a filled chip. */
+.filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-muted);
+}
+
+.filters label::before {
+  content: "";
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 2px solid currentColor;
+  border-radius: 3px;
+}
+
+.filters input:checked + label {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-accent-text);
+}
+
+.filters input:checked + label::before {
+  background: currentColor;
+}
+
+.filters input:focus-visible + label {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* The filter boxes are hidden from sight, not from the keyboard or a screen reader: a clip keeps them in the focus order, where
+   display: none would remove them. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+body:has(#filter-axis-instructions:not(:checked)) .finding[data-axis="instructions"] { display: none; }
+body:has(#filter-axis-context:not(:checked)) .finding[data-axis="context"] { display: none; }
+body:has(#filter-axis-security:not(:checked)) .finding[data-axis="security"] { display: none; }
+body:has(#filter-axis-verification:not(:checked)) .finding[data-axis="verification"] { display: none; }
+body:has(#filter-axis-structure:not(:checked)) .finding[data-axis="structure"] { display: none; }
+body:has(#filter-axis-code:not(:checked)) .finding[data-axis="code"] { display: none; }
+body:has(#filter-impact-high:not(:checked)) .finding[data-impact="high"] { display: none; }
+body:has(#filter-impact-medium:not(:checked)) .finding[data-impact="medium"] { display: none; }
+body:has(#filter-impact-low:not(:checked)) .finding[data-impact="low"] { display: none; }</style>
+</head>
+<body>
+<main>
+<section>
+<h1>Informe de Harness X-Ray</h1>
+<dl class="fields"><div><dt>Objetivo</dt><dd><code>repo</code></dd></div><div><dt>Commit</dt><dd>ninguno</dd></div><div><dt>Fecha del escaneo (UTC)</dt><dd>2026-10-18</dd></div><div><dt>Ejes revisados</dt><dd>Instrucciones, Contexto, Seguridad, Verificación, Estructura, Código</dd></div><div><dt>Herramienta</dt><dd><code>harness-x-ray@0.0.0</code></dd></div><div><dt>Catálogo</dt><dd>16 reglas, SHA-256 <code>756b61ef038a</code></dd></div></dl>
+<p><strong>Agentes detectados:</strong></p>
+<div class="table-wrap" tabindex="0"><table><thead><tr><th scope="col">Agente</th><th scope="col">Evaluado</th><th scope="col">Detectado, contenido no evaluado</th></tr></thead><tbody><tr><td>Claude Code</td><td>configuración, subagentes</td><td>ninguno</td></tr></tbody></table></div>
+</section>
+<section>
+<h2>Resumen por eje</h2>
+<div class="table-wrap" tabindex="0"><table><thead><tr><th scope="col">Eje</th><th scope="col">Alto</th><th scope="col">Medio</th><th scope="col">Bajo</th></tr></thead><tbody><tr><td>Instrucciones</td><td>0</td><td>0</td><td>1</td></tr><tr><td>Contexto</td><td>0</td><td>0</td><td>0</td></tr><tr><td>Seguridad</td><td>2</td><td>2</td><td>0</td></tr><tr><td>Verificación</td><td>0</td><td>1</td><td>0</td></tr><tr><td>Estructura</td><td>0</td><td>0</td><td>0</td></tr><tr><td>Código</td><td>0</td><td>0</td><td>0</td></tr><tr><td>Total</td><td>2</td><td>3</td><td>1</td></tr></tbody></table></div>
+<p><strong>Hallazgos más importantes:</strong></p>
+<ul><li><code>SEC-01</code> Project permissions are broader than the defaults (Alto)</li><li><code>SEC-02</code> Destructive commands pass or depend only on manual confirmation (Alto)</li><li><code>SEC-03</code> Secrets are versioned, written into the harness, or readable without a prompt (Medio)</li><li><code>SEC-05</code> Security rules exist only as text (Medio)</li><li><code>VER-01</code> No documented way to verify a change (Medio)</li></ul>
+</section>
+<fieldset class="filters">
+<legend>Filtrar los hallazgos</legend>
+<p class="muted">Desmarca una casilla para ocultar los hallazgos que marca. Si la página no puede aplicar los filtros, se muestran todos los hallazgos.</p>
+<div class="filter-group" role="group" aria-labelledby="filter-title-axis">
+<p class="filter-title" id="filter-title-axis">Ejes</p>
+<input type="checkbox" class="visually-hidden" id="filter-axis-instructions" checked>
+<label for="filter-axis-instructions">Instrucciones</label>
+<input type="checkbox" class="visually-hidden" id="filter-axis-context" checked>
+<label for="filter-axis-context">Contexto</label>
+<input type="checkbox" class="visually-hidden" id="filter-axis-security" checked>
+<label for="filter-axis-security">Seguridad</label>
+<input type="checkbox" class="visually-hidden" id="filter-axis-verification" checked>
+<label for="filter-axis-verification">Verificación</label>
+<input type="checkbox" class="visually-hidden" id="filter-axis-structure" checked>
+<label for="filter-axis-structure">Estructura</label>
+<input type="checkbox" class="visually-hidden" id="filter-axis-code" checked>
+<label for="filter-axis-code">Código</label>
+</div>
+<div class="filter-group" role="group" aria-labelledby="filter-title-impact">
+<p class="filter-title" id="filter-title-impact">Impacto</p>
+<input type="checkbox" class="visually-hidden" id="filter-impact-high" checked>
+<label for="filter-impact-high">Alto</label>
+<input type="checkbox" class="visually-hidden" id="filter-impact-medium" checked>
+<label for="filter-impact-medium">Medio</label>
+<input type="checkbox" class="visually-hidden" id="filter-impact-low" checked>
+<label for="filter-impact-low">Bajo</label>
+</div>
+</fieldset>
+<section>
+<h2>Hallazgos por eje</h2>
+<h3>Instrucciones</h3>
+<article class="finding" data-axis="instructions" data-impact="low" data-rule="RUL-01">
+<h4>RUL-01 · Generic rules the model already follows</h4>
+<dl class="fields"><div><dt>Tipo</dt><dd>criterio</dd></div><div><dt>Impacto</dt><dd>Bajo, una opinión: un hallazgo de criterio no tiene una medición detrás</dd></div><div><dt>Nivel de evidencia de la regla</dt><dd>estudio</dd></div><div><dt>Resumen</dt><dd>The subagent body is one generic sentence that the agent would follow without being told, and it repeats the description above it.</dd></div><div><dt>Recomendación</dt><dd>Delete the sentence; the description already names the task.</dd></div><div><dt>Prueba en la función 2</dt><dd>no propuesta</dd></div></dl>
+<div class="table-wrap" tabindex="0"><table><thead><tr><th scope="col">Evidencia</th><th scope="col">Cita</th></tr></thead><tbody><tr><td><code>.claude/agents/fast-runner.md:7</code></td><td><code>Run the requested script and report the result.</code></td></tr></tbody></table></div>
+<p><strong>Fuentes:</strong></p>
+<ul><li><a href="https://arxiv.org/abs/2602.11988" rel="noreferrer noopener">Evaluating AGENTS.md: Are Repository-Level Context Files Helpful for Coding Agents?</a>, estudio</li><li><a href="https://code.claude.com/docs/en/memory" rel="noreferrer noopener">How Claude remembers your project</a>, documentación oficial</li><li><a href="https://agentatlas-dev.vercel.app/en/techniques/agents-md/" rel="noreferrer noopener">AGENTS.md: persistent project instructions</a>, Agent Atlas, la base de conocimiento del autor</li></ul>
+</article>
+<h3>Contexto</h3>
+<p>No hay hallazgos en este eje.</p>
+<h3>Seguridad</h3>
+<article class="finding" data-axis="security" data-impact="high" data-rule="SEC-01">
+<h4>SEC-01 · Project permissions are broader than the defaults</h4>
+<dl class="fields"><div><dt>Tipo</dt><dd>medido (<code>mf-1</code>)</dd></div><div><dt>Impacto</dt><dd>Alto</dd></div><div><dt>Nivel de evidencia de la regla</dt><dd>documentación oficial</dd></div><div><dt>Resumen</dt><dd>The project allows every git command without a prompt, and the project mode accepts edits without asking. Both subagents that have shell tools run in that mode.</dd></div><div><dt>Recomendación</dt><dd>Narrow the git allow rule to the commands the team runs, and remove defaultMode acceptEdits from the project settings.</dd></div><div><dt>Prueba en la función 2</dt><dd>no propuesta</dd></div></dl>
+<div class="table-wrap" tabindex="0"><table><thead><tr><th scope="col">Evidencia</th><th scope="col">Cita</th></tr></thead><tbody><tr><td><code>.claude/settings.json:3</code></td><td><code>&quot;allow&quot;: [&quot;Bash(git *)&quot;]</code></td></tr><tr><td><code>.claude/agents/edit-helper.md:5</code></td><td><code>permissionMode: acceptEdits</code></td></tr></tbody></table></div>
+<p>Medido en <code>/security/permissions/allow/0</code>: objeto con 2 claves</p>
+<div class="table-wrap" tabindex="0"><table><thead><tr><th scope="col">Disparador</th><th scope="col">Cantidad</th><th scope="col">Impacto</th><th scope="col">Valor</th><th scope="col">Umbral</th></tr></thead><tbody><tr><td><code>accept-edits-in-project</code></td><td>1</td><td>Alto</td><td>—</td><td>—</td></tr><tr><td><code>destructive-allow-passes</code></td><td>1</td><td>Alto</td><td>—</td><td>—</td></tr><tr><td><code>subagent-accept-edits-shell</code></td><td>2</td><td>Alto</td><td>—</td><td>—</td></tr></tbody></table></div>
+<p><strong>Fuentes:</strong></p>
+<ul><li><a href="https://code.claude.com/docs/en/permissions" rel="noreferrer noopener">Configure permissions</a>, documentación oficial</li><li><a href="https://code.claude.com/docs/en/permission-modes" rel="noreferrer noopener">Choose a permission mode</a>, documentación oficial</li><li><a href="https://code.claude.com/docs/en/permission-modes#protected-paths" rel="noreferrer noopener">Choose a permission mode: protected paths</a>, documentación oficial</li><li><a href="https://code.claude.com/docs/en/sub-agents" rel="noreferrer noopener">Create custom subagents</a>, documentación oficial</li><li><a href="https://code.claude.com/docs/en/security" rel="noreferrer noopener">Security</a>, documentación oficial</li><li><a href="https://genai.owasp.org/llmrisk/llm062025-excessive-agency/" rel="noreferrer noopener">LLM06:2025 Excessive Agency</a>, guía de una organización reconocida</li><li><a href="https://agentatlas-dev.vercel.app/en/techniques/tool-use-permissions/" rel="noreferrer noopener">Tools and permissions</a>, Agent Atlas, la base de conocimiento del autor</li></ul>
+</article>
+<article class="finding" data-axis="security" data-impact="high" data-rule="SEC-02">
+<h4>SEC-02 · Destructive commands pass or depend only on manual confirmation</h4>
+<dl class="fields"><div><dt>Tipo</dt><dd>medido (<code>mf-2</code>)</dd></div><div><dt>Impacto</dt><dd>Alto</dd></div><div><dt>Nivel de evidencia de la regla</dt><dd>documentación oficial</dd></div><div><dt>Resumen</dt><dd>Git commands that discard work or rewrite shared history pass without a prompt, because the allow rule for git covers them. The project mode also accepts edits without asking.</dd></div><div><dt>Recomendación</dt><dd>Add deny rules for the destructive git forms, ask rules for rm, and a PreToolUse hook on Bash that fails closed, then remove acceptEdits from the project settings.</dd></div><div><dt>Prueba en la función 2</dt><dd>Run each destructive command of the scan in a scratch copy of the project and record whether it runs, asks or is blocked.</dd></div></dl>
+<div class="table-wrap" tabindex="0"><table><thead><tr><th scope="col">Evidencia</th><th scope="col">Cita</th></tr></thead><tbody><tr><td><code>.claude/settings.json:3</code></td><td><code>&quot;allow&quot;: [&quot;Bash(git *)&quot;]</code></td></tr><tr><td><code>.claude/settings.json:4</code></td><td><code>&quot;defaultMode&quot;: &quot;acceptEdits&quot;</code></td></tr></tbody></table></div>
+<p>Medido en <code>/security/destructiveCoverage/commands/0</code>: objeto con 13 claves</p>
+<div class="table-wrap" tabindex="0"><table><thead><tr><th scope="col">Disparador</th><th scope="col">Cantidad</th><th scope="col">Impacto</th><th scope="col">Valor</th><th scope="col">Umbral</th></tr></thead><tbody><tr><td><code>destructive-command-passes</code></td><td>26</td><td>Alto</td><td>—</td><td>—</td></tr></tbody></table></div>
+<p><strong>Fuentes:</strong></p>
+<ul><li><a href="https://code.claude.com/docs/en/permissions" rel="noreferrer noopener">Configure permissions</a>, documentación oficial</li><li><a href="https://code.claude.com/docs/en/permission-modes" rel="noreferrer noopener">Choose a permission mode</a>, documentación oficial</li><li><a href="https://code.claude.com/docs/en/permission-modes#boundaries-you-state-in-conversation" rel="noreferrer noopener">Choose a permission mode: boundaries you state in conversation</a>, documentación oficial</li><li><a href="https://code.claude.com/docs/en/permission-modes#critical-paths" rel="noreferrer noopener">Choose a permission mode: critical paths</a>, documentación oficial</li><li><a href="https://code.claude.com/docs/en/hooks" rel="noreferrer noopener">Hooks reference</a>, documentación oficial</li><li><a href="https://code.claude.com/docs/en/security" rel="noreferrer noopener">Security</a>, documentación oficial</li><li><a href="https://code.claude.com/docs/en/sandboxing" rel="noreferrer noopener">Configure the sandboxed Bash tool</a>, documentación oficial</li><li><a href="https://genai.owasp.org/llmrisk/llm062025-excessive-agency/" rel="noreferrer noopener">LLM06:2025 Excessive Agency</a>, guía de una organización reconocida</li><li><a href="https://agentatlas-dev.vercel.app/en/techniques/safe-agent-execution/" rel="noreferrer noopener">Safe agent execution</a>, Agent Atlas, la base de conocimiento del autor</li><li><a href="https://agentatlas-dev.vercel.app/en/harnesses/security/" rel="noreferrer noopener">Piece: security</a>, Agent Atlas, la base de conocimiento del autor</li></ul>
+</article>
+<article class="finding" data-axis="security" data-impact="medium" data-rule="SEC-03">
+<h4>SEC-03 · Secrets are versioned, written into the harness, or readable without a prompt</h4>
+<p>El escaneo lo midió, pero findings.json no lo cita. El agente no decide si un hallazgo medido existe.</p>
+<dl class="fields"><div><dt>Tipo</dt><dd>medido (<code>mf-3</code>)</dd></div><div><dt>Impacto</dt><dd>Medio</dd></div><div><dt>Nivel de evidencia de la regla</dt><dd>documentación oficial</dd></div></dl>
+<p>No hay archivo que citar.</p>
+<p>Medido en <code>/security/secrets/readProtection/envAtRoot/decision</code>: <code>default</code></p>
+<div class="table-wrap" tabindex="0"><table><thead><tr><th scope="col">Disparador</th><th scope="col">Cantidad</th><th scope="col">Impacto</th><th scope="col">Valor</th><th scope="col">Umbral</th></tr></thead><tbody><tr><td><code>env-at-root-readable</code></td><td>1</td><td>Medio</td><td><code>default</code></td><td>—</td></tr></tbody></table></div>
+<p><strong>Fuentes:</strong></p>
+<ul><li><a href="https://code.claude.com/docs/en/permissions" rel="noreferrer noopener">Configure permissions</a>, documentación oficial</li><li><a href="https://code.claude.com/docs/en/claude-directory" rel="noreferrer noopener">Explore the .claude directory</a>, documentación oficial</li><li><a href="https://code.claude.com/docs/en/memory" rel="noreferrer noopener">How Claude remembers your project</a>, documentación oficial</li><li><a href="https://genai.owasp.org/llmrisk/llm022025-sensitive-information-disclosure/" rel="noreferrer noopener">LLM02:2025 Sensitive Information Disclosure</a>, guía de una organización reconocida</li><li><a href="https://agentatlas-dev.vercel.app/en/techniques/safe-agent-execution/" rel="noreferrer noopener">Safe agent execution</a>, Agent Atlas, la base de conocimiento del autor</li><li><a href="https://agentatlas-dev.vercel.app/en/harnesses/security/" rel="noreferrer noopener">Piece: security</a>, Agent Atlas, la base de conocimiento del autor</li></ul>
+</article>
+<article class="finding" data-axis="security" data-impact="medium" data-rule="SEC-05">
+<h4>SEC-05 · Security rules exist only as text</h4>
+<dl class="fields"><div><dt>Tipo</dt><dd>criterio</dd></div><div><dt>Impacto</dt><dd>Medio, una opinión: un hallazgo de criterio no tiene una medición detrás</dd></div><div><dt>Nivel de evidencia de la regla</dt><dd>documentación oficial</dd></div><div><dt>Resumen</dt><dd>The subagent body forbids destructive commands in plain text. Its shell tools inherit the project&#39;s acceptEdits mode, so nothing asks before those commands run, and no setting enforces the sentence.</dd></div><div><dt>Recomendación</dt><dd>Put the forbidden forms in deny rules in the project settings, and keep the sentence only as an explanation for the reader.</dd></div><div><dt>Prueba en la función 2</dt><dd>Ask the subagent to run each forbidden form and record whether the call asks, runs or is blocked, with and without the sentence.</dd></div><div><dt>Respaldado por medidas</dt><dd><code>mf-1</code> (SEC-01, impacto Alto), <code>mf-2</code> (SEC-02, impacto Alto)</dd></div></dl>
+<div class="table-wrap" tabindex="0"><table><thead><tr><th scope="col">Evidencia</th><th scope="col">Cita</th></tr></thead><tbody><tr><td><code>.claude/agents/edit-helper.md:9</code></td><td><code>Never run `rm -rf | git reset --hard` without asking first.</code></td></tr></tbody></table></div>
+<p><strong>Fuentes:</strong></p>
+<ul><li><a href="https://code.claude.com/docs/en/memory" rel="noreferrer noopener">How Claude remembers your project</a>, documentación oficial</li><li><a href="https://code.claude.com/docs/en/permission-modes" rel="noreferrer noopener">Choose a permission mode</a>, documentación oficial</li><li><a href="https://code.claude.com/docs/en/permission-modes#boundaries-you-state-in-conversation" rel="noreferrer noopener">Choose a permission mode: boundaries you state in conversation</a>, documentación oficial</li><li><a href="https://code.claude.com/docs/en/permissions" rel="noreferrer noopener">Configure permissions</a>, documentación oficial</li><li><a href="https://agentatlas-dev.vercel.app/en/techniques/safe-agent-execution/" rel="noreferrer noopener">Safe agent execution</a>, Agent Atlas, la base de conocimiento del autor</li><li><a href="https://genai.owasp.org/llmrisk/llm062025-excessive-agency/" rel="noreferrer noopener">LLM06:2025 Excessive Agency</a>, guía de una organización reconocida</li></ul>
+</article>
+<h3>Verificación</h3>
+<article class="finding" data-axis="verification" data-impact="medium" data-rule="VER-01">
+<h4>VER-01 · No documented way to verify a change</h4>
+<dl class="fields"><div><dt>Tipo</dt><dd>criterio</dd></div><div><dt>Impacto</dt><dd>Medio, una opinión: un hallazgo de criterio no tiene una medición detrás</dd></div><div><dt>Nivel de evidencia de la regla</dt><dd>documentación oficial</dd></div><div><dt>Resumen</dt><dd>No memory file names a command that checks a change, and the harness gives the agent no check to run after an edit.</dd></div><div><dt>Recomendación</dt><dd>Name the one command that checks a change in CLAUDE.md, and say when to run it, so the agent runs it before it reports an edit.</dd></div><div><dt>Prueba en la función 2</dt><dd>Run the same edit task with and without the verification line and compare the failed checks that each run leaves.</dd></div></dl>
+<div class="table-wrap" tabindex="0"><table><thead><tr><th scope="col">Evidencia</th><th scope="col">Cita</th></tr></thead><tbody><tr><td><code>.claude/settings.json</code></td><td>—</td></tr></tbody></table></div>
+<p><strong>Fuentes:</strong></p>
+<ul><li><a href="https://code.claude.com/docs/en/best-practices" rel="noreferrer noopener">Best practices for Claude Code</a>, documentación oficial</li><li><a href="https://agentatlas-dev.vercel.app/en/techniques/verification-evaluation/" rel="noreferrer noopener">Verification and evaluation</a>, Agent Atlas, la base de conocimiento del autor</li><li><a href="https://agentatlas-dev.vercel.app/en/techniques/agents-md/" rel="noreferrer noopener">AGENTS.md: persistent project instructions</a>, Agent Atlas, la base de conocimiento del autor</li></ul>
+</article>
+<h3>Estructura</h3>
+<p>No hay hallazgos en este eje.</p>
+<h3>Código</h3>
+<p>No hay hallazgos en este eje.</p>
+</section>
+<section>
+<h2>Presupuesto de contexto</h2>
+<div class="table-wrap" tabindex="0"><table><thead><tr><th scope="col">Componente</th><th scope="col">Modo de carga</th><th scope="col">Archivos</th><th scope="col">Tokens estimados</th></tr></thead><tbody><tr><td>Comandos</td><td>siempre</td><td>0</td><td>0</td></tr><tr><td>Memoria</td><td>siempre</td><td>0</td><td>0</td></tr><tr><td>Skills</td><td>siempre</td><td>0</td><td>0</td></tr><tr><td>Subagentes</td><td>siempre</td><td>2</td><td>27</td></tr></tbody></table></div>
+<p>Total: ≈ 27 tokens (estimados, chars/4)</p>
+<p>Se cuenta: los archivos del objetivo que se cargan siempre y que el escaneo lee. No se cuenta: la memoria de usuario, la memoria de las carpetas padre (la lista el escaneo, pero no la mide), la memoria automática y la memoria de las subcarpetas, que se carga cuando Claude trabaja en su carpeta.</p>
+<p>AGENTS.md: el escaneo supone que Claude Code lee AGENTS.md solo cuando no existe CLAUDE.md ni CLAUDE.local.md en el objetivo ni en una carpeta padre, que es el valor por defecto. Solo la configuración de usuario o la administrada puede cambiarlo; la del proyecto no. Si el supuesto falla, la tabla no incluye ese archivo.</p>
+</section>
+<section>
+<h2>Qué probar en la función 2</h2>
+<h3>Elementos cuyo tamaño se desconoce</h3>
+<p>Ninguno registrado.</p>
+<h3>Pruebas propuestas por los hallazgos</h3>
+<ul><li>SEC-02 Destructive commands pass or depend only on manual confirmation: Run each destructive command of the scan in a scratch copy of the project and record whether it runs, asks or is blocked.</li><li>SEC-05 Security rules exist only as text: Ask the subagent to run each forbidden form and record whether the call asks, runs or is blocked, with and without the sentence.</li><li>VER-01 No documented way to verify a change: Run the same edit task with and without the verification line and compare the failed checks that each run leaves.</li></ul>
+<h3>Scripts de hooks para ejecutar con comandos reales</h3>
+<p>Ninguno registrado.</p>
+<h3>Señales de verificación ruidosa</h3>
+<p>El escaneo no mide cuán ruidosa es la salida de la verificación, así que no registra ninguna señal de ese tipo.</p>
+</section>
+<section>
+<h2>Límites de este escaneo</h2>
+<p>No leído: la capa de usuario (memoria y configuración en la carpeta de Claude del usuario), las carpetas padre del objetivo y los archivos que el escaneo saltó, listados abajo.</p>
+<p>Los tokens son estimados, nunca contados. Método: chars/4.</p>
+<p>Los valores de los umbrales son de carácter provisional: cada uno es un supuesto que la calibración todavía no confirmó.</p>
+<p>Los disparadores de SEC-02 suponen el <code>defaultMode</code> del proyecto, o <code>default</code> cuando el proyecto no fija ninguno. El escaneo usó <code>acceptEdits</code>. Una sesión puede arrancar en otro modo (no verificado contra la documentación). La matriz muestra cada modo.</p>
+<p>Resultado de cada comando destructivo para una sesión iniciada en cada modo. Es contexto, no un disparador: los hallazgos de SEC-02 no lo usan.</p>
+<div class="table-wrap" tabindex="0"><table><thead><tr><th scope="col">Comando</th><th scope="col"><code>default</code></th><th scope="col"><code>acceptEdits</code></th><th scope="col"><code>auto</code></th><th scope="col"><code>bypassPermissions</code></th></tr></thead><tbody><tr><td><code>rm-recursive-force</code></td><td><code>asks</code></td><td><code>passes</code></td><td><code>classifier</code></td><td><code>passes</code></td></tr><tr><td><code>git-push-force-long</code></td><td><code>passes</code></td><td><code>passes</code></td><td><code>passes</code></td><td><code>passes</code></td></tr><tr><td><code>git-push-force-short</code></td><td><code>passes</code></td><td><code>passes</code></td><td><code>passes</code></td><td><code>passes</code></td></tr><tr><td><code>git-reset-hard</code></td><td><code>passes</code></td><td><code>passes</code></td><td><code>passes</code></td><td><code>passes</code></td></tr><tr><td><code>git-clean-force</code></td><td><code>passes</code></td><td><code>passes</code></td><td><code>passes</code></td><td><code>passes</code></td></tr><tr><td><code>git-checkout-discard</code></td><td><code>passes</code></td><td><code>passes</code></td><td><code>passes</code></td><td><code>passes</code></td></tr><tr><td><code>git-restore-discard</code></td><td><code>passes</code></td><td><code>passes</code></td><td><code>passes</code></td><td><code>passes</code></td></tr><tr><td><code>git-branch-force-delete</code></td><td><code>passes</code></td><td><code>passes</code></td><td><code>passes</code></td><td><code>passes</code></td></tr><tr><td><code>curl-pipe-shell</code></td><td><code>asks</code></td><td><code>asks</code></td><td><code>classifier</code></td><td><code>passes</code></td></tr><tr><td><code>wget-pipe-bash</code></td><td><code>asks</code></td><td><code>asks</code></td><td><code>classifier</code></td><td><code>passes</code></td></tr><tr><td><code>chmod-recursive-777</code></td><td><code>asks</code></td><td><code>asks</code></td><td><code>classifier</code></td><td><code>passes</code></td></tr><tr><td><code>npm-publish</code></td><td><code>asks</code></td><td><code>asks</code></td><td><code>classifier</code></td><td><code>passes</code></td></tr><tr><td><code>docker-system-prune</code></td><td><code>asks</code></td><td><code>asks</code></td><td><code>classifier</code></td><td><code>passes</code></td></tr><tr><td><code>remove-item-recurse-force</code></td><td><code>asks</code></td><td><code>passes</code></td><td><code>classifier</code></td><td><code>passes</code></td></tr><tr><td><code>cmd-rd-recurse-quiet</code></td><td><code>asks</code></td><td><code>asks</code></td><td><code>classifier</code></td><td><code>passes</code></td></tr><tr><td><code>cmd-del-recurse-quiet</code></td><td><code>asks</code></td><td><code>asks</code></td><td><code>classifier</code></td><td><code>passes</code></td></tr></tbody></table></div>
+<p><code>auto</code> = lo decide un clasificador de modelo, no se simula; las reglas decidan antes que el modo, no verificado para <code>auto</code> ni <code>bypassPermissions</code> (solo deny se afirma en todos los modos); no se usan hooks; <code>dontAsk</code> y <code>plan</code> no se muestran.</p>
+<p>Elementos saltados o ilegibles:</p>
+<div class="table-wrap" tabindex="0"><table><thead><tr><th scope="col">Fuente</th><th scope="col">Ruta</th><th scope="col">Motivo</th><th scope="col">Detalle</th></tr></thead><tbody><tr><td><code>git</code></td><td><code>.</code></td><td><code>file-list-from-walk</code></td><td><code>not-a-repository</code></td></tr></tbody></table></div>
+<p>No quedó ningún caso sin decidir.</p>
+</section>
+<section>
+<h2>Fuentes</h2>
+<div class="table-wrap" tabindex="0"><table><thead><tr><th scope="col">Id</th><th scope="col">Título</th><th scope="col">Nivel de evidencia</th><th scope="col">URL</th></tr></thead><tbody><tr><td><code>atlas-agents-md</code></td><td>AGENTS.md: persistent project instructions</td><td>Agent Atlas, la base de conocimiento del autor</td><td><a href="https://agentatlas-dev.vercel.app/en/techniques/agents-md/" rel="noreferrer noopener">https://agentatlas-dev.vercel.app/en/techniques/agents-md/</a></td></tr><tr><td><code>atlas-safe-agent-execution</code></td><td>Safe agent execution</td><td>Agent Atlas, la base de conocimiento del autor</td><td><a href="https://agentatlas-dev.vercel.app/en/techniques/safe-agent-execution/" rel="noreferrer noopener">https://agentatlas-dev.vercel.app/en/techniques/safe-agent-execution/</a></td></tr><tr><td><code>atlas-security</code></td><td>Piece: security</td><td>Agent Atlas, la base de conocimiento del autor</td><td><a href="https://agentatlas-dev.vercel.app/en/harnesses/security/" rel="noreferrer noopener">https://agentatlas-dev.vercel.app/en/harnesses/security/</a></td></tr><tr><td><code>atlas-tool-use-permissions</code></td><td>Tools and permissions</td><td>Agent Atlas, la base de conocimiento del autor</td><td><a href="https://agentatlas-dev.vercel.app/en/techniques/tool-use-permissions/" rel="noreferrer noopener">https://agentatlas-dev.vercel.app/en/techniques/tool-use-permissions/</a></td></tr><tr><td><code>atlas-verification-evaluation</code></td><td>Verification and evaluation</td><td>Agent Atlas, la base de conocimiento del autor</td><td><a href="https://agentatlas-dev.vercel.app/en/techniques/verification-evaluation/" rel="noreferrer noopener">https://agentatlas-dev.vercel.app/en/techniques/verification-evaluation/</a></td></tr><tr><td><code>cc-docs-best-practices</code></td><td>Best practices for Claude Code</td><td>documentación oficial</td><td><a href="https://code.claude.com/docs/en/best-practices" rel="noreferrer noopener">https://code.claude.com/docs/en/best-practices</a></td></tr><tr><td><code>cc-docs-claude-directory</code></td><td>Explore the .claude directory</td><td>documentación oficial</td><td><a href="https://code.claude.com/docs/en/claude-directory" rel="noreferrer noopener">https://code.claude.com/docs/en/claude-directory</a></td></tr><tr><td><code>cc-docs-hooks</code></td><td>Hooks reference</td><td>documentación oficial</td><td><a href="https://code.claude.com/docs/en/hooks" rel="noreferrer noopener">https://code.claude.com/docs/en/hooks</a></td></tr><tr><td><code>cc-docs-memory</code></td><td>How Claude remembers your project</td><td>documentación oficial</td><td><a href="https://code.claude.com/docs/en/memory" rel="noreferrer noopener">https://code.claude.com/docs/en/memory</a></td></tr><tr><td><code>cc-docs-permission-modes</code></td><td>Choose a permission mode</td><td>documentación oficial</td><td><a href="https://code.claude.com/docs/en/permission-modes" rel="noreferrer noopener">https://code.claude.com/docs/en/permission-modes</a></td></tr><tr><td><code>cc-docs-permission-modes-classifier-boundaries</code></td><td>Choose a permission mode: boundaries you state in conversation</td><td>documentación oficial</td><td><a href="https://code.claude.com/docs/en/permission-modes#boundaries-you-state-in-conversation" rel="noreferrer noopener">https://code.claude.com/docs/en/permission-modes#boundaries-you-state-in-conversation</a></td></tr><tr><td><code>cc-docs-permission-modes-critical-paths</code></td><td>Choose a permission mode: critical paths</td><td>documentación oficial</td><td><a href="https://code.claude.com/docs/en/permission-modes#critical-paths" rel="noreferrer noopener">https://code.claude.com/docs/en/permission-modes#critical-paths</a></td></tr><tr><td><code>cc-docs-permission-modes-protected-paths</code></td><td>Choose a permission mode: protected paths</td><td>documentación oficial</td><td><a href="https://code.claude.com/docs/en/permission-modes#protected-paths" rel="noreferrer noopener">https://code.claude.com/docs/en/permission-modes#protected-paths</a></td></tr><tr><td><code>cc-docs-permissions</code></td><td>Configure permissions</td><td>documentación oficial</td><td><a href="https://code.claude.com/docs/en/permissions" rel="noreferrer noopener">https://code.claude.com/docs/en/permissions</a></td></tr><tr><td><code>cc-docs-sandboxing</code></td><td>Configure the sandboxed Bash tool</td><td>documentación oficial</td><td><a href="https://code.claude.com/docs/en/sandboxing" rel="noreferrer noopener">https://code.claude.com/docs/en/sandboxing</a></td></tr><tr><td><code>cc-docs-security</code></td><td>Security</td><td>documentación oficial</td><td><a href="https://code.claude.com/docs/en/security" rel="noreferrer noopener">https://code.claude.com/docs/en/security</a></td></tr><tr><td><code>cc-docs-sub-agents</code></td><td>Create custom subagents</td><td>documentación oficial</td><td><a href="https://code.claude.com/docs/en/sub-agents" rel="noreferrer noopener">https://code.claude.com/docs/en/sub-agents</a></td></tr><tr><td><code>eth-agents-md-evaluation</code></td><td>Evaluating AGENTS.md: Are Repository-Level Context Files Helpful for Coding Agents?</td><td>estudio</td><td><a href="https://arxiv.org/abs/2602.11988" rel="noreferrer noopener">https://arxiv.org/abs/2602.11988</a></td></tr><tr><td><code>owasp-llm-excessive-agency</code></td><td>LLM06:2025 Excessive Agency</td><td>guía de una organización reconocida</td><td><a href="https://genai.owasp.org/llmrisk/llm062025-excessive-agency/" rel="noreferrer noopener">https://genai.owasp.org/llmrisk/llm062025-excessive-agency/</a></td></tr><tr><td><code>owasp-llm-sensitive-information-disclosure</code></td><td>LLM02:2025 Sensitive Information Disclosure</td><td>guía de una organización reconocida</td><td><a href="https://genai.owasp.org/llmrisk/llm022025-sensitive-information-disclosure/" rel="noreferrer noopener">https://genai.owasp.org/llmrisk/llm022025-sensitive-information-disclosure/</a></td></tr></tbody></table></div>
+</section>
+<section>
+<h2>Apéndice: medidas en bruto</h2>
+<h3>Hallazgos medidos</h3>
+<div class="table-wrap" tabindex="0"><table><thead><tr><th scope="col">Hallazgo</th><th scope="col">Regla</th><th scope="col">Referencia</th><th scope="col">Valor</th></tr></thead><tbody><tr><td><code>mf-1</code></td><td>SEC-01</td><td><code>/security/permissions/allow/0</code></td><td>objeto con 2 claves</td></tr><tr><td><code>mf-2</code></td><td>SEC-02</td><td><code>/security/destructiveCoverage/commands/0</code></td><td>objeto con 13 claves</td></tr><tr><td><code>mf-3</code></td><td>SEC-03</td><td><code>/security/secrets/readProtection/envAtRoot/decision</code></td><td><code>default</code></td></tr></tbody></table></div>
+<h3>Valores principales</h3>
+<div class="table-wrap" tabindex="0"><table><thead><tr><th scope="col">Medida</th><th scope="col">Valor</th></tr></thead><tbody><tr><td>Archivos listados</td><td>3</td></tr><tr><td>Avisos</td><td>1</td></tr><tr><td>Total que se carga siempre</td><td>≈ 27 tokens (estimados, chars/4)</td></tr><tr><td>Líneas duplicadas</td><td>0 %</td></tr><tr><td>Archivos revisados para duplicación</td><td>0</td></tr><tr><td>Carpetas de primer nivel que mencionan los archivos de memoria</td><td>0 de 1</td></tr></tbody></table></div>
+</section>
+</main>
+</body>
+</html>

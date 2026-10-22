@@ -1,18 +1,23 @@
 // Command line entry point of the report: node scripts/render-report.mjs <runDir>.
 //
 // It reads <runDir>/measurements.json and <runDir>/findings.json, validates the findings against the rule catalog,
-// the scan and the target, and writes <runDir>/report.md. The run folder must lie inside runs/ of harness-x-ray or inside
-// the system temp folder (see lib/run-dir.mjs). Warnings go to stderr; a measured finding that findings.json does not cite
-// is one of them. Exit codes: 0 when the report is written; 2 for a usage error, for a run folder that is not allowed or is
-// not a folder, for a report.md that exists and is not a regular file with one name, or for an input file that is missing,
-// is not JSON, or is not a scan of this tool; 1 when validation fails or anything unexpected happens. A failed run writes nothing and leaves an existing
-// report.md untouched. Nothing from the target is executed, and the target is read only by the validator.
+// the scan and the target, and writes two views of one model: <runDir>/report.md and <runDir>/report.html. The run folder
+// must lie inside runs/ of harness-x-ray or inside the system temp folder (see lib/run-dir.mjs). Warnings go to stderr; a
+// measured finding that findings.json does not cite is one of them. Exit codes: 0 when both reports are written; 2 for a
+// usage error, for a run folder that is not allowed or is not a folder, for a report.md or report.html that exists and is
+// not a regular file with one name, or for an input file that is missing, is not JSON, or is not a scan of this tool; 1
+// when validation fails or anything unexpected happens. A run that fails a check or the validation writes nothing, and leaves
+// an existing report.md and report.html untouched. The writes are not atomic: report.md is written first, then report.html,
+// so a write that fails (a full disk, a read-only file) exits 1 and can leave a new or partial report.md beside the older
+// report.html. Nothing from the target is executed, and the target is read only by the validator.
 
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { formatIssue, loadRules, validateFindings } from "./lib/findings-validate.mjs";
+import { loadTheme } from "./lib/html.mjs";
+import { renderHtml } from "./lib/report-html.mjs";
 import { readCatalog } from "./lib/report-catalog.mjs";
 import { loadLabels } from "./lib/report-labels.mjs";
 import { missingField, renderReport } from "./lib/report.mjs";
@@ -22,6 +27,7 @@ import { UsageError } from "./lib/target.mjs";
 const HARNESS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const USAGE = "usage: node scripts/render-report.mjs <runDir>";
 const REPORT_NAME = "report.md";
+const HTML_NAME = "report.html";
 
 process.exitCode = await main(process.argv.slice(2));
 
@@ -31,8 +37,10 @@ async function main(argv) {
     checkRunDir(runDir, HARNESS_ROOT);
     const { measurements, findings } = readInputs(runDir);
     const reportFile = path.join(runDir, REPORT_NAME);
+    const htmlFile = path.join(runDir, HTML_NAME);
     // Checked before validation, so a link in the way is reported as the usage error it is, and nothing is written.
     checkRunFile(reportFile);
+    checkRunFile(htmlFile);
 
     const rules = loadRules(HARNESS_ROOT);
     const result = validateFindings({
@@ -51,13 +59,22 @@ async function main(argv) {
     const catalog = readCatalog(HARNESS_ROOT, rules);
     const labels = loadLabels(HARNESS_ROOT, result.language);
     const template = fs.readFileSync(path.join(HARNESS_ROOT, "templates", "report.md"), "utf8");
-    const { markdown, unexplained } = renderReport({ measurements, findings, catalog, labels, template });
+    // The model is built once, and both texts are made before either file is written: a failure leaves both files alone.
+    const { markdown, unexplained, model } = renderReport({ measurements, findings, catalog, labels, template });
+    const { html } = renderHtml(model, {
+      template: fs.readFileSync(path.join(HARNESS_ROOT, "templates", "report.html"), "utf8"),
+      theme: loadTheme(HARNESS_ROOT),
+      css: fs.readFileSync(path.join(HARNESS_ROOT, "templates", "report.css"), "utf8"),
+      labels,
+    });
     for (const item of unexplained) {
       console.error(`warning: measured finding ${item.id} (${item.rule}) is not cited by findings.json`);
     }
     fs.writeFileSync(reportFile, markdown, "utf8");
+    fs.writeFileSync(htmlFile, html, "utf8");
 
     console.log(`report: ${reportFile}`);
+    console.log(`html: ${htmlFile}`);
     console.log(`findings: ${findings.findings.length} from the agent, ${unexplained.length} measured and not cited`);
     console.log(`language: ${result.language}`);
     return 0;

@@ -1,12 +1,14 @@
-// Renders report.md. The scan (measurements.json) and the agent's findings (findings.json) are the input; the findings
-// must already be validated (findings-validate.mjs). The fixed text comes from the labels of the language, and the
-// sections are placed in templates/report.md by fillTemplate. Every number is read from measurements.json through its
-// measurementRef: the agent's text never supplies a number. Every string from the target, the measurements or the
-// agent goes through the redactor before it is written, and every value in a table is escaped.
+// Builds the report model, and the Markdown view that writes it as report.md. The scan (measurements.json) and the agent's
+// findings (findings.json) are the input; the findings must already be validated (findings-validate.mjs). buildReportModel
+// turns them into the model: the sections as lists of blocks, with every number already formatted, so a view only writes it.
+// renderMarkdown is one view: it writes the model as Markdown and places the sections in templates/report.md by fillTemplate.
+// Every string from the target, the measurements or the agent goes through the redactor before it reaches the model, and
+// every number is read from measurements.json through its measurementRef: the agent's text never supplies a number. The
+// model holds no markup; each view escapes the text for its own format.
 //
 // Findings are shown by axis, then by impact (high, medium, low), then by rule id, then by input order. A measured
 // finding that no finding of findings.json cites (by measuredFindingId) is still shown, marked as not explained by the
-// agent; renderReport lists those so the command line can warn about them. Evidence outside the target carries its layer
+// agent; buildReportModel lists those so the command line can warn about them. Evidence outside the target carries its layer
 // and is marked in its row; the limits say what the scan read beyond the target, from meta.include. The skipped items
 // outside the target (the user layer's warnings and the parent-folder files that were not read) are marked in the limits table.
 // With a scope (measurements.scope), the header names the scope folders, and the limits say what was measured inside them,
@@ -18,7 +20,7 @@ import { AXES, DEFAULT_LANGUAGE } from "./findings-validate.mjs";
 import { isPlainObject } from "./json-out.mjs";
 import { THRESHOLDS_STATUS } from "./measured-findings.mjs";
 import { createRedactor } from "./redact.mjs";
-import { createLabeller } from "./report-labels.mjs";
+import { createLabelParts } from "./report-labels.mjs";
 import { codeSpan, escapePipes, formatNumber, inline, link, table, utcDate } from "./report-markdown.mjs";
 
 /** The section markers of templates/report.md. Each must appear exactly once. */
@@ -106,19 +108,59 @@ export function fillTemplate(template, sections) {
 }
 
 /**
- * Renders the report.
+ * Renders the report: the model, and its Markdown view.
  * @param {object} options
  * @param {object} options.measurements The parsed measurements.json of the scan.
  * @param {object} options.findings The parsed findings.json, validated.
  * @param {ReturnType<import("./report-catalog.mjs").readCatalog>} options.catalog The catalog for the report.
  * @param {Readonly<Record<string, string>>} options.labels The labels of the language of findings.json.
  * @param {string} options.template The text of templates/report.md.
- * @returns {{ markdown: string, unexplained: Array<{ id: string, rule: string }> }} unexplained lists the measured
- *   findings that findings.json does not cite.
+ * @returns {{ markdown: string, unexplained: Array<{ id: string, rule: string }>, model: ReportModel }} unexplained lists
+ *   the measured findings that findings.json does not cite.
  * @throws {TypeError} If an input has the wrong shape.
  * @throws {Error} If a measurementRef does not resolve, a rule or source is missing from the catalog, or a label is missing.
  */
 export function renderReport({ measurements, findings, catalog, labels, template }) {
+  const model = buildReportModel({ measurements, findings, catalog, labels });
+  return { markdown: renderMarkdown(model, template), unexplained: model.unexplained, model };
+}
+
+// The report model -----------------------------------------------------------------------------------------
+
+/**
+ * The report model: the report as plain data, with no markup in any string. Each section is a list of blocks. A line of
+ * text is a list of runs, and every view writes the runs in its own format.
+ *
+ * @typedef {{ type: "text", text: string }} TextRun Computed or target text, redacted and on one line. Never escaped.
+ * @typedef {{ type: "label", text: string }} LabelRun Fixed text of labels.<language>.json. Never escaped.
+ * @typedef {{ type: "code", text: string }} CodeRun Text shown as code, redacted. Never empty: an empty value is a LabelRun.
+ * @typedef {{ type: "strong", runs: Run[] }} StrongRun Bold text.
+ * @typedef {{ type: "link", label: string, url: string }} LinkRun A link. Both strings are redacted; the url is the address.
+ * @typedef {TextRun | LabelRun | CodeRun | StrongRun | LinkRun} Run
+ * @typedef {Run[]} Runs One line of text.
+ * @typedef {{ type: "heading", level: number, runs: Runs }} HeadingBlock Level 1 to 4.
+ * @typedef {{ type: "paragraph", runs: Runs }} ParagraphBlock
+ * @typedef {{ type: "fields", items: Array<{ label: Runs, runs: Runs }> }} FieldsBlock One "label: value" line per item.
+ * @typedef {{ type: "table", headers: Runs[], rows: Runs[][] }} TableBlock Every row has one cell per header.
+ * @typedef {{ type: "list", items: Runs[] }} ListBlock
+ * @typedef {{ type: "finding", ruleId: string, axis: string, impact: string, blocks: Block[] }} FindingBlock A finding and
+ *   its blocks. The axis and the impact (high, medium or low) let a view filter the findings.
+ * @typedef {HeadingBlock | ParagraphBlock | FieldsBlock | TableBlock | ListBlock | FindingBlock} Block
+ * @typedef {{ language: string, sections: Record<string, Block[]>, unexplained: Array<{ id: string, rule: string }> }} ReportModel
+ */
+
+/**
+ * Builds the report model from the inputs. This does the checks and all the work; a view only writes the model.
+ * @param {object} options
+ * @param {object} options.measurements The parsed measurements.json of the scan.
+ * @param {object} options.findings The parsed findings.json, validated.
+ * @param {ReturnType<import("./report-catalog.mjs").readCatalog>} options.catalog The catalog for the report.
+ * @param {Readonly<Record<string, string>>} options.labels The labels of the language of findings.json.
+ * @returns {ReportModel}
+ * @throws {TypeError} If an input has the wrong shape.
+ * @throws {Error} If a measurementRef does not resolve, a rule or source is missing from the catalog, or a label is missing.
+ */
+export function buildReportModel({ measurements, findings, catalog, labels }) {
   if (!isPlainObject(findings) || !Array.isArray(findings.findings)) {
     throw new TypeError("findings must be the parsed findings.json, with a findings list");
   }
@@ -128,18 +170,18 @@ export function renderReport({ measurements, findings, catalog, labels, template
   const language = findings.language ?? DEFAULT_LANGUAGE;
   const ctx = createContext({ measurements, catalog, labels, language });
   const entries = collectEntries(ctx, findings.findings);
-  const sections = {
-    header: renderHeader(ctx),
-    summary: renderSummary(ctx, entries),
-    findings: renderFindings(ctx, entries),
-    context: renderContext(ctx),
-    function2: renderFunction2(ctx, entries),
-    limits: renderLimits(ctx),
-    sources: renderSources(ctx, entries),
-    appendix: renderAppendix(ctx),
-  };
   return {
-    markdown: fillTemplate(template, sections),
+    language,
+    sections: {
+      header: headerSection(ctx),
+      summary: summarySection(ctx, entries),
+      findings: findingsSection(ctx, entries),
+      context: contextSection(ctx),
+      function2: function2Section(ctx, entries),
+      limits: limitsSection(ctx),
+      sources: sourcesSection(ctx, entries),
+      appendix: appendixSection(ctx),
+    },
     unexplained: entries
       .filter((entry) => entry.agent === null)
       .map((entry) => ({ id: entry.measured.id, rule: entry.measured.rule })),
@@ -148,32 +190,59 @@ export function renderReport({ measurements, findings, catalog, labels, template
 
 // Context and entries ------------------------------------------------------------------------------
 
-// The helpers the sections share. Each text helper redacts first, then escapes for its place in the Markdown.
+// The helpers the sections share. Each one returns runs. A text from the target or the measurements is redacted, and a
+// number is formatted here, once, so a view never formats or escapes a value.
 function createContext({ measurements, catalog, labels, language }) {
-  const t = createLabeller(labels);
+  const parts = createLabelParts(labels);
   const redact = createRedactor({ root: measurements.meta.targetRoot });
   const plain = (value) => inline(redact(String(value)));
+  const label = (key, values = {}) =>
+    parts(key, values).flatMap((piece) => (typeof piece === "string" ? markedRuns(piece) : piece));
   return {
-    t,
+    label,
+    // A fixed name shown as code, such as a mode. Its text comes from a label, so it is not redacted.
+    codeLabel: (key) => [codeNode(parts(key).join(""))],
     language,
     measurements,
     included: includedOf(measurements),
     catalog,
     measured: new Map(measurements.measuredFindings.map((item) => [item.id, item])),
-    num: (value) => formatNumber(value, language),
-    text: plain,
+    num: (value) => [textNode(formatNumber(value, language))],
+    text: (value) => [textNode(plain(value))],
     code: (value) => {
       const text = plain(value);
-      return text === "" ? t("value.empty") : codeSpan(text);
+      return text === "" ? label("value.empty") : [codeNode(text)];
     },
-    tableCode: (value) => {
-      const text = plain(value);
-      return text === "" ? t("value.empty") : codeSpan(escapePipes(text));
-    },
-    tableText: (value) => escapePipes(plain(value)),
-    link: (label, url) => link(plain(label), plain(url)),
+    link: (text, url) => [{ type: "link", label: plain(text), url: plain(url) }],
   };
 }
+
+// The nodes of the model's text. Each one is a run, and a list of runs is a line.
+const textNode = (text) => ({ type: "text", text });
+const labelNode = (text) => ({ type: "label", text });
+const codeNode = (text) => ({ type: "code", text });
+
+// The runs of a fixed text of a label. A pair of backticks marks code, as in the labels that name a setting: those parts
+// become code runs, so no view has to read Markdown.
+function markedRuns(text) {
+  const pieces = text.split("`");
+  if (pieces.length % 2 === 0) throw new Error(`a label has a backtick that is not paired: ${text}`);
+  return pieces.flatMap((piece, index) => {
+    if (piece === "") return [];
+    return [index % 2 === 1 ? codeNode(piece) : labelNode(piece)];
+  });
+}
+
+// Joins runs and runs of runs into one line.
+const runsOf = (...parts) => parts.flat();
+// The separator text that the builder writes between parts. It is neither target text nor a label.
+const glue = (text) => [textNode(text)];
+// Bold text, such as the lead of a paragraph.
+const bold = (runs) => [{ type: "strong", runs }];
+// The runs of several parts, one after another, with the separator between them.
+const between = (parts, separator) => parts.flatMap((part, index) => (index === 0 ? part : [...separator, ...part]));
+// One "label: value" line of a fields block.
+const field = (name, runs) => ({ label: name, runs });
 
 // What the scan read beyond the target, from meta.include. The section is absent when no flag was given, so nothing was read.
 function includedOf(measurements) {
@@ -271,16 +340,16 @@ function resolveRef(ctx, ref) {
   return value;
 }
 
-// A value as text: numbers in the locale, strings as code, arrays and objects by their length or key count.
-function valueText(ctx, value, inTable) {
-  const { t } = ctx;
-  if (value === null) return t("value.null");
-  if (value === true) return t("value.true");
-  if (value === false) return t("value.false");
+// A value as runs: numbers in the locale, strings as code, arrays and objects by their length or key count.
+function valueRuns(ctx, value) {
+  const { label } = ctx;
+  if (value === null) return label("value.null");
+  if (value === true) return label("value.true");
+  if (value === false) return label("value.false");
   if (typeof value === "number") return ctx.num(value);
-  if (typeof value === "string") return inTable ? ctx.tableCode(value) : ctx.code(value);
-  if (Array.isArray(value)) return t("value.list", { count: ctx.num(value.length) });
-  if (isPlainObject(value)) return t("value.object", { count: ctx.num(Object.keys(value).length) });
+  if (typeof value === "string") return ctx.code(value);
+  if (Array.isArray(value)) return label("value.list", { count: ctx.num(value.length) });
+  if (isPlainObject(value)) return label("value.object", { count: ctx.num(Object.keys(value).length) });
   throw new TypeError("measurements.json holds a value that the report cannot show");
 }
 
@@ -304,31 +373,31 @@ function triggerGroups(item) {
 }
 
 function triggerRow(ctx, group) {
-  const { t } = ctx;
+  const { label } = ctx;
   const single = group.count === 1 ? resolveRef(ctx, group.refs[0]) : undefined;
-  const value = single === undefined || isObjectValue(single) ? t("value.empty") : valueText(ctx, single, true);
+  const value = single === undefined || isObjectValue(single) ? label("value.empty") : valueRuns(ctx, single);
   const threshold =
     group.threshold === null
-      ? t("value.empty")
-      : t("threshold.cell", {
-          key: ctx.tableCode(group.threshold.key),
-          value: valueText(ctx, group.threshold.value, true),
-          status: statusText(ctx),
+      ? label("value.empty")
+      : label("threshold.cell", {
+          key: ctx.code(group.threshold.key),
+          value: valueRuns(ctx, group.threshold.value),
+          status: statusRuns(ctx),
         });
   const name = Object.hasOwn(TRIGGER_NOTES, group.trigger)
-    ? `${ctx.tableCode(group.trigger)} (${ctx.tableText(t(TRIGGER_NOTES[group.trigger]))})`
-    : ctx.tableCode(group.trigger);
-  return [name, ctx.num(group.count), t(`impact.${group.impact}`), value, threshold];
+    ? runsOf(ctx.code(group.trigger), glue(" ("), label(TRIGGER_NOTES[group.trigger]), glue(")"))
+    : ctx.code(group.trigger);
+  return [name, ctx.num(group.count), label(`impact.${group.impact}`), value, threshold];
 }
 
 function isObjectValue(value) {
   return value !== null && typeof value === "object";
 }
 
-function statusText(ctx) {
+function statusRuns(ctx) {
   const key = STATUS_LABELS[THRESHOLDS_STATUS];
   if (key === undefined) throw new Error(`no label for the threshold status "${String(THRESHOLDS_STATUS)}"`);
-  return ctx.t(key);
+  return ctx.label(key);
 }
 
 // The permission mode that the SEC-02 outcomes use, or null for the default mode. The scan applies the project
@@ -340,32 +409,36 @@ function usedMode(measurements) {
 
 // Header --------------------------------------------------------------------------------------------
 
-function renderHeader(ctx) {
-  const { t, measurements: m, catalog } = ctx;
+function headerSection(ctx) {
+  const { label, measurements: m, catalog } = ctx;
   const head = m.target.git.head;
-  const lines = [
-    field(t("header.target"), ctx.code(m.target.name)),
+  const fields = [
+    field(label("header.target"), ctx.code(m.target.name)),
     ...scopeFields(ctx),
-    field(t("header.commit"), head === null ? t("value.none") : ctx.code(head)),
-    field(t("header.scanDate"), utcDate(m.meta.scannedAt)),
-    field(t("header.axes"), AXES.map((axis) => t(`axis.${axis}`)).join(t("list.separator"))),
-    field(t("header.tool"), ctx.code(m.meta.tool)),
+    field(label("header.commit"), head === null ? label("value.none") : ctx.code(head)),
+    field(label("header.scanDate"), ctx.text(utcDate(m.meta.scannedAt))),
+    field(label("header.axes"), between(AXES.map((axis) => label(`axis.${axis}`)), label("list.separator"))),
+    field(label("header.tool"), ctx.code(m.meta.tool)),
     field(
-      t("header.catalog"),
-      t("header.catalogValue", { count: ctx.num(catalog.version.count), hash: ctx.code(catalog.version.sha256) }),
+      label("header.catalog"),
+      label("header.catalogValue", { count: ctx.num(catalog.version.count), hash: ctx.code(catalog.version.sha256) }),
     ),
   ];
-  return [`# ${t("header.title")}`, lines.join("\n"), renderAgents(ctx)].join("\n\n");
+  return [
+    { type: "heading", level: 1, runs: label("header.title") },
+    { type: "fields", items: fields },
+    ...agentBlocks(ctx),
+  ];
 }
 
 // The scope of the run, as one header field, when the scan had one: its folders and the inherited folders, as code. Nothing
 // is written without a scope, so a report of a scan without one is unchanged.
 function scopeFields(ctx) {
-  const { t, measurements: m } = ctx;
+  const { label, measurements: m } = ctx;
   if (m.scope === undefined) return [];
-  const folders = m.scope.folders.map((folder) => ctx.code(folder)).join(t("list.separator"));
-  const inherited = m.scope.inherited.map((folder) => ctx.code(folder)).join(t("list.separator"));
-  return [field(t("header.scope"), t("header.scopeValue", { folders, inherited }))];
+  const folders = between(m.scope.folders.map((folder) => ctx.code(folder)), label("list.separator"));
+  const inherited = between(m.scope.inherited.map((folder) => ctx.code(folder)), label("list.separator"));
+  return [field(label("header.scope"), label("header.scopeValue", { folders, inherited }))];
 }
 
 // The agents that the scan detected, one row each, in the order of agentHarness.agents. Every kind of Claude Code is evaluated:
@@ -373,19 +446,22 @@ function scopeFields(ctx) {
 // evaluated, because the instruction rules (RUL-01 to RUL-04) read the instruction files of any agent. Its settings and hooks
 // are checked only for whether a known agent loads them (SEC-04, SEC-05), and its other kinds are shown as detected, content
 // not evaluated.
-function renderAgents(ctx) {
-  const { t, measurements: m } = ctx;
+function agentBlocks(ctx) {
+  const { label, measurements: m } = ctx;
   const agents = listOf(m.agentHarness?.agents);
-  if (agents.length === 0) return field(t("header.agents"), t("value.none"));
+  if (agents.length === 0) return [{ type: "fields", items: [field(label("header.agents"), label("value.none"))] }];
   const items = listOf(m.agentHarness?.items);
   const rows = agents.map((agent) => {
     const kinds = kindsOf(items, agent.id);
     const evaluated = agent.id === CLAUDE_CODE ? kinds : kinds.filter((kind) => kind === "instructions");
     const notEvaluated = kinds.filter((kind) => !evaluated.includes(kind));
-    return [ctx.tableText(t(`agent.${agent.id}`)), kindList(ctx, evaluated), kindList(ctx, notEvaluated)];
+    return [label(`agent.${agent.id}`), kindList(ctx, evaluated), kindList(ctx, notEvaluated)];
   });
-  const headers = [t("table.agent"), t("table.evaluated"), t("table.detectedOnly")];
-  return [`**${t("header.agents")}:**`, table(headers, rows)].join("\n\n");
+  const headers = [label("table.agent"), label("table.evaluated"), label("table.detectedOnly")];
+  return [
+    { type: "paragraph", runs: bold(runsOf(label("header.agents"), glue(":"))) },
+    { type: "table", headers, rows },
+  ];
 }
 
 // The distinct kinds of the items of one agent, in the order of KINDS.
@@ -394,10 +470,10 @@ function kindsOf(items, agentId) {
   return KINDS.filter((kind) => present.has(kind));
 }
 
-// The labels of some kinds, comma-separated, or the empty value when there are none. For a table cell.
+// The labels of some kinds, separated, or the empty value when there are none. For a table cell.
 function kindList(ctx, kinds) {
-  if (kinds.length === 0) return ctx.t("value.none");
-  return kinds.map((kind) => ctx.tableText(ctx.t(`harnessKind.${kind}`))).join(ctx.t("list.separator"));
+  if (kinds.length === 0) return ctx.label("value.none");
+  return between(kinds.map((kind) => ctx.label(`harnessKind.${kind}`)), ctx.label("list.separator"));
 }
 
 function listOf(value) {
@@ -406,27 +482,42 @@ function listOf(value) {
 
 // Summary by axis ----------------------------------------------------------------------------------
 
-function renderSummary(ctx, entries) {
-  const { t } = ctx;
+function summarySection(ctx, entries) {
+  const { label } = ctx;
   const rows = AXES.map((axis) => {
     const counts = impactCounts(entries.filter((entry) => entry.rule.axis === axis));
-    return [ctx.tableText(t(`axis.${axis}`)), ctx.num(counts.high), ctx.num(counts.medium), ctx.num(counts.low)];
+    return [label(`axis.${axis}`), ctx.num(counts.high), ctx.num(counts.medium), ctx.num(counts.low)];
   });
   const total = impactCounts(entries);
-  rows.push([ctx.tableText(t("summary.total")), ctx.num(total.high), ctx.num(total.medium), ctx.num(total.low)]);
+  rows.push([label("summary.total"), ctx.num(total.high), ctx.num(total.medium), ctx.num(total.low)]);
 
+  const headers = [label("summary.axis"), label("impact.high"), label("impact.medium"), label("impact.low")];
+  const blocks = [
+    { type: "heading", level: 2, runs: label("summary.title") },
+    { type: "table", headers, rows },
+  ];
   const top = [...entries].sort(compareOverall).slice(0, SUMMARY_ROWS);
-  const topText =
-    top.length === 0
-      ? t("summary.none")
-      : [
-          `**${t("summary.top")}:**`,
-          top
-            .map((entry) => `- ${ctx.code(entry.rule.id)} ${ctx.text(entry.rule.title)} (${t(`impact.${entry.impact}`)})`)
-            .join("\n"),
-        ].join("\n\n");
-  const headers = [t("summary.axis"), t("impact.high"), t("impact.medium"), t("impact.low")];
-  return [`## ${t("summary.title")}`, table(headers, rows), topText].join("\n\n");
+  if (top.length === 0) {
+    blocks.push({ type: "paragraph", runs: label("summary.none") });
+  } else {
+    blocks.push(
+      { type: "paragraph", runs: bold(runsOf(label("summary.top"), glue(":"))) },
+      {
+        type: "list",
+        items: top.map((entry) =>
+          runsOf(
+            ctx.code(entry.rule.id),
+            glue(" "),
+            ctx.text(entry.rule.title),
+            glue(" ("),
+            label(`impact.${entry.impact}`),
+            glue(")"),
+          ),
+        ),
+      },
+    );
+  }
+  return blocks;
 }
 
 function impactCounts(list) {
@@ -437,84 +528,77 @@ function impactCounts(list) {
 
 // Findings by axis --------------------------------------------------------------------------------
 
-function renderFindings(ctx, entries) {
-  const { t } = ctx;
-  const blocks = [`## ${t("findings.title")}`];
+function findingsSection(ctx, entries) {
+  const { label } = ctx;
+  const blocks = [{ type: "heading", level: 2, runs: label("findings.title") }];
   for (const axis of AXES) {
-    blocks.push(`### ${t(`axis.${axis}`)}`);
+    blocks.push({ type: "heading", level: 3, runs: label(`axis.${axis}`) });
     const list = entries.filter((entry) => entry.rule.axis === axis).sort(compareEntries);
-    if (list.length === 0) blocks.push(t("findings.axisEmpty"));
-    for (const entry of list) blocks.push(renderFinding(ctx, entry));
+    if (list.length === 0) blocks.push({ type: "paragraph", runs: label("findings.axisEmpty") });
+    for (const entry of list) blocks.push(findingBlock(ctx, entry));
   }
-  return blocks.join("\n\n");
+  return blocks;
 }
 
-function renderFinding(ctx, entry) {
-  const { t } = ctx;
+function findingBlock(ctx, entry) {
+  const { label } = ctx;
   const { rule, agent } = entry;
-  const blocks = [`#### ${rule.id} · ${ctx.text(rule.title)}`];
-  if (agent === null) blocks.push(t("finding.unexplained"));
+  const blocks = [{ type: "heading", level: 4, runs: runsOf(ctx.text(rule.id), glue(" · "), ctx.text(rule.title)) }];
+  if (agent === null) blocks.push({ type: "paragraph", runs: label("finding.unexplained") });
 
-  const fields = [
-    field(t("field.type"), typeText(ctx, entry)),
-    field(t("field.impact"), impactText(ctx, entry)),
-  ];
-  const agents = agentsText(ctx, entry);
-  if (agents !== null) fields.push(field(t("field.agents"), agents));
-  fields.push(field(t("field.evidenceLevel"), t(`level.${rule.evidence}`)));
+  const fields = [field(label("field.type"), typeRuns(ctx, entry)), field(label("field.impact"), impactRuns(ctx, entry))];
+  const agents = agentsRuns(ctx, entry);
+  if (agents !== null) fields.push(field(label("field.agents"), agents));
+  fields.push(field(label("field.evidenceLevel"), label(`level.${rule.evidence}`)));
   if (agent !== null) {
-    fields.push(field(t("field.summary"), ctx.text(agent.summary)));
-    fields.push(field(t("field.recommendation"), ctx.text(agent.recommendation)));
-    const test = agent.testInFunction2 == null ? t("finding.noTest") : ctx.text(agent.testInFunction2);
-    fields.push(field(t("field.test"), test));
+    fields.push(field(label("field.summary"), ctx.text(agent.summary)));
+    fields.push(field(label("field.recommendation"), ctx.text(agent.recommendation)));
+    const test = agent.testInFunction2 == null ? label("finding.noTest") : ctx.text(agent.testInFunction2);
+    fields.push(field(label("field.test"), test));
   }
   if (entry.support.length > 0) {
     const supported = entry.support.map((item) =>
-      t("support.item", { id: ctx.code(item.id), rule: ctx.text(item.rule), impact: t(`impact.${item.impact}`) }),
+      label("support.item", { id: ctx.code(item.id), rule: ctx.text(item.rule), impact: label(`impact.${item.impact}`) }),
     );
-    fields.push(field(t("field.supported"), supported.join(t("list.separator"))));
+    fields.push(field(label("field.supported"), between(supported, label("list.separator"))));
   }
-  blocks.push(fields.join("\n"));
+  blocks.push({ type: "fields", items: fields });
   blocks.push(evidenceBlock(ctx, entry));
   if (entry.measured !== null) blocks.push(...measuredBlocks(ctx, entry.measured));
-  blocks.push(sourcesBlock(ctx, rule));
-  return blocks.join("\n\n");
+  blocks.push(...ruleSourceBlocks(ctx, rule));
+  return { type: "finding", ruleId: rule.id, axis: rule.axis, impact: entry.impact, blocks };
 }
 
-function field(label, text) {
-  return `- **${label}:** ${text}`;
-}
-
-function typeText(ctx, entry) {
-  if (entry.agent !== null && entry.agent.kind === "judgment") return ctx.t("kind.judgment");
-  return `${ctx.t("kind.measured")} (${ctx.code(entry.measured.id)})`;
+function typeRuns(ctx, entry) {
+  if (entry.agent !== null && entry.agent.kind === "judgment") return ctx.label("kind.judgment");
+  return runsOf(ctx.label("kind.measured"), glue(" ("), ctx.code(entry.measured.id), glue(")"));
 }
 
 // A judgment finding says that its impact is an opinion. A measured finding takes the impact of its numbers.
-function impactText(ctx, entry) {
-  const level = ctx.t(`impact.${entry.impact}`);
-  if (entry.agent !== null && entry.agent.kind === "judgment") return ctx.t("impact.opinion", { impact: level });
+function impactRuns(ctx, entry) {
+  const level = ctx.label(`impact.${entry.impact}`);
+  if (entry.agent !== null && entry.agent.kind === "judgment") return ctx.label("impact.opinion", { impact: level });
   return level;
 }
 
 // The agents a finding applies to: its own list, else the list of its measured finding (the CTX-07 measure names the agents it
 // measures). Null when neither names any agent. Each id shows as its label.
-function agentsText(ctx, entry) {
+function agentsRuns(ctx, entry) {
   const own = entry.agent === null ? undefined : entry.agent.agents;
   const ids = Array.isArray(own) ? own : entry.measured?.agents;
   if (!Array.isArray(ids) || ids.length === 0) return null;
-  return ids.map((id) => ctx.t(`agent.${id}`)).join(ctx.t("list.separator"));
+  return between(ids.map((id) => ctx.label(`agent.${id}`)), ctx.label("list.separator"));
 }
 
 function evidenceBlock(ctx, entry) {
-  const { t } = ctx;
+  const { label } = ctx;
   const items = entry.agent === null ? entry.measured.evidence : entry.agent.evidence;
-  if (items.length === 0) return t("finding.noEvidence");
+  if (items.length === 0) return { type: "paragraph", runs: label("finding.noEvidence") };
   const rows = items.map((item) => [
     evidenceLocation(ctx, item),
-    item.quote === undefined ? t("value.empty") : ctx.tableCode(item.quote),
+    item.quote === undefined ? label("value.empty") : ctx.code(item.quote),
   ]);
-  return table([t("table.evidence"), t("table.quote")], rows);
+  return { type: "table", headers: [label("table.evidence"), label("table.quote")], rows };
 }
 
 function locationOf(item) {
@@ -524,174 +608,192 @@ function locationOf(item) {
 
 // The location of an evidence entry, with its mark when the file lies outside the target (its layer).
 function evidenceLocation(ctx, item) {
-  const location = ctx.tableCode(locationOf(item));
+  const location = ctx.code(locationOf(item));
   if (item.layer === undefined) return location;
   if (!Object.hasOwn(LAYER_LABELS, item.layer)) throw new Error(`an evidence entry has an unknown layer: ${String(item.layer)}`);
-  return `${location} (${ctx.tableText(ctx.t(LAYER_LABELS[item.layer]))})`;
+  return runsOf(location, glue(" ("), ctx.label(LAYER_LABELS[item.layer]), glue(")"));
 }
 
 // The measured numbers of a finding: the value at its measurementRef, and one row per group of triggers.
 function measuredBlocks(ctx, item) {
-  const { t } = ctx;
-  const headline = t("measure.at", {
+  const { label } = ctx;
+  const headline = label("measure.at", {
     ref: ctx.code(item.measurementRef),
-    value: valueText(ctx, resolveRef(ctx, item.measurementRef), false),
+    value: valueRuns(ctx, resolveRef(ctx, item.measurementRef)),
   });
   const rows = triggerGroups(item).map((group) => triggerRow(ctx, group));
-  const headers = [t("table.trigger"), t("table.count"), t("table.impact"), t("table.value"), t("table.threshold")];
-  return [headline, table(headers, rows)];
+  const headers = [label("table.trigger"), label("table.count"), label("table.impact"), label("table.value"), label("table.threshold")];
+  return [{ type: "paragraph", runs: headline }, { type: "table", headers, rows }];
 }
 
-function sourcesBlock(ctx, rule) {
-  const { t } = ctx;
-  if (rule.sources.length === 0) return t("finding.noSources");
+function ruleSourceBlocks(ctx, rule) {
+  const { label } = ctx;
+  if (rule.sources.length === 0) return [{ type: "paragraph", runs: label("finding.noSources") }];
   const items = rule.sources.map((id) => {
     const source = sourceOf(ctx, id);
-    return `- ${ctx.link(source.title, source.url)}, ${t(`level.${source.type}`)}`;
+    return runsOf(ctx.link(source.title, source.url), glue(", "), label(`level.${source.type}`));
   });
-  return [`**${t("field.sources")}:**`, items.join("\n")].join("\n\n");
+  return [
+    { type: "paragraph", runs: bold(runsOf(label("field.sources"), glue(":"))) },
+    { type: "list", items },
+  ];
 }
 
 // Context budget -----------------------------------------------------------------------------------
 
-function renderContext(ctx) {
-  const { t, measurements: m } = ctx;
+function contextSection(ctx) {
+  const { label, measurements: m } = ctx;
   const budget = m.context.alwaysLoaded;
-  const blocks = [`## ${t("context.title")}`];
+  const blocks = [{ type: "heading", level: 2, runs: label("context.title") }];
   if (budget.byComponent.length === 0) {
-    blocks.push(t("context.none"));
+    blocks.push({ type: "paragraph", runs: label("context.none") });
   } else {
     const rows = budget.byComponent.map((item) => [
-      ctx.tableText(componentName(ctx, item.component)),
-      ctx.tableText(t("context.mode.always")),
+      componentRuns(ctx, item.component),
+      label("context.mode.always"),
       ctx.num(item.items.length),
       ctx.num(item.estTokens),
     ]);
-    const headers = [t("table.component"), t("table.loadMode"), t("table.files"), t("table.tokens")];
-    blocks.push(table(headers, rows));
+    const headers = [label("table.component"), label("table.loadMode"), label("table.files"), label("table.tokens")];
+    blocks.push({ type: "table", headers, rows });
   }
-  blocks.push(t("context.total", { estimate: estimateText(ctx) }));
-  blocks.push(t(ctx.included.ancestors ? "context.layersAncestors" : "context.layers"), t("context.agents"));
-  if (m.context.byLayer !== undefined) blocks.push(layersBlock(ctx, m.context.byLayer));
+  blocks.push({ type: "paragraph", runs: label("context.total", { estimate: estimateRuns(ctx) }) });
+  blocks.push({ type: "paragraph", runs: label(ctx.included.ancestors ? "context.layersAncestors" : "context.layers") });
+  blocks.push({ type: "paragraph", runs: label("context.agents") });
+  if (m.context.byLayer !== undefined) blocks.push(...layerBlocks(ctx, m.context.byLayer));
   if (budget.unknownStatic.length > 0) {
-    blocks.push(t("context.unknownTitle"), budget.unknownStatic.map((item) => `- ${unknownText(ctx, item)}`).join("\n"));
+    blocks.push(
+      { type: "paragraph", runs: label("context.unknownTitle") },
+      { type: "list", items: budget.unknownStatic.map((item) => unknownRuns(ctx, item)) },
+    );
   }
-  return blocks.join("\n\n");
+  return blocks;
 }
 
 // The context of each layer, when the scan had a layer plan (--layers). One row per layer: its folders as code, the always-loaded
 // total (the same for every layer), the files on demand there, their sum, and the nested skills, which are not verified and are
 // not in the sum. The layer names come from the plan, so they are escaped like every other text of the report.
-function layersBlock(ctx, byLayer) {
-  const { t, measurements: m } = ctx;
+function layerBlocks(ctx, byLayer) {
+  const { label, measurements: m } = ctx;
   const always = m.context.alwaysLoaded.estTokensTotal;
   const rows = byLayer.map((layer) => [
-    ctx.tableText(layer.name),
-    layer.folders.map((folder) => ctx.tableCode(folder)).join(t("list.separator")),
+    ctx.text(layer.name),
+    between(layer.folders.map((folder) => ctx.code(folder)), label("list.separator")),
     ctx.num(always),
     ctx.num(layer.onDemand.estTokens),
     ctx.num(always + layer.onDemand.estTokens),
     ctx.num(layer.nestedSkills.estTokens),
   ]);
   const headers = [
-    t("table.layer"),
-    t("table.folders"),
-    t("table.alwaysLoaded"),
-    t("table.onDemand"),
-    t("table.total"),
-    t("table.nestedSkills"),
+    label("table.layer"),
+    label("table.folders"),
+    label("table.alwaysLoaded"),
+    label("table.onDemand"),
+    label("table.total"),
+    label("table.nestedSkills"),
   ];
-  return [`**${t("context.byLayer")}:**`, table(headers, rows), t("context.byLayerNote")].join("\n\n");
+  return [
+    { type: "paragraph", runs: bold(runsOf(label("context.byLayer"), glue(":"))) },
+    { type: "table", headers, rows },
+    { type: "paragraph", runs: label("context.byLayerNote") },
+  ];
 }
 
-function componentName(ctx, name) {
-  return Object.hasOwn(COMPONENT_LABELS, name) ? ctx.t(COMPONENT_LABELS[name]) : ctx.text(name);
+function componentRuns(ctx, name) {
+  return Object.hasOwn(COMPONENT_LABELS, name) ? ctx.label(COMPONENT_LABELS[name]) : ctx.text(name);
 }
 
-function estimateText(ctx) {
+function estimateRuns(ctx) {
   const budget = ctx.measurements.context.alwaysLoaded;
-  return ctx.t("tokens.estimate", { tokens: ctx.num(budget.estTokensTotal), method: ctx.text(budget.estMethod) });
+  return ctx.label("tokens.estimate", { tokens: ctx.num(budget.estTokensTotal), method: ctx.text(budget.estMethod) });
 }
 
-function unknownText(ctx, item) {
-  const { t } = ctx;
+function unknownRuns(ctx, item) {
+  const { label } = ctx;
   if (item.kind === "mcp-server") {
-    return t("unknown.mcp-server", { name: ctx.code(item.name), source: ctx.code(item.source) });
+    return label("unknown.mcp-server", { name: ctx.code(item.name), source: ctx.code(item.source) });
   }
   if (item.kind === "hook-output") {
-    const matcher = item.matcher === null || item.matcher === undefined ? t("value.noMatcher") : ctx.code(item.matcher);
-    return t("unknown.hook-output", { event: ctx.code(item.event), matcher, source: ctx.code(item.source) });
+    const matcher = item.matcher === null || item.matcher === undefined ? label("value.noMatcher") : ctx.code(item.matcher);
+    return label("unknown.hook-output", { event: ctx.code(item.event), matcher, source: ctx.code(item.source) });
   }
   throw new Error(`measurements.json holds an unknown kind of static item: ${String(item.kind)}`);
 }
 
 // What to test in function 2 -----------------------------------------------------------------------
 
-function renderFunction2(ctx, entries) {
-  const { t, measurements: m } = ctx;
-  const unknown = m.context.alwaysLoaded.unknownStatic.map((item) => `- ${unknownText(ctx, item)}`);
+function function2Section(ctx, entries) {
+  const { label, measurements: m } = ctx;
+  const unknown = m.context.alwaysLoaded.unknownStatic.map((item) => unknownRuns(ctx, item));
   const tests = entries
     .filter((entry) => entry.agent !== null && entry.agent.testInFunction2 != null)
     .sort(compareOverall)
-    .map((entry) => `- ${entry.rule.id} ${ctx.text(entry.rule.title)}: ${ctx.text(entry.agent.testInFunction2)}`);
+    .map((entry) =>
+      runsOf(ctx.text(entry.rule.id), glue(" "), ctx.text(entry.rule.title), glue(": "), ctx.text(entry.agent.testInFunction2)),
+    );
   const hooks = m.candidates
     .filter((item) => item.kind === "hook-script")
     .map((item) => {
-      const rules = item.rules.map((rule) => ctx.code(rule)).join(t("list.separator"));
-      return `- ${t("function2.hook", { file: ctx.code(item.file), candidate: ctx.code(item.id), rules })}`;
+      const rules = between(item.rules.map((rule) => ctx.code(rule)), label("list.separator"));
+      return label("function2.hook", { file: ctx.code(item.file), candidate: ctx.code(item.id), rules });
     });
   return [
-    `## ${t("function2.title")}`,
-    `### ${t("function2.unknownTitle")}`,
+    { type: "heading", level: 2, runs: label("function2.title") },
+    { type: "heading", level: 3, runs: label("function2.unknownTitle") },
     listOrNone(ctx, unknown),
-    `### ${t("function2.findingsTitle")}`,
+    { type: "heading", level: 3, runs: label("function2.findingsTitle") },
     listOrNone(ctx, tests),
-    `### ${t("function2.hooksTitle")}`,
+    { type: "heading", level: 3, runs: label("function2.hooksTitle") },
     listOrNone(ctx, hooks),
-    `### ${t("function2.noisyTitle")}`,
-    t("function2.noisy"),
-  ].join("\n\n");
+    { type: "heading", level: 3, runs: label("function2.noisyTitle") },
+    { type: "paragraph", runs: label("function2.noisy") },
+  ];
 }
 
 function listOrNone(ctx, items) {
-  return items.length === 0 ? ctx.t("function2.none") : items.join("\n");
+  if (items.length === 0) return { type: "paragraph", runs: ctx.label("function2.none") };
+  return { type: "list", items };
 }
 
 // Limits ---------------------------------------------------------------------------------------------
 
-function renderLimits(ctx) {
-  const { t, measurements: m } = ctx;
-  const blocks = [`## ${t("limits.title")}`, readLimitText(ctx)];
-  if (m.scope !== undefined) blocks.push(t("limits.scope", { outside: ctx.num(m.scope.files.outside) }));
-  blocks.push(t("limits.estimate", { method: ctx.text(m.context.alwaysLoaded.estMethod) }));
-  blocks.push(t("limits.thresholds", { status: statusText(ctx) }));
+function limitsSection(ctx) {
+  const { label, measurements: m } = ctx;
+  const blocks = [
+    { type: "heading", level: 2, runs: label("limits.title") },
+    { type: "paragraph", runs: readLimitRuns(ctx) },
+  ];
+  if (m.scope !== undefined) {
+    blocks.push({ type: "paragraph", runs: label("limits.scope", { outside: ctx.num(m.scope.files.outside) }) });
+  }
+  blocks.push({ type: "paragraph", runs: label("limits.estimate", { method: ctx.text(m.context.alwaysLoaded.estMethod) }) });
+  blocks.push({ type: "paragraph", runs: label("limits.thresholds", { status: statusRuns(ctx) }) });
   const mode = usedMode(m);
-  blocks.push(t("limits.sec02", { mode: ctx.code(mode ?? t("mode.default")) }));
-  const matrix = renderMatrix(ctx);
-  if (matrix !== null) blocks.push(matrix);
+  const modeRuns = mode === null ? ctx.codeLabel("mode.default") : ctx.code(mode);
+  blocks.push({ type: "paragraph", runs: label("limits.sec02", { mode: modeRuns }) });
+  const matrix = matrixBlocks(ctx);
+  if (matrix !== null) blocks.push(...matrix);
   const skipped = skippedItems(ctx);
   if (skipped.length === 0) {
-    blocks.push(t("limits.noWarnings"));
+    blocks.push({ type: "paragraph", runs: label("limits.noWarnings") });
   } else {
     const rows = skipped.map((item) => [
-      ctx.tableCode(item.source),
-      pathCell(ctx, item),
-      ctx.tableCode(item.reason),
-      item.detail === undefined ? t("value.empty") : valueText(ctx, item.detail, true),
+      ctx.code(item.source),
+      pathRuns(ctx, item),
+      ctx.code(item.reason),
+      item.detail === undefined ? label("value.empty") : valueRuns(ctx, item.detail),
     ]);
-    blocks.push(t("limits.warnings"), table([t("table.source"), t("table.path"), t("table.reason"), t("table.detail")], rows));
+    const headers = [label("table.source"), label("table.path"), label("table.reason"), label("table.detail")];
+    blocks.push({ type: "paragraph", runs: label("limits.warnings") }, { type: "table", headers, rows });
   }
   if (m.undeterminable.length === 0) {
-    blocks.push(t("limits.noUndeterminable"));
+    blocks.push({ type: "paragraph", runs: label("limits.noUndeterminable") });
   } else {
-    const rows = m.undeterminable.map((item) => [
-      ctx.tableText(item.rule),
-      ctx.tableCode(item.measurementRef),
-      ctx.tableText(item.reason),
-    ]);
-    blocks.push(t("limits.undeterminable"), table([t("table.rule"), t("table.reference"), t("table.reason")], rows));
+    const rows = m.undeterminable.map((item) => [ctx.text(item.rule), ctx.code(item.measurementRef), ctx.text(item.reason)]);
+    const headers = [label("table.rule"), label("table.reference"), label("table.reason")];
+    blocks.push({ type: "paragraph", runs: label("limits.undeterminable") }, { type: "table", headers, rows });
   }
-  return blocks.join("\n\n");
+  return blocks;
 }
 
 // The items of the skipped table: the scan's own warnings, then the warnings of the user layer, then the parent-folder files
@@ -707,92 +809,162 @@ function skippedItems(ctx) {
 }
 
 // The path of a skipped item, with its layer mark when it lies outside the target.
-function pathCell(ctx, item) {
-  const code = ctx.tableCode(item.path);
-  if (item.layer === undefined) return code;
-  return `${code} (${ctx.tableText(ctx.t(LAYER_LABELS[item.layer]))})`;
+function pathRuns(ctx, item) {
+  const path = ctx.code(item.path);
+  if (item.layer === undefined) return path;
+  return runsOf(path, glue(" ("), ctx.label(LAYER_LABELS[item.layer]), glue(")"));
 }
 
 // What the limits say the scan did not read. The user layer and the parent folders are named as read only when meta.include
 // says the scan read them (the flags of the scan); otherwise they are not read.
-function readLimitText(ctx) {
-  const { t, included } = ctx;
-  if (included.userLayer && included.ancestors) return t("limits.readBoth");
-  if (included.userLayer) return t("limits.readUser");
-  if (included.ancestors) return t("limits.readAncestors");
-  return t("limits.notRead");
+function readLimitRuns(ctx) {
+  const { label, included } = ctx;
+  if (included.userLayer && included.ancestors) return label("limits.readBoth");
+  if (included.userLayer) return label("limits.readUser");
+  if (included.ancestors) return label("limits.readAncestors");
+  return label("limits.notRead");
 }
 
 // The SEC-02 permission matrix, as context: one row per command, one column per session mode in the order the scan
 // wrote them. Nothing is rendered when the scan has no matrixModes (a measurements.json of an older scan). A command
 // without a value for a mode shows the empty value, never an invented outcome.
-function renderMatrix(ctx) {
-  const { t, measurements: m } = ctx;
+function matrixBlocks(ctx) {
+  const { label, measurements: m } = ctx;
   const coverage = m.security.destructiveCoverage;
   if (!Array.isArray(coverage.matrixModes)) return null;
   const modes = coverage.matrixModes;
-  const headers = [t("table.command"), ...modes.map((mode) => ctx.tableCode(mode))];
+  const headers = [label("table.command"), ...modes.map((mode) => ctx.code(mode))];
   const rows = coverage.commands.map((command) => [
-    ctx.tableCode(command.id),
-    ...modes.map((mode) => (command.modes?.[mode] === undefined ? t("value.empty") : ctx.tableCode(command.modes[mode]))),
+    ctx.code(command.id),
+    ...modes.map((mode) => (command.modes?.[mode] === undefined ? label("value.empty") : ctx.code(command.modes[mode]))),
   ]);
-  return [t("limits.matrix"), table(headers, rows), t("limits.matrixLegend")].join("\n\n");
+  return [
+    { type: "paragraph", runs: label("limits.matrix") },
+    { type: "table", headers, rows },
+    { type: "paragraph", runs: label("limits.matrixLegend") },
+  ];
 }
 
 // Sources ----------------------------------------------------------------------------------------------
 
-function renderSources(ctx, entries) {
-  const { t } = ctx;
+function sourcesSection(ctx, entries) {
+  const { label } = ctx;
   const ids = new Set(entries.flatMap((entry) => entry.rule.sources));
   const sources = [...ids].sort(compareText).map((id) => sourceOf(ctx, id));
-  if (sources.length === 0) return [`## ${t("sources.title")}`, t("sources.none")].join("\n\n");
+  const heading = { type: "heading", level: 2, runs: label("sources.title") };
+  if (sources.length === 0) return [heading, { type: "paragraph", runs: label("sources.none") }];
   const rows = sources.map((source) => [
-    ctx.tableCode(source.id),
-    ctx.tableText(source.title),
-    ctx.tableText(t(`level.${source.type}`)),
-    escapePipes(ctx.link(source.url, source.url)),
+    ctx.code(source.id),
+    ctx.text(source.title),
+    label(`level.${source.type}`),
+    ctx.link(source.url, source.url),
   ]);
-  const headers = [t("table.id"), t("table.title"), t("table.level"), t("table.url")];
-  return [`## ${t("sources.title")}`, table(headers, rows)].join("\n\n");
+  const headers = [label("table.id"), label("table.title"), label("table.level"), label("table.url")];
+  return [heading, { type: "table", headers, rows }];
 }
 
 // Appendix ---------------------------------------------------------------------------------------------
 
-function renderAppendix(ctx) {
-  const { t, measurements: m } = ctx;
-  const blocks = [`## ${t("appendix.title")}`, `### ${t("appendix.measured")}`];
+function appendixSection(ctx) {
+  const { label, measurements: m } = ctx;
+  const blocks = [
+    { type: "heading", level: 2, runs: label("appendix.title") },
+    { type: "heading", level: 3, runs: label("appendix.measured") },
+  ];
   if (m.measuredFindings.length === 0) {
-    blocks.push(t("appendix.none"));
+    blocks.push({ type: "paragraph", runs: label("appendix.none") });
   } else {
     const shown = m.measuredFindings.slice(0, APPENDIX_ROWS).map((item) => [
-      ctx.tableCode(item.id),
-      ctx.tableText(item.rule),
-      ctx.tableCode(item.measurementRef),
-      valueText(ctx, resolveRef(ctx, item.measurementRef), true),
+      ctx.code(item.id),
+      ctx.text(item.rule),
+      ctx.code(item.measurementRef),
+      valueRuns(ctx, resolveRef(ctx, item.measurementRef)),
     ]);
-    const headers = [t("table.finding"), t("table.rule"), t("table.reference"), t("table.value")];
-    blocks.push(table(headers, shown));
+    const headers = [label("table.finding"), label("table.rule"), label("table.reference"), label("table.value")];
+    blocks.push({ type: "table", headers, rows: shown });
     if (m.measuredFindings.length > APPENDIX_ROWS) {
-      blocks.push(t("appendix.truncated", { count: ctx.num(m.measuredFindings.length - APPENDIX_ROWS) }));
+      const count = ctx.num(m.measuredFindings.length - APPENDIX_ROWS);
+      blocks.push({ type: "paragraph", runs: label("appendix.truncated", { count }) });
     }
   }
 
   const duplication = m.code.duplication;
   const map = m.structure.mapCoverage;
   const headline = [
-    [t("appendix.files"), ctx.num(m.target.fileCount)],
-    [t("appendix.warnings"), ctx.num(m.warnings.length)],
-    [t("appendix.alwaysLoaded"), estimateText(ctx)],
-    [t("appendix.duplication"), t("appendix.percent", { value: ctx.num(duplication.duplicatedLinesPct) })],
-    [t("appendix.filesScanned"), ctx.num(duplication.filesScanned)],
+    [label("appendix.files"), ctx.num(m.target.fileCount)],
+    [label("appendix.warnings"), ctx.num(m.warnings.length)],
+    [label("appendix.alwaysLoaded"), estimateRuns(ctx)],
+    [label("appendix.duplication"), label("appendix.percent", { value: ctx.num(duplication.duplicatedLinesPct) })],
+    [label("appendix.filesScanned"), ctx.num(duplication.filesScanned)],
     [
-      t("appendix.mapCoverage"),
-      t("appendix.mapValue", { mentioned: ctx.num(map.mentioned), dirs: ctx.num(map.dirs) }),
+      label("appendix.mapCoverage"),
+      label("appendix.mapValue", { mentioned: ctx.num(map.mentioned), dirs: ctx.num(map.dirs) }),
     ],
   ];
-  blocks.push(`### ${t("appendix.headline")}`);
-  blocks.push(table([t("table.measure"), t("table.value")], headline));
-  return blocks.join("\n\n");
+  blocks.push({ type: "heading", level: 3, runs: label("appendix.headline") });
+  blocks.push({ type: "table", headers: [label("table.measure"), label("table.value")], rows: headline });
+  return blocks;
+}
+
+// Markdown view -------------------------------------------------------------------------------------------
+
+/**
+ * Writes the report model as Markdown: each section is its blocks, one blank line apart, and fillTemplate places them.
+ * @param {ReportModel} model The model of buildReportModel.
+ * @param {string} template The text of templates/report.md.
+ * @returns {string}
+ * @throws {Error} If the template does not have each marker once.
+ */
+export function renderMarkdown(model, template) {
+  const sections = Object.fromEntries(
+    MARKERS.map((name) => [name, model.sections[name].map(blockMarkdown).join("\n\n")]),
+  );
+  return fillTemplate(template, sections);
+}
+
+function blockMarkdown(block) {
+  switch (block.type) {
+    case "heading":
+      return `${"#".repeat(block.level)} ${runsMarkdown(block.runs)}`;
+    case "paragraph":
+      return runsMarkdown(block.runs);
+    case "fields":
+      return block.items.map((item) => `- **${runsMarkdown(item.label)}:** ${runsMarkdown(item.runs)}`).join("\n");
+    case "table":
+      return table(block.headers.map(cellMarkdown), block.rows.map((row) => row.map(cellMarkdown)));
+    case "list":
+      return block.items.map((item) => `- ${runsMarkdown(item)}`).join("\n");
+    case "finding":
+      return block.blocks.map(blockMarkdown).join("\n\n");
+    default:
+      throw new TypeError(`the report model holds an unknown block: ${String(block.type)}`);
+  }
+}
+
+// A table cell: GFM reads a pipe as a cell boundary even inside a code span, so every pipe of the cell is escaped.
+function cellMarkdown(runs) {
+  return runsMarkdown(runs, true);
+}
+
+function runsMarkdown(runs, inTable = false) {
+  return runs.map((run) => runMarkdown(run, inTable)).join("");
+}
+
+function runMarkdown(run, inTable) {
+  const text = (value) => (inTable ? escapePipes(value) : value);
+  switch (run.type) {
+    case "text":
+    case "label":
+      return text(run.text);
+    case "code":
+      return codeSpan(text(run.text));
+    case "strong":
+      return `**${runsMarkdown(run.runs, inTable)}**`;
+    case "link":
+      return text(link(run.label, run.url));
+    default:
+      throw new TypeError(`the report model holds an unknown run: ${String(run.type)}`);
+  }
 }
 
 // Plain code-unit comparison, so the order does not depend on the locale.
