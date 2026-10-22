@@ -118,6 +118,25 @@ test("a symlink that stays inside the root is followed and read", { skip: symlin
   assert.deepEqual(target.warnings(), []);
 });
 
+test("resolve returns the real place of a link inside the root, and refuses a link that leaves it (positive control first)", { skip: symlinkSkip }, (t) => {
+  const { target } = openFixture(t, {
+    files: { "notes/real.txt": "real\n", "plain.txt": "plain\n" },
+    symlinks: [
+      { path: "alias.txt", target: "notes/real.txt" },
+    ],
+  });
+  assert.deepEqual(target.resolve("plain.txt"), { ok: true, path: "plain.txt", target: "plain.txt" });
+  assert.deepEqual(target.resolve("alias.txt"), { ok: true, path: "alias.txt", target: "notes/real.txt" });
+  assert.equal(target.resolve("missing.txt").ok, false);
+});
+
+test("resolve refuses a link to a file outside the root with outside-root, and its content never appears", { skip: symlinkSkip }, (t) => {
+  const { target } = openFixture(t, { symlinks: [{ path: "escape.txt", target: "../outside/secret.txt" }] });
+  const resolved = target.resolve("escape.txt");
+  assert.deepEqual(resolved, { ok: false, path: "escape.txt", reason: "outside-root" });
+  assertNoSecret(resolved, target.warnings());
+});
+
 test("dangling and looping links are skipped without throwing", { skip: symlinkSkip }, (t) => {
   const { target } = openFixture(t, {
     symlinks: [

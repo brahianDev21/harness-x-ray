@@ -298,10 +298,26 @@ function setMode(node, loadMode, loadReason) {
 // Every pattern here is relative: claude-config refuses a pattern with a leading "/" or a drive letter, because its meaning
 // is not verified. Matching is case-sensitive (NOT VERIFIED by a note).
 function exclusionOf(state, rel) {
-  for (const entry of state.excludes) {
+  return firstExclusion(state.excludes, rel);
+}
+
+// The first pattern, in file order, that matches rel. Null when none matches.
+function firstExclusion(excludes, rel) {
+  for (const entry of excludes) {
     if (matchPathGlob(entry.pattern, rel) === true) return entry;
   }
   return null;
+}
+
+/**
+ * The claudeMdExcludes entry that stops a file of the target from loading, when the memory measure applies the setting
+ * to that file (see isMemoryPath). Null otherwise. The agent-harness measure uses it, so that both measures judge a file alike.
+ * @param {Array<{ pattern: string, shown: string, source: string }>} excludes The valid patterns, as loadClaudeConfig gives them.
+ * @param {string} rel Root-relative POSIX path.
+ * @returns {{ pattern: string, shown: string, source: string } | null}
+ */
+export function claudeMdExclusionOf(excludes, rel) {
+  return isMemoryPath(rel) ? firstExclusion(excludes, rel) : null;
 }
 
 // A node that claudeMdExcludes matches: not loaded, and never read. The pattern is shown in its redacted form.
@@ -447,6 +463,12 @@ function isSubfolderMemory(rel) {
   const base = rel.slice(rel.lastIndexOf("/") + 1);
   if (!SUBFOLDER_NAMES.has(base) || ROOT_FILES.includes(rel)) return false;
   return !CONFIG_FOLDERS.some((folder) => rel.startsWith(folder));
+}
+
+// A file that this measure treats as memory or as a rule: a root memory file, a rule file of .claude/rules/ at any depth,
+// or a CLAUDE.md or AGENTS.md of a subfolder. claudeMdExcludes applies to these files and to no other.
+function isMemoryPath(rel) {
+  return ROOT_FILES.includes(rel) || (rel.startsWith(`${RULES_DIR}/`) && rel.endsWith(".md")) || isSubfolderMemory(rel);
 }
 
 // ---------------------------------------------------------------------------------------------------
