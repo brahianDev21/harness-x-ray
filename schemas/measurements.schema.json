@@ -15,7 +15,7 @@
     },
     "meta": {
       "type": "object",
-      "description": "Values that depend on the machine or on the time. Determinism checks ignore this key.",
+      "description": "Values that depend on the machine, on the time or on the version of the tool (its name and version, and the version of its rule catalog). Determinism checks ignore this key.",
       "required": ["scannedAt", "targetRoot", "tool"],
       "properties": {
         "tool": {
@@ -39,6 +39,24 @@
           "properties": {
             "userLayer": { "type": "boolean" },
             "ancestors": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "catalog": {
+          "type": "object",
+          "description": "Version of the rule catalog of the harness that ran the scan: the number of rule files and the first 12 hex digits of a SHA-256 over them (scripts/lib/report-catalog.mjs). A comparison reads it to tell that the catalog changed between two runs. Absent from a scan made before this key existed.",
+          "required": ["count", "sha256"],
+          "properties": {
+            "count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of rule files of the catalog."
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{12}$",
+              "description": "First 12 hex digits of the SHA-256 over the rule files, sorted by file name, each written as its name, a line feed, its text with line endings normalized to LF, and a line feed."
+            }
           },
           "additionalProperties": false
         }
