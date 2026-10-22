@@ -33,7 +33,7 @@ const AXIS_BY_PREFIX = Object.freeze({
   COD: "code",
 });
 const AXIS_ORDER = Object.freeze(["instructions", "context", "security", "verification", "structure", "code"]);
-const IMPACT_RANK = Object.freeze({ high: 3, medium: 2, low: 1 });
+export const IMPACT_RANK = Object.freeze({ high: 3, medium: 2, low: 1 });
 const SHELL_TOOLS = Object.freeze(["Bash", "PowerShell"]);
 const VERIFICATION_CATEGORIES = Object.freeze(["lint", "test", "typecheck", "verify"]);
 // Bare shell allows: the tool with no specifier, or with the whole-tool wildcard.

@@ -30,57 +30,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { agentInventoryMeasure } from "./lib/agent-inventory.mjs";
-import { claudeConfigMeasure } from "./lib/claude-config.mjs";
-import { createDestructiveCommandsMeasure, destructiveCommandsMeasure } from "./lib/destructive-commands.mjs";
-import { DEEP_DUPLICATION_OPTIONS, createDuplicationMeasure, duplicationMeasure } from "./lib/duplication.mjs";
-import { injectionMeasure } from "./lib/injection.mjs";
 import { writeStableJson } from "./lib/json-out.mjs";
-import { createLayerContextMeasure, layerFolderProblem } from "./lib/layer-context.mjs";
+import { layerFolderProblem } from "./lib/layer-context.mjs";
 import { LAYERS_FILE, PLAN_FILE, loadLayerPlan } from "./lib/layer-plan.mjs";
 import { countByAxis, deriveMeasuredOutput } from "./lib/measured-findings.mjs";
-import { createMemoryMeasure, memoryMeasure } from "./lib/memory.mjs";
-import { referencesMeasure } from "./lib/references.mjs";
+import { measuresFor } from "./lib/measures.mjs";
 import { checkRunDir, checkRunFile } from "./lib/run-dir.mjs";
 import { DEFAULT_DEPTH, DEPTHS, scan } from "./lib/scanner.mjs";
 import { ScopeError, resolveScopeFolders } from "./lib/scope.mjs";
-import { secretsMeasure } from "./lib/secrets.mjs";
-import { structureMeasure } from "./lib/structure.mjs";
 import { UsageError, checkOutputDir, defaultOutputDir, resolveTarget } from "./lib/target.mjs";
-import { createUserLayerMeasure } from "./lib/user-layer.mjs";
-import { verificationMeasure } from "./lib/verification.mjs";
 
 const HARNESS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const USAGE =
   "usage: node scripts/scan.mjs <target> [--out <dir>] [--include-user-layer] [--include-ancestors] [--scope <folder>]... [--layers <runDir>] [--depth quick|standard|deep]";
 // The message of a --depth value that is missing or not one of the depth levels. It names the three values.
 const DEPTH_MESSAGE = `the --depth value must be ${DEPTHS.slice(0, -1).join(", ")} or ${DEPTHS.at(-1)}`;
-
-// The measures, in the order they run, for the given flags. Each measure adds its import and one line here. The references,
-// verification and structure measures read the memory texts, so they run after the memory measure. The user layer runs right
-// after the project configuration, because the permission measures read the rules it adds to ctx.outside. The agent-harness
-// measure runs right after the memory measure: it reads the files of the other agents, and it needs neither the memory texts
-// nor the output of the measures that follow it. The layer-context measure runs after the agent-harness measure, and only with
-// a layer plan: it reads the memory files and rules that the memory measure has already read. The depth changes only the
-// duplication and destructive-commands measures: deep gives them the settings or the matrix locations of its own.
-function measuresFor({ userLayer, ancestors, layers, depth }) {
-  const memory = ancestors ? createMemoryMeasure({ includeAncestors: true }) : memoryMeasure;
-  const deep = depth === "deep";
-  return [
-    claudeConfigMeasure,
-    ...(userLayer ? [createUserLayerMeasure()] : []),
-    memory,
-    agentInventoryMeasure,
-    ...(layers === undefined ? [] : [createLayerContextMeasure({ layers })]),
-    referencesMeasure,
-    verificationMeasure,
-    deep ? createDestructiveCommandsMeasure({ deep: true }) : destructiveCommandsMeasure,
-    secretsMeasure,
-    injectionMeasure,
-    structureMeasure,
-    deep ? createDuplicationMeasure(DEEP_DUPLICATION_OPTIONS) : duplicationMeasure,
-  ];
-}
 
 process.exitCode = await main(process.argv.slice(2));
 

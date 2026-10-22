@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "sarif.json",
+  "description": "The SARIF 2.1.0 log that scripts/ci.mjs writes with --sarif, as scripts/lib/sarif.mjs builds it: the subset of the format that this tool writes, not the whole format. The tests validate the logs of real scans against this schema with test/helpers/schema-check.mjs (test/sarif.test.mjs). The keys that a JSON schema cannot state are checked by test/helpers/sarif-check.mjs: the ruleIndex of a result that names its ruleId, the unique rule ids, and the note that the judgment rules were not applied. The published SARIF schema is not used or fetched; $schema is written as a string only. Unknown fields are errors (additionalProperties is false). The uri of a location is a relative reference of the target, percent-encoded by segment.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "version", "runs"],
+  "properties": {
+    "$schema": {
+      "const": "https://json.schemastore.org/sarif-2.1.0.json",
+      "description": "The SARIF schema URL, written as a string only."
+    },
+    "version": {
+      "const": "2.1.0",
+      "description": "The SARIF version."
+    },
+    "runs": {
+      "type": "array",
+      "minItems": 1,
+      "description": "One run: the CI scan of the target.",
+      "items": { "$ref": "#/$defs/run" }
+    }
+  },
+  "$defs": {
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool", "invocations", "properties", "results"],
+      "properties": {
+        "tool": { "$ref": "#/$defs/tool" },
+        "invocations": {
+          "type": "array",
+          "minItems": 1,
+          "description": "The invocation of the CI run. The tool writes one.",
+          "items": { "$ref": "#/$defs/invocation" }
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["judgmentRulesApplied", "judgmentRules"],
+          "properties": {
+            "judgmentRulesApplied": {
+              "const": false,
+              "description": "Always false: a CI run applies the measured rules only."
+            },
+            "judgmentRules": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The number of judgment rules of the catalog, which the run does not apply."
+            }
+          }
+        },
+        "results": {
+          "type": "array",
+          "description": "One result per measured finding, in the order of measuredFindings.",
+          "items": { "$ref": "#/$defs/result" }
+        }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["driver"],
+      "properties": {
+        "driver": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "version", "rules"],
+          "properties": {
+            "name": { "const": "harness-x-ray" },
+            "version": {
+              "type": "string",
+              "description": "The version of the tool, from meta.tool of measurements.json."
+            },
+            "rules": {
+              "type": "array",
+              "description": "The measured rules of the catalog, sorted by id. The judgment rules are not listed.",
+              "items": { "$ref": "#/$defs/rule" }
+            }
+          }
+        }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "shortDescription"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "shortDescription": { "$ref": "#/$defs/text" }
+      }
+    },
+    "invocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executionSuccessful", "toolExecutionNotifications"],
+      "properties": {
+        "executionSuccessful": {
+          "const": true,
+          "description": "Always true: a run that fails writes no log."
+        },
+        "toolExecutionNotifications": {
+          "type": "array",
+          "minItems": 1,
+          "description": "The notes of the run. The first one says that the judgment rules were not applied.",
+          "items": { "$ref": "#/$defs/notification" }
+        }
+      }
+    },
+    "notification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "message"],
+      "properties": {
+        "level": { "const": "note" },
+        "message": { "$ref": "#/$defs/text" }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ruleId", "ruleIndex", "level", "message"],
+      "properties": {
+        "ruleId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The id of a measured rule of the run."
+        },
+        "ruleIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The place of that rule in tool.driver.rules."
+        },
+        "level": {
+          "enum": ["error", "warning", "note"],
+          "description": "A high finding is an error, a medium finding a warning and a low finding a note."
+        },
+        "message": { "$ref": "#/$defs/text" },
+        "locations": {
+          "type": "array",
+          "minItems": 1,
+          "description": "One location per evidence entry that names a file of the target. Absent when there is none.",
+          "items": { "$ref": "#/$defs/location" }
+        }
+      }
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["physicalLocation"],
+      "properties": {
+        "physicalLocation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["artifactLocation"],
+          "properties": {
+            "artifactLocation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["uri"],
+              "properties": {
+                "uri": { "$ref": "#/$defs/uri" }
+              }
+            },
+            "region": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["startLine"],
+              "description": "Present only when the evidence has a line of at least 1.",
+              "properties": {
+                "startLine": { "type": "integer", "minimum": 1 },
+                "endLine": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Present only with startLine, and not before it."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "uri": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A relative reference of the target. It has no colon (so no scheme and no drive letter) and no backslash, it does not start or end with a slash, it has no empty segment, and it has no parent folder segment. The pattern checks these; each segment is percent-encoded when the log is written.",
+      "pattern": "^(?![\\s\\S]*[:\\\\])(?!/)(?![\\s\\S]*//)(?![\\s\\S]*/$)(?!(?:[\\s\\S]*/)?\\.\\.(?:/|$))"
+    },
+    "text": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

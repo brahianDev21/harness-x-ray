@@ -1,0 +1,76 @@
+# Example workflow for Harness X-Ray in CI. It is inert: it lives in examples/, not in .github/, so GitHub never runs it.
+# To use it, copy it to .github/workflows/ of the repository whose harness is audited, replace OWNER and the ref of the
+# harness-x-ray checkout, and pin the action versions to commit SHAs. See README.md in this folder.
+#
+# The workflow runs no npm command and no code of the target: it checks out the target and harness-x-ray in separate folders,
+# runs the CI mode of harness-x-ray (scripts/ci.mjs), and uploads the SARIF log. The paths filter lists the harness files only.
+
+name: Harness X-Ray
+
+on:
+  pull_request:
+    paths:
+      - '.claude/settings.json'
+      - '.claude/settings.local.json'
+      - '.mcp.json'
+      - '.claude/rules/**/*.md'
+      - '.claude/skills/*/SKILL.md'
+      - '*/**/.claude/skills/*/SKILL.md'
+      - '.claude/commands/**/*.md'
+      - '.claude/agents/**/*.md'
+      - '.claude/CLAUDE.md'
+      - '.claude/AGENTS.md'
+      - '**/CLAUDE.md'
+      - '**/CLAUDE.local.md'
+      - '**/AGENTS.md'
+      - '.agents/skills/*/SKILL.md'
+      - '.agents/hooks/**'
+      - '.agents/permissions.json'
+      - '.agents/**'
+      - '.codex/**'
+      - 'GEMINI.md'
+      - '.gemini/**'
+      - '.cursor/rules/**'
+      - '.cursorrules'
+      - '.github/copilot-instructions.md'
+      - '.github/instructions/**'
+      - '.windsurfrules'
+      - '.clinerules'
+      - '.clinerules/**'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  harness-xray:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the target
+        uses: actions/checkout@v4
+        with:
+          path: target
+          persist-credentials: false
+
+      - name: Check out harness-x-ray
+        uses: actions/checkout@v4
+        with:
+          repository: OWNER/harness-x-ray
+          ref: REPLACE-WITH-A-COMMIT-SHA
+          path: harness-x-ray
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Measure the harness
+        run: node harness-x-ray/scripts/ci.mjs target --fail-on high --sarif harness-x-ray/runs/ci/results.sarif
+
+      - name: Upload the SARIF log
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: harness-x-ray/runs/ci/results.sarif
+          checkout_path: target
