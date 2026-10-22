@@ -59,7 +59,7 @@ export function renderHtml(model, { template, theme, css, labels }) {
   // An HTML parser turns CRLF and a lone CR into LF, so they are made LF here, before the hash, or the hash would not match.
   const style = [theme, css, filterRules()].join("\n").replace(/\r\n?/g, "\n");
   if (/<\/style/i.test(style)) throw new Error("the stylesheet must not hold a closing style tag");
-  const csp = policyOf(style);
+  const csp = pagePolicy(style);
   const sections = Object.fromEntries(MARKERS.map((name) => [name, sectionHtml(model.sections[name])]));
   const values = {
     lang: escapeHtml(model.language),
@@ -69,13 +69,29 @@ export function renderHtml(model, { template, theme, css, labels }) {
     filters: filtersHtml(t),
     ...sections,
   };
-  return { html: fillPage(template, values), csp };
+  return { html: fillPage(template, values, { file: "templates/report.html", markers: PAGE_MARKERS }), csp };
 }
 
-// The policy: nothing loads unless it is named. The one style is the hash of the style element; the page has no image, no
-// other resource and no form.
-function policyOf(style) {
+/**
+ * The Content-Security-Policy of a page whose only style element holds `style`: nothing loads unless it is named. The one
+ * style is named by its hash; the page has no image, no other resource and no form. The report and the comparison share it.
+ * @param {string} style The exact text between the tags of the style element, with its line feeds as LF.
+ * @returns {string}
+ * @throws {TypeError} If style is not a string.
+ */
+export function pagePolicy(style) {
   return `default-src 'none'; style-src ${cspHash(style)}; img-src 'none'; base-uri 'none'; form-action 'none'`;
+}
+
+/**
+ * Writes a list of blocks as HTML, one block per line, with the escaping of the report page. The comparison view uses it too.
+ * @param {import("./report.mjs").Block[]} blocks The blocks of the report model.
+ * @returns {string}
+ * @throws {TypeError} If a block or a run has an unknown type.
+ * @throws {Error} If a finding, a heading or a table is outside the rules of the report page.
+ */
+export function blocksHtml(blocks) {
+  return blocks.map(blockHtml).join("\n");
 }
 
 // Filters -----------------------------------------------------------------------------------------------
@@ -129,7 +145,7 @@ function hideRule(id, target) {
 // Sections and blocks ---------------------------------------------------------------------------------
 
 function sectionHtml(blocks) {
-  return `<section>\n${blocks.map(blockHtml).join("\n")}\n</section>`;
+  return `<section>\n${blocksHtml(blocks)}\n</section>`;
 }
 
 function blockHtml(block) {
@@ -228,16 +244,24 @@ function checkModel(model) {
   }
 }
 
-// Places the values in the template in one pass, so a value is never read as a marker: a text of the report that looks like
-// a marker stays as it is. Each marker of PAGE_MARKERS must be in the template once, and no other marker may be there.
-function fillPage(template, values) {
+/**
+ * Places the values in a page template in one pass, so a value is never read as a marker: a text of the report that looks
+ * like a marker stays as it is. Each marker of `markers` must be in the template once, and no other marker may be there.
+ * @param {string} template The text of the page template.
+ * @param {Record<string, string>} values One escaped text per marker of `markers`.
+ * @param {{ file: string, markers: readonly string[] }} page `file` names the template in the error messages.
+ * @returns {string}
+ * @throws {Error} If the template has an unknown marker, or a marker that is missing or repeated, or a value is missing.
+ */
+export function fillPage(template, values, { file, markers }) {
   const found = [...template.matchAll(MARKER)].map((match) => match[1]);
   for (const name of found) {
-    if (!PAGE_MARKERS.includes(name)) throw new Error(`templates/report.html has an unknown marker {{${name}}}`);
+    if (!markers.includes(name)) throw new Error(`${file} has an unknown marker {{${name}}}`);
   }
-  for (const name of PAGE_MARKERS) {
+  for (const name of markers) {
     const count = found.filter((item) => item === name).length;
-    if (count !== 1) throw new Error(`templates/report.html must have the marker {{${name}}} once, found ${count}`);
+    if (count !== 1) throw new Error(`${file} must have the marker {{${name}}} once, found ${count}`);
+    if (!Object.hasOwn(values, name)) throw new Error(`no value for the marker {{${name}}} of ${file}`);
   }
   return template.replace(MARKER, (whole, name) => values[name]);
 }

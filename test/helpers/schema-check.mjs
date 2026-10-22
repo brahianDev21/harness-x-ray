@@ -1,7 +1,7 @@
 // A checker for the subset of JSON Schema that the schemas of this repository use, for the tests that check the values they
 // write (not their text). It covers $ref into the schema's own $defs, oneOf, anyOf, const, enum, type, required, properties
-// with additionalProperties false, items, minItems, uniqueItems, pattern, minLength and maxLength. A keyword that is not in
-// this list is ignored, so a schema that uses another keyword must extend this file first.
+// with additionalProperties false, items, minItems, uniqueItems, pattern, minLength, maxLength and minimum. A keyword that is not
+// in this list is ignored, so a schema that uses another keyword must extend this file first.
 
 /**
  * Checks a value against a schema, and returns the problems it finds.
@@ -28,6 +28,9 @@ export function schemaProblems(schema, value, pointer = "", root = schema) {
     problems.push(`${where} matches none of the anyOf branches`);
   }
   if (typeof value === "string") problems.push(...stringProblems(schema, value, where));
+  if (typeof value === "number" && schema.minimum !== undefined && value < schema.minimum) {
+    problems.push(`${where} is less than ${schema.minimum}`);
+  }
   if (Array.isArray(value)) problems.push(...arrayProblems(schema, value, pointer, where, root));
   if (isObject(value)) problems.push(...objectProblems(schema, value, pointer, where, root));
   return problems;

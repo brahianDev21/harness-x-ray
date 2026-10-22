@@ -970,10 +970,18 @@ function appendixSection(ctx) {
  * @throws {Error} If the template does not have each marker once.
  */
 export function renderMarkdown(model, template) {
-  const sections = Object.fromEntries(
-    MARKERS.map((name) => [name, model.sections[name].map(blockMarkdown).join("\n\n")]),
-  );
+  const sections = Object.fromEntries(MARKERS.map((name) => [name, blocksMarkdown(model.sections[name])]));
   return fillTemplate(template, sections);
+}
+
+/**
+ * Writes a list of blocks as Markdown: each block, one blank line apart. The comparison view uses it too.
+ * @param {Block[]} blocks The blocks of the report model.
+ * @returns {string}
+ * @throws {TypeError} If a block or a run has an unknown type.
+ */
+export function blocksMarkdown(blocks) {
+  return blocks.map(blockMarkdown).join("\n\n");
 }
 
 function blockMarkdown(block) {

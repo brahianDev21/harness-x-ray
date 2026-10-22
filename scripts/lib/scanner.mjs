@@ -1,6 +1,6 @@
 // Scan core: runs the measures of one target and merges what they return into one object. It reads
 // the target only through safe-fs and safe-git, and it writes nothing. The caller decides where the
-// result goes.
+// result goes. It reads the rule catalog of this harness (rules/) for meta.catalog, never the target's.
 //
 // A measure is { id, collect(ctx) }. collect returns a plain object with the sections it owns. Plain
 // objects merge recursively, so two measures can share a branch of the tree. The lists in SHARED_LISTS
@@ -25,9 +25,12 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadRules } from "./findings-validate.mjs";
 import { DEFAULT_MAX_BYTES, createTargetFs } from "./safe-fs.mjs";
 import { listFiles } from "./safe-git.mjs";
 import { isPlainObject, toStableJson } from "./json-out.mjs";
+import { catalogVersion } from "./report-catalog.mjs";
 import { createScope } from "./scope.mjs";
 import { ESTIMATE_METHOD } from "./tokens.mjs";
 
@@ -37,6 +40,8 @@ export const SCHEMA_VERSION = 1;
 export const DEPTHS = Object.freeze(["quick", "standard", "deep"]);
 /** The depth of a run that gives none. */
 export const DEFAULT_DEPTH = "standard";
+// The folder of this harness, which holds the rule catalog that meta.catalog describes.
+const HARNESS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 // Warning sources that the core uses for the file system and for git. No measure may use them.
 const RESERVED_SOURCES = new Set(["fs", "git"]);
@@ -101,7 +106,7 @@ export async function scan({ root, measures = [], now = new Date(), derive, incl
     schemaVersion: SCHEMA_VERSION,
     depth,
     // targetRoot is the only absolute path of the machine that the output holds. It lives in meta on purpose.
-    meta: { tool: readToolName(), scannedAt: now.toISOString(), targetRoot: root },
+    meta: { tool: readToolName(), scannedAt: now.toISOString(), targetRoot: root, catalog: readCatalogVersion() },
     target: {
       name: path.basename(root) || "root",
       git: { isRepo: listing.fileListSource === "git", head: listing.commit },
@@ -158,6 +163,13 @@ function deepFreeze(value) {
 function readToolName() {
   const manifest = JSON.parse(fs.readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
   return `${manifest.name}@${manifest.version}`;
+}
+
+// The version of the rule catalog of this harness, which is written to meta.catalog. Every scan reads rules/ of this harness
+// here, never the target's, so a broken catalog makes the scan fail: a rule file whose frontmatter cannot be read, or a
+// missing rules/ folder, throws in loadRules. A comparison reads meta.catalog to tell that the catalog changed between two runs.
+function readCatalogVersion() {
+  return catalogVersion(HARNESS_ROOT, loadRules(HARNESS_ROOT));
 }
 
 // The scope section: the scope folders, the inherited folders, and how many listed files lie inside and outside the scope.

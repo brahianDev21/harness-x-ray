@@ -1,0 +1,344 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "comparison.json",
+  "description": "Output of compareRuns in scripts/lib/comparison.mjs, written as comparison.json by the compare command. Documentation only: nothing validates against it at run time. It compares two scans of one harness. Each item is one finding: resolved (in A only), new (in B only), impact-changed or same (in both). Warnings say what differs between the two runs besides their findings, such as the catalog, the scope, the depth or the target, so that a difference of findings is not read as a change in the target alone. The pairing and the order are described in the header of scripts/lib/comparison.mjs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["counts", "items", "language", "runs", "schemaVersion", "warnings"],
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "Layout version of this file."
+    },
+    "language": {
+      "enum": ["en", "es"],
+      "description": "Language of the findings.json of run B, which the comparison takes. A missing language in that file is en."
+    },
+    "runs": {
+      "type": "object",
+      "description": "The two runs. A is the first run given and B the second.",
+      "additionalProperties": false,
+      "required": ["a", "b"],
+      "properties": {
+        "a": { "$ref": "#/$defs/run" },
+        "b": { "$ref": "#/$defs/run" }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "description": "What differs between the two runs besides their findings. At most one per code, in the order of the codes. Empty when the runs agree on target, scope, depth, catalog and schema.",
+      "items": { "$ref": "#/$defs/warning" }
+    },
+    "counts": {
+      "type": "object",
+      "description": "The number of items of each class.",
+      "additionalProperties": false,
+      "required": ["resolved", "new", "impact-changed", "same"],
+      "properties": {
+        "resolved": { "$ref": "#/$defs/count" },
+        "new": { "$ref": "#/$defs/count" },
+        "impact-changed": { "$ref": "#/$defs/count" },
+        "same": { "$ref": "#/$defs/count" }
+      }
+    },
+    "items": {
+      "type": "array",
+      "description": "One item per finding of either run. Sorted by class, axis, rule, kind (measured first), key, and then the number of the id or index of B (of A when B is null). A resolved item has a and no b; a new item has b and no a; an impact-changed or same item has both.",
+      "items": { "$ref": "#/$defs/item" }
+    }
+  },
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "impact": {
+      "enum": ["high", "medium", "low"]
+    },
+    "axis": {
+      "enum": ["instructions", "context", "security", "verification", "structure", "code"]
+    },
+    "rule": {
+      "type": "string",
+      "pattern": "^(RUL|CTX|SEC|VER|STR|COD)-\\d{2}$"
+    },
+    "depth": {
+      "enum": ["quick", "standard", "deep"]
+    },
+    "scope": {
+      "type": ["array", "null"],
+      "description": "The scope folders of the run, sorted, or null when the run scanned the whole target.",
+      "items": { "type": "string" }
+    },
+    "catalog": {
+      "type": "object",
+      "description": "The version of the rule catalog that the run recorded in meta.catalog.",
+      "additionalProperties": false,
+      "required": ["count", "sha256"],
+      "properties": {
+        "count": { "$ref": "#/$defs/count" },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{12}$"
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "description": "A run as the comparison shows it.",
+      "additionalProperties": false,
+      "required": ["name", "target", "head", "scannedAt", "schemaVersion", "depth", "scope", "catalog", "findings", "measuredFindings"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name of the folder of the run, given by the caller."
+        },
+        "target": {
+          "type": "string",
+          "description": "Name of the scanned folder (target.name of measurements.json)."
+        },
+        "head": {
+          "type": ["string", "null"],
+          "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+          "description": "Full object name of HEAD of the target, or null when there is no commit."
+        },
+        "scannedAt": {
+          "type": "string",
+          "description": "UTC time of the scan, in ISO 8601 (meta.scannedAt)."
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "description": "Layout version of the measurements.json of the run."
+        },
+        "depth": {
+          "$ref": "#/$defs/depth",
+          "description": "The depth of the run. A run that gives none is standard."
+        },
+        "scope": { "$ref": "#/$defs/scope" },
+        "catalog": {
+          "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/catalog" }],
+          "description": "meta.catalog of the run, or null when the run predates the key."
+        },
+        "findings": {
+          "$ref": "#/$defs/count",
+          "description": "Number of findings of findings.json."
+        },
+        "measuredFindings": {
+          "$ref": "#/$defs/count",
+          "description": "Number of measured findings of measurements.json."
+        }
+      }
+    },
+    "warning": {
+      "description": "One warning. Its code says which values a and b hold.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "a", "b"],
+          "properties": {
+            "code": { "const": "target-changed" },
+            "a": { "type": "string", "description": "target.name of run A. Never the absolute path." },
+            "b": { "type": "string", "description": "target.name of run B. Never the absolute path." }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "a", "b"],
+          "properties": {
+            "code": { "const": "scope-changed" },
+            "a": { "$ref": "#/$defs/scope" },
+            "b": { "$ref": "#/$defs/scope" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "a", "b"],
+          "properties": {
+            "code": { "const": "depth-changed" },
+            "a": { "$ref": "#/$defs/depth" },
+            "b": { "$ref": "#/$defs/depth" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "a", "b"],
+          "properties": {
+            "code": { "const": "catalog-changed" },
+            "a": { "$ref": "#/$defs/catalog" },
+            "b": { "$ref": "#/$defs/catalog" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "a", "b"],
+          "properties": {
+            "code": { "const": "catalog-unknown" },
+            "a": {
+              "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/catalog" }],
+              "description": "meta.catalog of run A, or null when it has none."
+            },
+            "b": {
+              "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/catalog" }],
+              "description": "meta.catalog of run B, or null when it has none."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "a", "b"],
+          "properties": {
+            "code": { "const": "schema-changed" },
+            "a": { "type": "integer", "description": "schemaVersion of run A." },
+            "b": { "type": "integer", "description": "schemaVersion of run B." }
+          }
+        }
+      ]
+    },
+    "item": {
+      "description": "One finding of the comparison. A measured item keeps the measured finding of each run; a judgment item keeps the finding of findings.json.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["a", "axis", "b", "class", "key", "kind", "rule"],
+          "properties": {
+            "class": { "$ref": "#/$defs/class" },
+            "kind": { "const": "measured" },
+            "rule": { "$ref": "#/$defs/rule" },
+            "axis": { "$ref": "#/$defs/axis" },
+            "key": { "$ref": "#/$defs/measuredKey" },
+            "a": {
+              "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/measuredSide" }],
+              "description": "The measured finding of run A, or null when it is new."
+            },
+            "b": {
+              "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/measuredSide" }],
+              "description": "The measured finding of run B, or null when it is resolved."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["a", "axis", "b", "class", "key", "kind", "rule"],
+          "properties": {
+            "class": { "$ref": "#/$defs/class" },
+            "kind": { "const": "judgment" },
+            "rule": { "$ref": "#/$defs/rule" },
+            "axis": { "$ref": "#/$defs/axis" },
+            "key": { "$ref": "#/$defs/judgmentKey" },
+            "a": {
+              "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/judgmentSide" }],
+              "description": "The judgment finding of run A, or null when it is new."
+            },
+            "b": {
+              "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/judgmentSide" }],
+              "description": "The judgment finding of run B, or null when it is resolved."
+            }
+          }
+        }
+      ]
+    },
+    "class": {
+      "enum": ["resolved", "new", "impact-changed", "same"]
+    },
+    "measuredKey": {
+      "type": "object",
+      "description": "The key of a measured item: the measurementRef, and the name of the trigger (null when no trigger matches the measurementRef). It is the key of run B when there is a B.",
+      "additionalProperties": false,
+      "required": ["measurementRef", "trigger"],
+      "properties": {
+        "measurementRef": { "type": "string" },
+        "trigger": { "type": ["string", "null"] }
+      }
+    },
+    "judgmentKey": {
+      "type": "object",
+      "description": "The key of a judgment item: the sorted distinct files of its evidence. It is the key of run B when there is a B.",
+      "additionalProperties": false,
+      "required": ["files"],
+      "properties": {
+        "files": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "measuredSide": {
+      "type": "object",
+      "description": "A measured finding of one run, with its triggers in their order.",
+      "additionalProperties": false,
+      "required": ["cited", "id", "impact", "summary", "triggers"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^mf-[1-9][0-9]*$"
+        },
+        "impact": { "$ref": "#/$defs/impact" },
+        "triggers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/triggerRef" }
+        },
+        "cited": {
+          "type": "boolean",
+          "description": "True when findings.json has a measured finding that names this id."
+        },
+        "summary": {
+          "type": ["string", "null"],
+          "description": "The summary of the first citing finding by index, or null when it is not cited."
+        }
+      }
+    },
+    "triggerRef": {
+      "type": "object",
+      "description": "One trigger of a measured finding, without its threshold and detail.",
+      "additionalProperties": false,
+      "required": ["impact", "measurementRef", "trigger"],
+      "properties": {
+        "trigger": { "type": "string" },
+        "impact": { "$ref": "#/$defs/impact" },
+        "measurementRef": { "type": "string" }
+      }
+    },
+    "judgmentSide": {
+      "type": "object",
+      "description": "A judgment finding of one run. Its quote is not kept, because it is text of the target.",
+      "additionalProperties": false,
+      "required": ["evidence", "impact", "index", "summary"],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Index of the finding in the findings list of findings.json."
+        },
+        "impact": { "$ref": "#/$defs/impact" },
+        "summary": { "type": "string" },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence" }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file"],
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path of the file, relative to the target, or with a layer the path outside it."
+        },
+        "line": { "type": "integer", "minimum": 1 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "layer": { "type": "string" }
+      }
+    }
+  }
+}

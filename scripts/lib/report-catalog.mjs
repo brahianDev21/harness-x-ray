@@ -4,7 +4,8 @@
 //
 // Catalog version. The catalog has no version field. The version is the number of rule files and the first 12 hex
 // digits of a SHA-256 over the rule files, sorted by file name, each written as its name, a line feed, its text with
-// line endings normalized to LF, and a line feed. rules/sources.json is not part of it.
+// line endings normalized to LF, and a line feed. rules/sources.json is not part of it. catalogVersion computes it, and
+// the scanner writes it to meta.catalog of measurements.json.
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -12,6 +13,24 @@ import path from "node:path";
 import { parseFrontmatter } from "./frontmatter.mjs";
 
 const VERSION_HEX_DIGITS = 12;
+
+/**
+ * The version of a rule catalog: the number of rule files and the first 12 hex digits of a SHA-256 over the rule files, as the
+ * header of this module describes. It reads the rule files only, so it is the same for the same text, whatever the order of rules.
+ * @param {string} harnessRoot The folder that contains rules/.
+ * @param {Array<{ file: string }>} rules As loadRules returns them: each file is relative to harnessRoot.
+ * @returns {{ count: number, sha256: string }}
+ * @throws {Error} If a rule file cannot be read.
+ */
+export function catalogVersion(harnessRoot, rules) {
+  const hash = createHash("sha256");
+  const byName = [...rules].sort((a, b) => compareText(a.file, b.file));
+  for (const rule of byName) {
+    const text = fs.readFileSync(path.join(harnessRoot, rule.file), "utf8");
+    hash.update(`${rule.file}\n${text.replace(/\r\n?/g, "\n")}\n`);
+  }
+  return { count: rules.length, sha256: hash.digest("hex").slice(0, VERSION_HEX_DIGITS) };
+}
 
 /**
  * Reads the catalog for the report.
@@ -25,12 +44,10 @@ const VERSION_HEX_DIGITS = 12;
  * @throws {Error} If a rule has no evidence level or no source list, or sources.json is not in the expected shape.
  */
 export function readCatalog(harnessRoot, rules) {
-  const hash = createHash("sha256");
   const ruleMap = new Map();
   const byName = [...rules].sort((a, b) => compareText(a.file, b.file));
   for (const rule of byName) {
     const text = fs.readFileSync(path.join(harnessRoot, rule.file), "utf8");
-    hash.update(`${rule.file}\n${text.replace(/\r\n?/g, "\n")}\n`);
     const { data } = parseFrontmatter(text);
     if (data === null || typeof data.evidence !== "string" || !Array.isArray(data.sources)) {
       throw new Error(`${rule.file}: the frontmatter needs evidence as text and sources as a list`);
@@ -47,7 +64,7 @@ export function readCatalog(harnessRoot, rules) {
   return {
     rules: ruleMap,
     sources: readSources(harnessRoot),
-    version: { count: rules.length, sha256: hash.digest("hex").slice(0, VERSION_HEX_DIGITS) },
+    version: catalogVersion(harnessRoot, rules),
   };
 }
 

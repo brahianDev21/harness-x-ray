@@ -69,7 +69,7 @@ export const EVIDENCE_FIELDS = Object.freeze(["file", "line", "endLine", "quote"
 /** The layers of an evidence entry: a file outside the target. The schema must document the same set. */
 export const EVIDENCE_LAYERS = Object.freeze(["user", "ancestor"]);
 // The start that a file of each layer must have, which is where the file lies outside the target.
-const LAYER_PREFIX = Object.freeze({ user: "~/.claude/", ancestor: "../" });
+export const LAYER_PREFIX = Object.freeze({ user: "~/.claude/", ancestor: "../" });
 export const REQUIRED_FINDING_FIELDS = Object.freeze([
   "rule",
   "axis",
@@ -538,7 +538,7 @@ function listOf(value) {
 }
 
 // Returns the problem with an evidence path, or null. Checked before any read, so a bad path is never opened.
-function pathProblem(file) {
+export function pathProblem(file) {
   if (typeof file !== "string") return "must be text: a path relative to the target, such as CLAUDE.md";
   if (file.trim() === "") return "is blank; give a path relative to the target";
   if (file.includes("\\")) return "must use forward slashes, not backslashes";
