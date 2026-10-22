@@ -27,7 +27,7 @@
     },
     "language": {
       "enum": ["en", "es"],
-      "description": "The language of the form and of its pages."
+      "description": "The language of the report, chosen in the form under Report language. It is not the language of the form: the pages follow the --lang option of intake.mjs, and this file does not record it."
     },
     "outsideAccess": {
       "$ref": "#/$defs/outsideAccess"
