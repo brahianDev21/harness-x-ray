@@ -86,7 +86,8 @@ describe("label use", () => {
     for (const scenario of Object.values(scenarios)) {
       renderReport({ ...scenario, labels: recording(labelsEn, used), template });
     }
-    const unused = Object.keys(labelsEn).filter((key) => !used.has(key));
+    // The keys of the intake page (intake.*) are rendered by scripts/lib/intake-page.mjs, which its own test checks.
+    const unused = Object.keys(labelsEn).filter((key) => !key.startsWith("intake.") && !used.has(key));
     assert.deepEqual(unused, [], "label keys that no scenario renders");
   });
 
