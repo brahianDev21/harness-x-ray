@@ -141,7 +141,9 @@ test("thresholds: the eight keys the rules cite, all provisional, frozen, and re
     duplicationPctMedium: 5,
     duplicationPctHigh: 15,
   });
-  assert.equal(THRESHOLDS_STATUS, "provisional");
+  assert.deepEqual(Object.keys(THRESHOLDS_STATUS).sort(), Object.keys(THRESHOLDS).sort());
+  assert.deepEqual(Object.values(THRESHOLDS_STATUS), Object.keys(THRESHOLDS).map(() => "provisional"));
+  assert.ok(Object.isFrozen(THRESHOLDS_STATUS));
   assert.ok(Object.isFrozen(THRESHOLDS));
   assert.equal(REEXPORTED_THRESHOLDS, THRESHOLDS);
   assert.equal(REEXPORTED_STATUS, THRESHOLDS_STATUS);

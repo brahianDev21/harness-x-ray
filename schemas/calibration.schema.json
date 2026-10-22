@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Harness X-Ray calibration",
+  "description": "The output of scripts/calibrate.mjs: calibration.json, written in a run folder next to calibration.md. It holds the distribution of each measure with a threshold over a sample of targets, and how many targets are above each threshold (scripts/lib/calibration.mjs). It holds numbers, the basename of each target and fixed texts only: no path, no file name inside a target and no text of a target. The percentiles are nearest rank (meta.percentileMethod). A target with no value for a measure is not counted in that measure's n. The constraints that this schema cannot state across fields (exceeding is at most n, a null statistic only when n is 0, the thresholds of each measure, the order of the measures and of the statistics, sample.count) are checked by checkCalibration in scripts/lib/calibration.mjs.",
+  "type": "object",
+  "required": ["schemaVersion", "meta", "sample", "measures"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "meta": {
+      "type": "object",
+      "description": "The date of the run, the harness that made the scans, the rule catalog they read, and the method of the percentiles.",
+      "required": ["date", "tool", "catalog", "percentileMethod"],
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "The date of the run in UTC, YYYY-MM-DD. The only time in the file."
+        },
+        "tool": {
+          "type": "string",
+          "pattern": "^harness-x-ray@\\S+$",
+          "description": "meta.tool of the scans: the name and version of the harness."
+        },
+        "catalog": {
+          "type": "object",
+          "description": "meta.catalog of the scans: the number of rule files and the first 12 hex digits of a SHA-256 over them.",
+          "required": ["count", "sha256"],
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{12}$",
+              "description": "The first 12 hex digits of the SHA-256, not the whole digest."
+            }
+          }
+        },
+        "percentileMethod": {
+          "const": "nearest rank: with the n values sorted ascending as v[1] to v[n], the p-th percentile is v[ceil(p * n / 100)]; the median is the 50th percentile",
+          "description": "The method of the percentiles, in words. The same text as PERCENTILE_METHOD in scripts/lib/calibration.mjs."
+        }
+      }
+    },
+    "sample": {
+      "type": "object",
+      "description": "The targets of the sample: their number and their basenames, sorted by code unit.",
+      "required": ["count", "targets"],
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "targets": {
+          "type": "array",
+          "description": "The basename of each target, sorted, one item per target. Two targets with the same basename are two items. A basename holds no folder separator and no control or format character.",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^/\\\\\\p{Cc}\\p{Cf}\\u2028\\u2029]+$"
+          }
+        }
+      }
+    },
+    "measures": {
+      "type": "array",
+      "description": "One entry per measure, sorted by name. There are six measures, each once.",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "$ref": "#/$defs/measure"
+      }
+    }
+  },
+  "$defs": {
+    "measure": {
+      "type": "object",
+      "description": "The distribution of one measure over the targets that have a value. n is that number of targets. The statistics are null when n is 0. max is the largest value, min the smallest; p25, median, p75 and p90 are nearest-rank percentiles. Notes by measure (the document repeats them): largeFileCount counts the files above the current largeFileBytes, so it cannot support a new byte value on its own: a new value needs the distribution of file sizes. skillDescriptionMaxChars counts a skill over the listing cut (overLimit) as well, which CTX-04 reports as truncated (medium) and not as long (low), because such a skill is above 1,024 characters too.",
+      "required": ["name", "n", "min", "p25", "median", "p75", "p90", "max", "thresholds"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "enum": [
+            "alwaysLoadedTokens",
+            "duplicationPct",
+            "largeFileCount",
+            "memoryFileLines",
+            "skillCount",
+            "skillDescriptionMaxChars"
+          ]
+        },
+        "n": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The number of targets with a value for this measure. At most sample.count."
+        },
+        "min": {
+          "$ref": "#/$defs/statistic"
+        },
+        "p25": {
+          "$ref": "#/$defs/statistic"
+        },
+        "median": {
+          "$ref": "#/$defs/statistic"
+        },
+        "p75": {
+          "$ref": "#/$defs/statistic"
+        },
+        "p90": {
+          "$ref": "#/$defs/statistic"
+        },
+        "max": {
+          "$ref": "#/$defs/statistic"
+        },
+        "thresholds": {
+          "type": "array",
+          "description": "The thresholds that this measure is compared with, sorted by key, one item per key.",
+          "minItems": 1,
+          "maxItems": 2,
+          "items": {
+            "$ref": "#/$defs/threshold"
+          }
+        }
+      }
+    },
+    "statistic": {
+      "type": ["number", "null"],
+      "description": "A value of the measure, or null when n is 0."
+    },
+    "threshold": {
+      "type": "object",
+      "description": "A threshold of the rules: its value in THRESHOLDS, its status, and the number of targets whose value is above it (value > threshold). For largeFileBytes, the number of targets with at least one file above it. For skillDescriptionMaxChars, a skill over the listing cut is counted too (see the note of its measure).",
+      "required": ["key", "value", "status", "exceeding"],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "enum": [
+            "alwaysLoadedTokensHigh",
+            "alwaysLoadedTokensMedium",
+            "duplicationPctHigh",
+            "duplicationPctMedium",
+            "largeFileBytes",
+            "memoryFileMaxLines",
+            "skillCountMax",
+            "skillDescriptionMaxChars"
+          ]
+        },
+        "value": {
+          "type": "number",
+          "description": "The current value of the threshold in THRESHOLDS."
+        },
+        "status": {
+          "enum": ["provisional", "calibrated"],
+          "description": "THRESHOLDS_STATUS of the key."
+        },
+        "exceeding": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The number of targets with a value above the threshold. At most n of the measure."
+        }
+      }
+    }
+  }
+}

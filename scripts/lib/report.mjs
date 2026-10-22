@@ -50,7 +50,9 @@ const COMPONENT_LABELS = Object.freeze({
   subagents: "component.subagents",
   memory: "component.memory",
 });
-const STATUS_LABELS = Object.freeze({ provisional: "status.provisional" });
+const STATUS_LABELS = Object.freeze({ provisional: "status.provisional", calibrated: "status.calibrated" });
+// The sentence of the limits when every threshold has one status (see thresholdsNoteRuns), by that status.
+const THRESHOLDS_NOTE_LABELS = Object.freeze({ provisional: "limits.thresholds", calibrated: "limits.thresholdsCalibrated" });
 // The depths of a run (measurements.depth), with the label of each. A scan that gives no depth is standard, as before the
 // field existed.
 const DEPTH_LABELS = Object.freeze({ quick: "depth.quick", standard: "depth.standard", deep: "depth.deep" });
@@ -132,13 +134,24 @@ export function fillTemplate(template, sections) {
  * @param {Readonly<Record<string, string>>} options.labels The labels of the language of findings.json.
  * @param {string} options.template The text of templates/report.md.
  * @param {object | null} [options.remediation] The parsed and checked remediation.json of the same scan, or null for none.
+ * @param {Readonly<Record<string, string>>} [options.thresholdsStatus] The status of each threshold by key. It is a seam for the
+ *   tests only: calibrated statuses do not exist yet, so a test passes a map that has them to reach their labels. The default is
+ *   THRESHOLDS_STATUS, the statuses of the thresholds of this harness, and a scan never passes another map.
  * @returns {{ markdown: string, unexplained: Array<{ id: string, rule: string }>, model: ReportModel }} unexplained lists
  *   the measured findings that findings.json does not cite.
  * @throws {TypeError} If an input has the wrong shape.
  * @throws {Error} If a measurementRef does not resolve, a rule or source is missing from the catalog, or a label is missing.
  */
-export function renderReport({ measurements, findings, catalog, labels, template, remediation = null }) {
-  const model = buildReportModel({ measurements, findings, catalog, labels, remediation });
+export function renderReport({
+  measurements,
+  findings,
+  catalog,
+  labels,
+  template,
+  remediation = null,
+  thresholdsStatus = THRESHOLDS_STATUS,
+}) {
+  const model = buildReportModel({ measurements, findings, catalog, labels, remediation, thresholdsStatus });
   return { markdown: renderMarkdown(model, template), unexplained: model.unexplained, model };
 }
 
@@ -174,11 +187,20 @@ export function renderReport({ measurements, findings, catalog, labels, template
  * @param {ReturnType<import("./report-catalog.mjs").readCatalog>} options.catalog The catalog for the report.
  * @param {Readonly<Record<string, string>>} options.labels The labels of the language of findings.json.
  * @param {object | null} [options.remediation] The remediation of the same scan, or null. Its section is empty without one.
+ * @param {Readonly<Record<string, string>>} [options.thresholdsStatus] The status of each threshold by key: a seam for the tests
+ *   only, as in renderReport. The default is THRESHOLDS_STATUS.
  * @returns {ReportModel}
  * @throws {TypeError} If an input has the wrong shape.
  * @throws {Error} If a measurementRef does not resolve, a rule or source is missing from the catalog, or a label is missing.
  */
-export function buildReportModel({ measurements, findings, catalog, labels, remediation = null }) {
+export function buildReportModel({
+  measurements,
+  findings,
+  catalog,
+  labels,
+  remediation = null,
+  thresholdsStatus = THRESHOLDS_STATUS,
+}) {
   if (!isPlainObject(findings) || !Array.isArray(findings.findings)) {
     throw new TypeError("findings must be the parsed findings.json, with a findings list");
   }
@@ -189,7 +211,7 @@ export function buildReportModel({ measurements, findings, catalog, labels, reme
   }
 
   const language = findings.language ?? DEFAULT_LANGUAGE;
-  const ctx = createContext({ measurements, catalog, labels, language });
+  const ctx = createContext({ measurements, catalog, labels, language, thresholdsStatus });
   const entries = collectEntries(ctx, findings.findings);
   return {
     language,
@@ -214,7 +236,7 @@ export function buildReportModel({ measurements, findings, catalog, labels, reme
 
 // The helpers the sections share. Each one returns runs. A text from the target or the measurements is redacted, and a
 // number is formatted here, once, so a view never formats or escapes a value.
-function createContext({ measurements, catalog, labels, language }) {
+function createContext({ measurements, catalog, labels, language, thresholdsStatus }) {
   const parts = createLabelParts(labels);
   const redact = createRedactor({ root: measurements.meta.targetRoot });
   const plain = (value) => inline(redact(String(value)));
@@ -222,6 +244,8 @@ function createContext({ measurements, catalog, labels, language }) {
     parts(key, values).flatMap((piece) => (typeof piece === "string" ? markedRuns(piece) : piece));
   return {
     label,
+    // The status of each threshold by key, as the statuses of the run (see statusRuns).
+    thresholdsStatus,
     // A fixed name shown as code, such as a mode. Its text comes from a label, so it is not redacted.
     codeLabel: (key) => [codeNode(parts(key).join(""))],
     language,
@@ -404,7 +428,7 @@ function triggerRow(ctx, group) {
       : label("threshold.cell", {
           key: ctx.code(group.threshold.key),
           value: valueRuns(ctx, group.threshold.value),
-          status: statusRuns(ctx),
+          status: statusRuns(ctx, group.threshold.key),
         });
   const name = Object.hasOwn(TRIGGER_NOTES, group.trigger)
     ? runsOf(ctx.code(group.trigger), glue(" ("), label(TRIGGER_NOTES[group.trigger]), glue(")"))
@@ -416,10 +440,27 @@ function isObjectValue(value) {
   return value !== null && typeof value === "object";
 }
 
-function statusRuns(ctx) {
-  const key = STATUS_LABELS[THRESHOLDS_STATUS];
-  if (key === undefined) throw new Error(`no label for the threshold status "${String(THRESHOLDS_STATUS)}"`);
-  return ctx.label(key);
+// The label of a threshold status. A status with no label is an error: the report never shows a status it cannot name.
+function statusLabelOf(ctx, status) {
+  if (!Object.hasOwn(STATUS_LABELS, status)) throw new Error(`no label for the threshold status "${String(status)}"`);
+  return ctx.label(STATUS_LABELS[status]);
+}
+
+// The status of one threshold, by its key, as its label. A key with no status is an error: the report never shows a threshold
+// without its status.
+function statusRuns(ctx, thresholdKey) {
+  if (!Object.hasOwn(ctx.thresholdsStatus, thresholdKey)) throw new Error(`no status for the threshold "${String(thresholdKey)}"`);
+  return statusLabelOf(ctx, ctx.thresholdsStatus[thresholdKey]);
+}
+
+// The sentence of the limits about the thresholds. When every threshold has the same status, the sentence names it; when they
+// differ, it says so, and no sentence claims a status that a threshold does not have.
+function thresholdsNoteRuns(ctx) {
+  const statuses = new Set(Object.values(ctx.thresholdsStatus));
+  if (statuses.size !== 1) return ctx.label("limits.thresholdsMixed");
+  const [status] = statuses;
+  if (!Object.hasOwn(THRESHOLDS_NOTE_LABELS, status)) throw new Error(`no note for the threshold status "${String(status)}"`);
+  return ctx.label(THRESHOLDS_NOTE_LABELS[status], { status: statusLabelOf(ctx, status) });
 }
 
 // The permission mode that the SEC-02 outcomes use, or null for the default mode. The scan applies the project
@@ -798,7 +839,7 @@ function limitsSection(ctx) {
     blocks.push({ type: "paragraph", runs: label("limits.scope", { outside: ctx.num(m.scope.files.outside) }) });
   }
   blocks.push({ type: "paragraph", runs: label("limits.estimate", { method: ctx.text(m.context.alwaysLoaded.estMethod) }) });
-  blocks.push({ type: "paragraph", runs: label("limits.thresholds", { status: statusRuns(ctx) }) });
+  blocks.push({ type: "paragraph", runs: thresholdsNoteRuns(ctx) });
   const mode = usedMode(m);
   const modeRuns = mode === null ? ctx.codeLabel("mode.default") : ctx.code(mode);
   blocks.push({ type: "paragraph", runs: label("limits.sec02", { mode: modeRuns }) });

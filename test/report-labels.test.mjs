@@ -11,6 +11,7 @@ import { loadRules, validateFindings } from "../scripts/lib/findings-validate.mj
 import { readCatalog } from "../scripts/lib/report-catalog.mjs";
 import { loadLabels, parseLabels, placeholdersOf } from "../scripts/lib/report-labels.mjs";
 import { renderReport } from "../scripts/lib/report.mjs";
+import { THRESHOLDS_STATUS } from "../scripts/lib/thresholds.mjs";
 import { HARNESS_ROOT, makeRun, readGoldenFindings } from "./helpers/report-run.mjs";
 
 const TEMPLATE = path.join(HARNESS_ROOT, "templates", "report.md");
@@ -116,6 +117,41 @@ describe("label use", () => {
     delete short["header.title"];
     const template = realTemplate();
     assert.throws(() => renderReport({ measurements, findings, catalog: cat, labels: short, template }), /no text for "header.title"/);
+  });
+});
+
+describe("threshold statuses", () => {
+  test("each threshold cell shows the status of its own key, and the limits say whether the statuses differ", () => {
+    const { markdown } = renderReport({ ...scenarios.mixedStatus, labels: labelsEn, template: realTemplate() });
+    // The value is written with its thousands separator, as the report formats every number.
+    assert.ok(markdown.includes("`alwaysLoadedTokensHigh` = 6,000 (calibrated)"), "the calibrated key shows calibrated");
+    assert.ok(!markdown.includes("`alwaysLoadedTokensHigh` = 6,000 (provisional)"), "the calibrated key does not show provisional");
+    assert.ok(markdown.includes("Some thresholds are calibrated and others are provisional"), "the mixed sentence");
+  });
+
+  test("when every threshold is calibrated, the limits name the status and do not call the values assumptions", () => {
+    const { markdown } = renderReport({ ...scenarios.calibratedStatus, labels: labelsEn, template: realTemplate() });
+    assert.ok(markdown.includes("`alwaysLoadedTokensHigh` = 6,000 (calibrated)"));
+    assert.ok(markdown.includes("The thresholds are calibrated: each value was confirmed or changed on the evidence"));
+    assert.ok(!markdown.includes("each value is an assumption"));
+  });
+
+  test("the default statuses give the provisional sentence, as before", () => {
+    const { markdown } = renderReport({ ...scenarios.golden, labels: labelsEn, template: realTemplate() });
+    assert.ok(markdown.includes("The thresholds are provisional: each value is an assumption that calibration has not confirmed."));
+  });
+
+  test("a threshold with no status, or a status with no label, is an error and never a bare key", () => {
+    const { alwaysLoadedTokensHigh: _removed, ...withoutKey } = THRESHOLDS_STATUS;
+    assert.throws(
+      () => renderReport({ ...scenarios.rich, labels: labelsEn, template: realTemplate(), thresholdsStatus: withoutKey }),
+      /no status for the threshold "alwaysLoadedTokensHigh"/,
+    );
+    const unknown = { ...THRESHOLDS_STATUS, alwaysLoadedTokensHigh: "unknown" };
+    assert.throws(
+      () => renderReport({ ...scenarios.rich, labels: labelsEn, template: realTemplate(), thresholdsStatus: unknown }),
+      /no label for the threshold status "unknown"/,
+    );
   });
 });
 
@@ -304,6 +340,11 @@ function buildScenarios() {
     catalog,
   };
   const deepScenario = { measurements: deepRun.measurements, findings: readGoldenFindings("findings.en.json"), catalog };
+  // The statuses that no scan gives today, since every threshold is provisional: the rich scenario cites alwaysLoadedTokensHigh,
+  // which is calibrated here among provisional thresholds, and then every threshold is calibrated. They reach the status label
+  // and the limits sentences that name a status or say that the statuses differ.
+  const mixedStatus = { ...THRESHOLDS_STATUS, alwaysLoadedTokensHigh: "calibrated" };
+  const calibratedStatus = Object.fromEntries(Object.keys(THRESHOLDS_STATUS).map((key) => [key, "calibrated"]));
   return {
     golden,
     rich,
@@ -315,6 +356,8 @@ function buildScenarios() {
     layered: layeredScenario,
     quick: quickScenario,
     deep: deepScenario,
+    mixedStatus: { ...rich, thresholdsStatus: mixedStatus },
+    calibratedStatus: { ...rich, thresholdsStatus: calibratedStatus },
   };
 }
 
