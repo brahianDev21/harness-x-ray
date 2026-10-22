@@ -40,30 +40,26 @@ export function runRoots(harnessRoot, { tempRoot = os.tmpdir() } = {}) {
  * @throws {UsageError} If dir is not allowed, if it exists and is not a folder, or if a link on its way is broken.
  */
 export function checkRunDir(dir, harnessRoot, { allowTemp = true, tempRoot = os.tmpdir() } = {}) {
-  const harness = fs.realpathSync.native(harnessRoot);
-  const runs = path.join(harness, "runs");
-  const temp = allowTemp ? tempFolder(tempRoot) : null;
-  const real = realpathOfNearest(path.resolve(dir));
-  // The temp folder can contain the harness folder (the repository cloned under /tmp, or TMPDIR set to it),
-  // so inside the harness folder it is not a base: only the folders below runs/ are allowed there.
-  const allowed = isInside(harness, real) ? isBelow(runs, real) : temp !== null && isBelow(temp, real);
-  if (!allowed) {
-    const places = allowTemp ? "runs/ or the system temp folder" : "runs/";
-    throw new UsageError(`folder must be inside ${places}: ${dir}`);
-  }
+  const real = checkRunPlace(dir, harnessRoot, { allowTemp, tempRoot, noun: "folder" });
   if (isNotFolder(real)) throw new UsageError(`not a folder: ${dir}`);
   return real;
 }
 
 /**
- * Checks a file that a run is about to write. A missing file is fine. A file that exists must be a
- * regular file with one name: a link (report.md -> another file) or a folder is refused, and so is a hard
- * link, which is a second name for a file that may lie outside runs/. The file that a refused name points
- * to is never written.
+ * Checks a file that a run is about to write or that a script is about to open. A missing file is fine. A file
+ * that exists must be a regular file with one name: a link (report.md -> another file) or a folder is refused, and
+ * so is a hard link, which is a second name for a file that may lie outside runs/. The file that a refused name
+ * points to is never written.
+ * With harnessRoot, the file is also checked for location with the rule of checkRunDir: its real path must lie
+ * strictly below runs/ or, when allowTemp is true, below the temp folder. Without harnessRoot, no location is checked,
+ * which is what the writing scripts relied on before this option existed.
  * @param {string} file Absolute path of the file.
- * @throws {UsageError} If the file exists and is not a regular file, or has more than one hard link.
+ * @param {{ harnessRoot?: string, allowTemp?: boolean, tempRoot?: string }} [options] allowTemp defaults to true,
+ *   and tempRoot defaults to os.tmpdir(). The location is checked only when harnessRoot is given.
+ * @throws {UsageError} If the file lies outside the allowed places, exists and is not a regular file, or has more than one hard link.
  */
-export function checkRunFile(file) {
+export function checkRunFile(file, { harnessRoot, allowTemp = true, tempRoot = os.tmpdir() } = {}) {
+  if (harnessRoot !== undefined) checkRunPlace(file, harnessRoot, { allowTemp, tempRoot, noun: "file" });
   let stats;
   try {
     stats = fs.lstatSync(file);
@@ -73,6 +69,23 @@ export function checkRunFile(file) {
   }
   if (!stats.isFile()) throw new UsageError(`refused: the file exists and is not a regular file: ${file}`);
   if (stats.nlink > 1) throw new UsageError(`refused: the file has more than one hard link: ${file}`);
+}
+
+// The location rule of checkRunDir and checkRunFile. Returns the real path of target when it lies in an allowed place, and
+// throws otherwise. noun names the kind of target in the message.
+function checkRunPlace(target, harnessRoot, { allowTemp, tempRoot, noun }) {
+  const harness = fs.realpathSync.native(harnessRoot);
+  const runs = path.join(harness, "runs");
+  const temp = allowTemp ? tempFolder(tempRoot) : null;
+  const real = realpathOfNearest(path.resolve(target));
+  // The temp folder can contain the harness folder (the repository cloned under /tmp, or TMPDIR set to it),
+  // so inside the harness folder it is not a base: only the folders below runs/ are allowed there.
+  const allowed = isInside(harness, real) ? isBelow(runs, real) : temp !== null && isBelow(temp, real);
+  if (!allowed) {
+    const places = allowTemp ? "runs/ or the system temp folder" : "runs/";
+    throw new UsageError(`${noun} must be inside ${places}: ${target}`);
+  }
+  return real;
 }
 
 // Real path of the temp folder, or null when it does not exist: ENOENT, or ENOTDIR when a part of the path is a file.

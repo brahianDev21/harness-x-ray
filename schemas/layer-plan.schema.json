@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "layer-plan.json",
+  "description": "The layers that the agent groups the folders of a target into, written to the run folder after map.mjs writes layers.json. Documentation only: scripts/lib/layer-plan.mjs (validateLayerPlan) is the check, and it reports every problem it finds with a JSON pointer. Unknown fields are errors everywhere (additionalProperties is false). Beyond this schema the validator checks that every folder and option is a folder of layers.json by exact match, that no folder of one layer is the same as, inside, or containing a folder of another layer, that an option lies inside one of its layer's folders and neither is a folder of another layer nor lies inside one, and that names are unique when case is ignored.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "layers"],
+  "properties": {
+    "schemaVersion": {
+      "const": 1,
+      "description": "The version of this format. Must be 1."
+    },
+    "layers": {
+      "type": "array",
+      "minItems": 1,
+      "description": "One entry per layer. At least one layer is required.",
+      "items": { "$ref": "#/$defs/layer" }
+    }
+  },
+  "$defs": {
+    "layer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "folders", "reason"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "pattern": "\\S",
+          "description": "The name of the layer, such as frontend or database. Unique across the layers when case is ignored."
+        },
+        "folders": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string" },
+          "description": "The folders of the layer, each one exactly as layers.json lists it. No folder of the layer may be the same as, inside, or containing a folder of another layer."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "\\S",
+          "description": "The justification of the layer, from the signals of the mapping."
+        },
+        "signals": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["root", "workspace", "manifest", "name", "harness"] },
+          "description": "Optional. The signal types that justify the layer."
+        },
+        "options": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string" },
+          "description": "Optional. Sub-folders the person may pick inside the layer. Each must be a folder of layers.json, lie inside one of the layer's folders (\".\" holds every folder), and neither be a folder of another layer nor lie inside one."
+        }
+      }
+    }
+  }
+}

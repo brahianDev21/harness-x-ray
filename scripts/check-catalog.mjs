@@ -25,6 +25,9 @@
 // - data/agent-harness.json, the registry of the files that each agent reads: its format, the source ids and their
 //   types, the globs, and the order of the entries. scripts/lib/agent-harness.mjs documents the format. The file is optional,
 //   but anything else at its path must be a readable regular file.
+// - data/layer-signals.json, the signals of the layer mapping: the manifest file names, the folder names of each hint and
+//   the languages of each extension. scripts/lib/layer-signals.mjs (validateLayerSignals) documents the format and owns the checks.
+//   The file is required: the layer mapping reads it, so a root without it has an error on the file.
 //
 // Emitters: scripts/lib/measured-findings.mjs exports EMITTERS, the ids of the rules that produce a
 // finding, as an array, a Set, a Map keyed by rule id, or a plain object keyed by rule id. The copy
@@ -38,12 +41,14 @@ import { parseArgs } from "node:util";
 import { validateAgentHarness } from "./lib/agent-harness.mjs";
 import { parseFrontmatter } from "./lib/frontmatter.mjs";
 import { isPlainObject } from "./lib/json-out.mjs";
+import { validateLayerSignals } from "./lib/layer-signals.mjs";
 
 const HARNESS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const USAGE = "usage: node scripts/check-catalog.mjs [--root <dir>]";
 const EMITTERS_FILE = "scripts/lib/measured-findings.mjs";
 const SOURCES_FILE = "rules/sources.json";
 const AGENT_HARNESS_FILE = "data/agent-harness.json";
+const LAYER_SIGNALS_FILE = "data/layer-signals.json";
 
 const AXIS_BY_PREFIX = new Map([
   ["RUL", "instructions"],
@@ -107,6 +112,7 @@ export function checkCatalog({ root, emitters }) {
   const sources = checkSources(root, errors);
   const sourceTypes = sources === null ? null : sources.types;
   checkAgentHarness(root, sourceTypes, errors);
+  checkLayerSignals(root, errors);
 
   const names = listRuleFiles(rulesDir, warnings);
   const rules = [];
@@ -605,27 +611,47 @@ function escapePointer(key) {
 // the file. A file that is not valid JSON is skipped here, because the data checks above report it. sourceTypes is null
 // when rules/sources.json could not be read.
 function checkAgentHarness(root, sourceTypes, errors) {
-  const full = path.join(root, AGENT_HARNESS_FILE);
-  if (!isPresent(full)) return;
+  const read = readDataFile(root, AGENT_HARNESS_FILE, errors);
+  if (read === null) return;
+  for (const item of validateAgentHarness(read.data, { sourceTypes })) {
+    errors.push(issue(AGENT_HARNESS_FILE, item.pointer === "" ? "(root)" : item.pointer, item.message));
+  }
+}
+
+// Checks data/layer-signals.json with validateLayerSignals. The file is required: scripts/map.mjs reads it through the layer
+// mapping, so a root without it has an error on the file. A file that is not valid JSON is reported by the data checks.
+function checkLayerSignals(root, errors) {
+  if (!isPresent(path.join(root, LAYER_SIGNALS_FILE))) {
+    errors.push(issue(LAYER_SIGNALS_FILE, "(file)", "is missing; the layer mapping reads it, so the file is required"));
+    return;
+  }
+  const read = readDataFile(root, LAYER_SIGNALS_FILE, errors);
+  if (read === null) return;
+  for (const item of validateLayerSignals(read.data)) {
+    errors.push(issue(LAYER_SIGNALS_FILE, item.pointer === "" ? "(root)" : item.pointer, item.message));
+  }
+}
+
+// Reads one data file as JSON for a check of that file. Returns { data }, or null when nothing is at the path, when the path
+// is not a readable regular file (the error is pushed), or when the file is not valid JSON.
+function readDataFile(root, file, errors) {
+  const full = path.join(root, file);
+  if (!isPresent(full)) return null;
   let text;
   try {
     if (!fs.statSync(full).isFile()) {
-      errors.push(issue(AGENT_HARNESS_FILE, "(file)", "must be a regular file, not a folder or another kind of entry"));
-      return;
+      errors.push(issue(file, "(file)", "must be a regular file, not a folder or another kind of entry"));
+      return null;
     }
     text = readText(full);
   } catch (error) {
-    errors.push(issue(AGENT_HARNESS_FILE, "(file)", `cannot be read: ${error.code ?? "unknown error"}`));
-    return;
+    errors.push(issue(file, "(file)", `cannot be read: ${error.code ?? "unknown error"}`));
+    return null;
   }
-  let data;
   try {
-    data = JSON.parse(text);
+    return { data: JSON.parse(text) };
   } catch {
-    return;
-  }
-  for (const item of validateAgentHarness(data, { sourceTypes })) {
-    errors.push(issue(AGENT_HARNESS_FILE, item.pointer === "" ? "(root)" : item.pointer, item.message));
+    return null;
   }
 }
 
