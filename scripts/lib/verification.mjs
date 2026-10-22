@@ -14,9 +14,12 @@
 //   root, the managers that the memory text names (mentions), the files that name a manager with the agents
 //   that own them (byFile), and whether all of them disagree (conflict). The texts of the other agents' instruction
 //   files (ctx.agentInstructions) count toward conflict and byFile, not toward mentions.
-// - structure.enforcementTools: the configs of tools that enforce rules, found by file name. With a scope, the configs
-//   directly inside each inherited folder, each scope folder and the folder of each package.json in verification.packages
-//   count too, so a lint or typecheck config at the root of another layer counts.
+// - structure.enforcementTools: the configs of tools that enforce rules, found by file name, and the architecture tools that a
+//   manifest names (MANIFEST_TOOLS): eslint-plugin-boundaries in a dependency list of a package.json, import-linter in a
+//   pyproject.toml or setup.cfg section, and ArchUnit in a Maven or Gradle build file. A manifest is read as data (package.json
+//   is parsed, the others are searched for a fixed marker), and a manifest that cannot be read names nothing. With a scope, the
+//   configs and manifests directly inside each inherited folder, each scope folder and the folder of each package.json in
+//   verification.packages count too, so a lint or typecheck config at the root of another layer counts.
 //
 // With a scope, verification.commands still reads only the root package.json: it lies outside the scope, and it still
 // counts. The CI workflows and husky stay at the root, as without a scope. The package.json warnings belong to the
@@ -26,7 +29,7 @@
 import path from "node:path";
 import { instructionTextsOf } from "./agent-inventory.mjs";
 import { markdownLines } from "./markdown.mjs";
-import { packageScripts, readPackageJson } from "./package-json.mjs";
+import { isObject, packageScripts, readPackageJson } from "./package-json.mjs";
 import { createRedactor } from "./redact.mjs";
 import { scriptCallsInLine } from "./script-calls.mjs";
 
@@ -100,12 +103,24 @@ const ROOT_TOOLS = [
   ["editorconfig", /^\.editorconfig$/],
   ["eslint", /^(?:eslint\.config\..+|\.eslintrc.*)$/],
   ["gitleaks", /^\.?gitleaks\.toml$/],
+  ["import-linter", /^\.importlinter$/],
   ["jscpd", /^\.jscpd\.json$/],
   ["lint-staged", /^(?:\.lintstagedrc.*|lint-staged\.config\..+)$/],
   ["prettier", /^(?:\.prettierrc.*|prettier\.config\..+)$/],
   ["secretlint", /^\.secretlintrc.*$/],
   ["typescript", /^tsconfig(?:\..+)?\.json$/],
 ];
+// Architecture tools that a manifest names. A package.json names a tool when one of DEPENDENCY_FIELDS lists the package; any
+// other manifest names it when its text holds the marker. Markers are lower case and compared with the lower-case text.
+const MANIFEST_TOOLS = [
+  { tool: "eslint-plugin-boundaries", manifest: "package.json", dependency: "eslint-plugin-boundaries" },
+  { tool: "import-linter", manifest: "pyproject.toml", marker: "[tool.importlinter" },
+  { tool: "import-linter", manifest: "setup.cfg", marker: "[importlinter" },
+  { tool: "archunit", manifest: "pom.xml", marker: "com.tngtech.archunit" },
+  { tool: "archunit", manifest: "build.gradle", marker: "com.tngtech.archunit" },
+  { tool: "archunit", manifest: "build.gradle.kts", marker: "com.tngtech.archunit" },
+];
+const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
 // Workflows are the files directly inside .github/workflows.
 const WORKFLOW = /^\.github\/workflows\/[^/]+\.ya?ml$/;
 // Any file under this folder makes one husky entry, for the folder itself.
@@ -142,7 +157,7 @@ function collectVerification(ctx) {
       packageManager: packageManagerOf(ctx, data, redact),
     },
     structure: {
-      enforcementTools: enforcementTools(ctx.files, ctx.scope, packageFolders),
+      enforcementTools: enforcementTools(ctx, packageFolders),
     },
     warnings: packages === null ? [] : packages.warnings,
   };
@@ -313,21 +328,37 @@ function managerNamed(name) {
   return MANAGERS.has(name) ? name : null;
 }
 
-// The config files of the tools that enforce rules. Only names are read: a file is listed, never opened. A config counts when
-// it lies directly in one of the config folders (configFolders). Workflows and husky are found at the root only.
-function enforcementTools(files, scope, packageFolders) {
-  const folders = configFolders(scope, packageFolders);
+// The config files of the tools that enforce rules, and the manifests that name an architecture tool. A config is found by
+// name and never opened; a manifest of MANIFEST_TOOLS is read. A config or manifest counts when it lies directly in one of the
+// config folders (configFolders). Workflows and husky are found at the root only.
+function enforcementTools(ctx, packageFolders) {
+  const folders = configFolders(ctx.scope, packageFolders);
   const found = new Map();
   const add = (tool, rel) => found.set(JSON.stringify([tool, rel]), { tool, path: rel });
-  for (const { path: rel } of files) {
+  for (const { path: rel } of ctx.files) {
     if (WORKFLOW.test(rel)) add("github-actions", rel);
     if (rel.startsWith(`${HUSKY_FOLDER}/`)) add("husky", HUSKY_FOLDER);
     if (!folders.has(path.posix.dirname(rel))) continue;
+    const name = path.posix.basename(rel);
     for (const [tool, pattern] of ROOT_TOOLS) {
-      if (pattern.test(path.posix.basename(rel))) add(tool, rel);
+      if (pattern.test(name)) add(tool, rel);
+    }
+    for (const entry of MANIFEST_TOOLS) {
+      if (entry.manifest === name && manifestNames(ctx, rel, entry)) add(entry.tool, rel);
     }
   }
   return [...found.values()].sort((a, b) => compareText(a.tool, b.tool) || compareText(a.path, b.path));
+}
+
+// True when the manifest at rel names the tool of entry (see MANIFEST_TOOLS).
+function manifestNames(ctx, rel, entry) {
+  if (entry.dependency !== undefined) {
+    const read = readPackageJson(ctx, rel);
+    if (read.status !== "ok") return false;
+    return DEPENDENCY_FIELDS.some((field) => isObject(read.data[field]) && Object.hasOwn(read.data[field], entry.dependency));
+  }
+  const read = ctx.readText(rel);
+  return read.ok && read.text.toLowerCase().includes(entry.marker);
 }
 
 // The folders whose directly contained files are tool configs: the root, and with a scope also the inherited folders (the

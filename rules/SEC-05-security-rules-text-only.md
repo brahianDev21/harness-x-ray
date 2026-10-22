@@ -19,6 +19,8 @@ A static scan is not a security audit. The scanner finds the configuration and t
 
 This rule covers a sentence that states the rule itself and claims no control. A sentence that says a hook or a permission rule protects something is SEC-04, which checks whether the claimed control exists and works.
 
+SEC-05 covers security rules that no control backs; a security rule that a tool enforces is RUL-02, and a security rule is never STR-03. This holds even when the security rule names a folder. STR-03 covers dependency rules between layers or folders that no tool enforces.
+
 ## Why it matters
 
 Claude Code treats CLAUDE.md and auto memory as context, not as enforced configuration. The memory documentation says that to block an action regardless of what Claude decides, a PreToolUse hook is the mechanism. A written rule is therefore a request that the model reads at the start of each session. Atlas says the same in its guidance: written instructions cannot reliably stop an agent.

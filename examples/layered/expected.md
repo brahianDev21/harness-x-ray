@@ -36,6 +36,7 @@ Claude Code has no files of its own in this folder, so it has no settings, hooks
 | SEC-03 | measured | medium | No `Read` deny and no `Read` hook: the root `.env` read decision is `default`. `AGENTS.md` says "never read .env", but nothing enforces it for Claude Code. | medium |
 | SEC-05 | judgment | medium | "Never read, print or change `.env` or `.env.*` files" and "Ask the user before you run `git push` or install a dependency" have no deny or ask rule that Claude Code loads. The rules in `.agents/permissions.json` are an unloaded control with status `not-verified`, so the finding says that they are not verified for the other agents, and does not say that they are missing. | medium |
 | RUL-02 | judgment | medium | The layer table and "The key rule" restate dependency-cruiser rules that `check:architecture` runs. "No `any`" restates `no-explicit-any` from the recommended typescript-eslint set. The limits paragraph restates the four ESLint limits. "Never write a real secret" overlaps secretlint's recommended preset. The rule flags a line on the tool's coverage alone. The part of the layer table about `app.ts` is not enforced by the dependency-cruiser config, so that part of the table is not covered. | medium |
+| STR-03 | judgment | low | The layer table says that controllers do not import `app.ts`, and `.dependency-cruiser.cjs` has no rule for it. dependency-cruiser, which `check:architecture` already runs, could forbid it with one more `forbidden` rule. Only that part of the table is STR-03; the parts that the config enforces are RUL-02. | medium |
 | RUL-04 | measured | medium | `AGENTS.md` names `.env.example` as the file for variable names, and `.secretlintignore` in a prohibition. Neither exists in this folder. Whether an instruction to write a file counts as a broken reference is a judgment; the literal check will report it. | low |
 | RUL-01 | judgment | low | "A function does one thing. If you need 'and' to describe what it does, split it." and "Keep the error messages short and human-readable." Both are generic, with no repository referent. | low |
 
@@ -43,7 +44,7 @@ Changes from the initial hypothesis:
 
 - Agreed: SEC-04 applies and repeats, as in the initial hypothesis. The explanation is the missing manual wiring, as the README describes it.
 - Agreed: RUL-02 is a case here. The case is partial, because the dependency-cruiser config does not cover every line of the layer table.
-- STR-03 is out of scope for this version. Its conventions (layer rules that a tool could enforce) are mentioned here only as context.
+- Added in v0.2: STR-03, for the part of the layer table about `app.ts`, which no tool enforces although dependency-cruiser could.
 - Added: SEC-02, SEC-03, SEC-05 and RUL-04, from the rule text and the files above.
 - Changed for the agent inventory: the `.agents/` files are unloaded controls with status `not-verified`, so SEC-04 and SEC-05 say "not verified" and do not say "does not exist".
 
@@ -51,6 +52,7 @@ Changes from the initial hypothesis:
 
 - **VER-01**: every command is listed in the Verification section, and "Run npm run verify before you say a task is done." A documented way exists.
 - **STR-01**: the layer table and "Where new code goes" map the folders. The second criterion fails.
+- **STR-03** for the rest of the layer table and "The key rule": `.dependency-cruiser.cjs` enforces those parts, so they are RUL-02, and a part that a tool enforces is never STR-03.
 - **COD-04**: "Before you write a new function, search the code for one that already does the job, and reuse it." (Clean code) is a reuse step.
 - **RUL-03**: "npm in this folder" against pnpm in the ancestor file is a scoped exception. The folder has its own lockfile and says so. A contradiction needs two statements about the same scope.
 - **CTX-07**: `AGENTS.md` loads by default, because no `CLAUDE.md` exists in the folder or in any parent folder.

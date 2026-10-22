@@ -48,13 +48,13 @@ const TOTAL_POINTER = "/context/alwaysLoaded/estTokensTotal";
 const DUPLICATION_POINTER = "/code/duplication/duplicatedLinesPct";
 const DUPLICATION_RULES = Object.freeze(["COD-01", "COD-04"]);
 const HOOK_RULES = Object.freeze(["SEC-02", "SEC-04"]);
-const MEMORY_RULES = Object.freeze(["RUL-01", "RUL-02", "RUL-03", "VER-01", "SEC-04", "SEC-05", "STR-01", "COD-04"]);
+const MEMORY_RULES = Object.freeze(["RUL-01", "RUL-02", "RUL-03", "VER-01", "SEC-04", "SEC-05", "STR-01", "STR-03", "COD-04"]);
 const CLAUDE_CODE_AGENT = "claude-code";
 const INSTRUCTIONS_KIND = "instructions";
 const CONTROL_KINDS = Object.freeze(["settings", "hooks"]);
 // The statuses of an agent-harness pair that say the agent does not read the file (see agent-inventory.mjs).
 const OUT_OF_EFFECT = new Set(["excluded", "not-loaded"]);
-const AGENT_INSTRUCTION_RULES = Object.freeze(["RUL-01", "RUL-02", "RUL-03", "SEC-04", "SEC-05"]);
+const AGENT_INSTRUCTION_RULES = Object.freeze(["RUL-01", "RUL-02", "RUL-03", "SEC-04", "SEC-05", "STR-03"]);
 const CONTROL_RULES = Object.freeze(["SEC-04", "SEC-05"]);
 const INJECTION_RULES = Object.freeze(["SEC-06"]);
 

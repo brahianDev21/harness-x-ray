@@ -22,7 +22,7 @@ const SCAN_SCRIPT = path.join(HARNESS_ROOT, "scripts", "scan.mjs");
 const HOSTILE = path.join(TEST_DIR, "fixtures", "hostile-injection");
 // Files that the injected instructions ask for, or that a package.json script writes if it runs.
 const MARKERS = ["harness-pwned.txt", "harness-pwned-lint.txt", ".harness-auditor-approved", "findings.json"];
-const MEMORY_RULES = ["RUL-01", "RUL-02", "RUL-03", "VER-01", "SEC-04", "SEC-05", "STR-01", "COD-04"];
+const MEMORY_RULES = ["RUL-01", "RUL-02", "RUL-03", "VER-01", "SEC-04", "SEC-05", "STR-01", "STR-03", "COD-04"];
 // Text that an HTML page must never run or link: a script, an event handler, a closing style tag and a javascript: address.
 // Each one is appended to the copy as a comment, and the findings of the report quote it.
 const HOSTILE_QUOTES = [

@@ -157,7 +157,7 @@
     },
     "candidates": {
       "type": "array",
-      "description": "What the agent reads for the judgment rules. Not findings. Carry paths relative to the target and line numbers, never code text. Ids cand-N follow the order of the list: duplication groups (COD-01, COD-04), then hook scripts sorted by path (SEC-02, SEC-04), then memory and rule files in inventory order (RUL-01, RUL-02, RUL-03, VER-01, SEC-04, SEC-05, STR-01, COD-04), then the agent-instructions and unloaded-control files (each sorted by file), then the injection matches in the order of security.injection.matches (SEC-06). An injection candidate is the one kind that carries text of the target: a short, redacted excerpt.",
+      "description": "What the agent reads for the judgment rules. Not findings. Carry paths relative to the target and line numbers, never code text. Ids cand-N follow the order of the list: duplication groups (COD-01, COD-04), then hook scripts sorted by path (SEC-02, SEC-04), then memory and rule files in inventory order (RUL-01, RUL-02, RUL-03, VER-01, SEC-04, SEC-05, STR-01, STR-03, COD-04), then the agent-instructions and unloaded-control files (each sorted by file), then the injection matches in the order of security.injection.matches (SEC-06). An injection candidate is the one kind that carries text of the target: a short, redacted excerpt.",
       "items": { "$ref": "#/$defs/candidate" }
     },
     "undeterminable": {
@@ -1116,12 +1116,12 @@
       "properties": {
         "enforcementTools": {
           "type": "array",
-          "description": "Config files of tools that enforce rules: files at the root found by name, the workflows directly inside .github/workflows, and one entry for the .husky folder when it has files. With a scope, the configs directly inside each inherited folder (other than the root), each scope folder and the folder of each package.json in verification.packages are found by name too, with their full paths. Sorted by tool, then path.",
+          "description": "Config files of tools that enforce rules, and the manifests that name an architecture tool (eslint-plugin-boundaries in a dependency list of a package.json: dependencies, devDependencies, optionalDependencies or peerDependencies; an import-linter section in pyproject.toml or setup.cfg, ArchUnit in pom.xml, build.gradle or build.gradle.kts; the path is the manifest): files at the root found by name, the workflows directly inside .github/workflows, and one entry for the .husky folder when it has files. With a scope, the configs directly inside each inherited folder (other than the root), each scope folder and the folder of each package.json in verification.packages are found by name too, with their full paths. Sorted by tool, then path.",
           "items": {
             "type": "object",
             "required": ["tool", "path"],
             "properties": {
-              "tool": { "enum": ["biome", "dependency-cruiser", "editorconfig", "eslint", "github-actions", "gitleaks", "husky", "jscpd", "lint-staged", "prettier", "secretlint", "typescript"] },
+              "tool": { "enum": ["archunit", "biome", "dependency-cruiser", "editorconfig", "eslint", "eslint-plugin-boundaries", "github-actions", "gitleaks", "husky", "import-linter", "jscpd", "lint-staged", "prettier", "secretlint", "typescript"] },
               "path": { "type": "string", "description": "Relative to the target, with forward slashes. The husky entry is the folder .husky." }
             }
           }

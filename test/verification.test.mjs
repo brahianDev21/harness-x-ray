@@ -388,6 +388,64 @@ test("tools: root configs are listed by name; the same names in a subfolder are 
   ]);
 });
 
+test("tools: the architecture tools are found by config name or by the manifest that names them (positive controls next to each)", async (t) => {
+  const fixture = freshFixture(t, {
+    files: {
+      ".importlinter": "[importlinter]\nroot_package = app\n",
+      "pyproject.toml": '[project]\nname = "app"\n\n[tool.importlinter]\nroot_package = "app"\n',
+      "setup.cfg": "[metadata]\nname = app\n\n[importlinter]\nroot_package = app\n",
+      "pom.xml": "<project><dependencies><dependency><groupId>com.tngtech.archunit</groupId></dependency></dependencies></project>\n",
+      "build.gradle.kts": 'dependencies { testImplementation("com.tngtech.archunit:archunit-junit5:1.3.0") }\n',
+      "package.json": packageJson({ devDependencies: { "eslint-plugin-boundaries": "^4.0.0", eslint: "^9.0.0" } }),
+      // Not found: a manifest in a subfolder, and manifests that name no architecture tool.
+      "services/api/pom.xml": "<project><groupId>com.tngtech.archunit</groupId></project>\n",
+      "tools/build.gradle": 'dependencies { testImplementation "com.tngtech.archunit:archunit:1.3.0" }\n',
+    },
+  });
+  const result = await verificationScan(fixture);
+  assert.deepEqual(result.structure.enforcementTools, [
+    { tool: "archunit", path: "build.gradle.kts" },
+    { tool: "archunit", path: "pom.xml" },
+    { tool: "eslint-plugin-boundaries", path: "package.json" },
+    { tool: "import-linter", path: ".importlinter" },
+    { tool: "import-linter", path: "pyproject.toml" },
+    { tool: "import-linter", path: "setup.cfg" },
+  ]);
+
+  const plain = freshFixture(t, {
+    files: {
+      "pyproject.toml": '[project]\nname = "app"\n\n[tool.ruff]\nline-length = 100\n',
+      "build.gradle": 'dependencies { testImplementation "org.junit.jupiter:junit-jupiter:5.10.0" }\n',
+      "package.json": packageJson({ scripts: { lint: "eslint-plugin-boundaries is not a dependency here" } }),
+    },
+  });
+  assert.deepEqual((await verificationScan(plain)).structure.enforcementTools, []);
+
+  // The other manifest forms: dependencies (not only devDependencies), a root build.gradle, and a marker in a comment, which
+  // counts too (the scan matches text; the rule asks the reviewer to open the config).
+  const others = freshFixture(t, {
+    files: {
+      "package.json": packageJson({ dependencies: { "eslint-plugin-boundaries": "^4.0.0" } }),
+      "build.gradle": 'dependencies { testImplementation "com.tngtech.archunit:archunit:1.3.0" }\n',
+      "pyproject.toml": "# [tool.importlinter] is planned\n[project]\nname = 'app'\n",
+    },
+  });
+  assert.deepEqual((await verificationScan(others)).structure.enforcementTools, [
+    { tool: "archunit", path: "build.gradle" },
+    { tool: "eslint-plugin-boundaries", path: "package.json" },
+    { tool: "import-linter", path: "pyproject.toml" },
+  ]);
+  const schema = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "schemas", "measurements.schema.json"), "utf8"));
+  const tools = schema.properties.structure.properties.enforcementTools.items.properties.tool.enum;
+  for (const tool of ["archunit", "eslint-plugin-boundaries", "import-linter"]) assert.ok(tools.includes(tool), tool);
+
+  // A package.json that cannot be parsed names nothing, and adds no warning.
+  const broken = freshFixture(t, { files: { "package.json": "{ not json" } });
+  const brokenResult = await verificationScan(broken);
+  assert.deepEqual(brokenResult.structure.enforcementTools, []);
+  assert.deepEqual(brokenResult.warnings.filter((item) => item.source !== "git"), []);
+});
+
 test("a lockfile's content never reaches the output, and a package.json that cannot be parsed gives no commands and no warning", async (t) => {
   const lockfile = freshFixture(t, {
     files: {

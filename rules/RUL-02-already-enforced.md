@@ -15,6 +15,13 @@ status: draft
 
 Instruction lines that restate a check a tool already runs on the repository: a formatter's style choice, a linter's rule, an import-order or layering rule, a type check, or a secret scanner. The memory file repeats the tool's rule as text, so the agent gets the same rule twice, once as a sentence and once as a tool. The line can sit in `CLAUDE.md`, `AGENTS.md` or the root instruction file of another agent, such as `.cursorrules`.
 
+Boundaries:
+
+- RUL-02 is a rule written as text that a tool already enforces.
+- STR-03 is its inverse: a dependency rule between layers or folders that no tool enforces, although a known tool could.
+- SEC-05 covers security rules that no control backs; a security rule that a tool enforces is RUL-02, and a security rule is never STR-03.
+- One line can hold both cases. In a layer table, the parts that a dependency checker enforces are RUL-02, and the parts that it does not are STR-03.
+
 ## Why it matters
 
 Claude Code's memory documentation says that CLAUDE.md content is context, not enforced configuration, and that there is no guarantee of strict compliance. A tool that runs on every edit is a control. A sentence is a request. When the same rule exists as both, the sentence costs tokens in every session and adds nothing the tool does not already check.
@@ -50,7 +57,7 @@ If the agent cannot reach the tool during its work, keep the line until a hook o
 - The tool is not configured for the path the line talks about, for example a linter ignoring `scripts/`, and the line talks about `scripts/`.
 - The line explains why a rule exists or when an exception applies. A tool can check the rule, not the reason.
 - The line states a convention the tools do not check, such as a naming pattern for event handlers. Nothing enforces it, so RUL-01 or a control recommendation applies, not this rule.
-- A layering rule written as text when no dependency or import check exists. Keep the text; a tool would be a separate recommendation.
+- A layering rule written as text when no dependency or import check enforces it. Keep the text; STR-03 judges whether a tool could enforce it.
 
 ## Examples
 
@@ -102,7 +109,7 @@ Good, in `CLAUDE.md`, with no dependency-rule or lint configuration for layers:
 - Business logic lives in `src/domain/`. Do not import from `src/ui/` into it.
 ```
 
-Nothing in the repository enforces the layering, so the line is the only control. Keep it.
+Nothing in the repository enforces the layering, so the line is the only control. Keep it. STR-03 applies instead: dependency-cruiser or eslint-plugin-boundaries could enforce it.
 
 ### Does not apply: the tool does not cover the folder
 
