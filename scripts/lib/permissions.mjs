@@ -113,7 +113,7 @@ export function matchBash(pattern, command, options = {}) {
 // mismatch the last `*` takes one more character, as in the classic iterative wildcard algorithm, so no backtracking
 // happens and the time is O(pattern * text) at worst. Patterns from a scanned settings file are hostile, so this is the
 // only matcher of wildcards here: a regular expression with one `[\s\S]*` per `*` takes exponential time.
-function wildcardMatches(pattern, text, { questionMark = false, caseInsensitive = false } = {}) {
+export function wildcardMatches(pattern, text, { questionMark = false, caseInsensitive = false } = {}) {
   let p = 0;
   let t = 0;
   let star = -1;

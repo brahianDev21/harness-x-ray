@@ -75,7 +75,7 @@ Agent Atlas is the author's own knowledge base, so it cannot be the only proof o
 
 ## sources.json
 
-`rules/sources.json` is the only place with source titles, URLs and access dates. Rules cite source ids.
+`rules/sources.json` is the only place with source titles, URLs and access dates. Rules cite source ids. `data/agent-harness.json` also cites sources by id, and only sources of type `official-docs`.
 
 ```json
 {
