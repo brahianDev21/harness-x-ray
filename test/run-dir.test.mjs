@@ -222,3 +222,45 @@ test("checkRunFile refuses a hard link to a file outside, and that file is left 
   fs.writeFileSync(path.join(dir, "plain.md"), "plain\n");
   assert.doesNotThrow(() => checkRunFile(path.join(dir, "plain.md")));
 });
+
+test("checkRunFile with harnessRoot refuses a file outside the allowed places, and the temp folder when allowTemp is false", () => {
+  const dir = path.join(runs, "location");
+  fs.mkdirSync(dir);
+  const inRuns = path.join(dir, "a.md");
+  fs.writeFileSync(inRuns, "a\n");
+  const outsideFile = path.join(outside, "b.md");
+  fs.writeFileSync(outsideFile, "b\n");
+  const tempFile = path.join(tempRoot, "c.md");
+  fs.writeFileSync(tempFile, "c\n");
+  const harnessFile = path.join(harness, "d.md");
+  fs.writeFileSync(harnessFile, "d\n");
+  const refused = { name: "UsageError", message: /file must be inside runs\/: / };
+  const onlyRuns = { harnessRoot: harness, tempRoot, allowTemp: false };
+
+  assert.throws(() => checkRunFile(outsideFile, onlyRuns), refused);
+  assert.throws(() => checkRunFile(tempFile, onlyRuns), refused);
+  assert.throws(() => checkRunFile(harnessFile, onlyRuns), refused);
+  assert.throws(() => checkRunFile(path.join(outside, "missing.md"), onlyRuns), refused, "a missing file outside is refused too");
+
+  // Positive controls: a file inside runs/ is accepted, the temp folder is accepted when allowTemp is true,
+  // and without harnessRoot no location is checked, as before the option existed.
+  assert.doesNotThrow(() => checkRunFile(inRuns, onlyRuns));
+  assert.doesNotThrow(() => checkRunFile(tempFile, { harnessRoot: harness, tempRoot }));
+  assert.doesNotThrow(() => checkRunFile(outsideFile));
+  assert.equal(fs.readFileSync(outsideFile, "utf8"), "b\n", "the refused file is left alone");
+});
+
+test("checkRunFile with harnessRoot refuses a link inside runs/ that points outside, and keeps the link check", { skip: symlinkSkip }, () => {
+  const dir = path.join(runs, "location-links");
+  fs.mkdirSync(dir);
+  const target = path.join(outside, "keep-linked.md");
+  fs.writeFileSync(target, "keep\n");
+  fs.symlinkSync(target, path.join(dir, "link.md"), "file");
+  const onlyRuns = { harnessRoot: harness, tempRoot, allowTemp: false };
+  assert.throws(() => checkRunFile(path.join(dir, "link.md"), onlyRuns), { name: "UsageError", message: /file must be inside runs\// });
+  assert.equal(fs.readFileSync(target, "utf8"), "keep\n");
+
+  // Positive control: a regular file inside runs/ next to the link is accepted.
+  fs.writeFileSync(path.join(dir, "plain.md"), "plain\n");
+  assert.doesNotThrow(() => checkRunFile(path.join(dir, "plain.md"), onlyRuns));
+});
