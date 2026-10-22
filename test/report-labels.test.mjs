@@ -96,10 +96,16 @@ describe("label use", () => {
     }
     // The keys of the intake page (intake.*) are rendered by scripts/lib/intake-page.mjs, which its own test checks. The keys
     // of the HTML view (html.*) are read by scripts/lib/report-html.mjs, which test/report-html.test.mjs checks. The keys of the
-    // comparison (compare.*) are read by scripts/lib/comparison-view.mjs, which test/comparison-view.test.mjs checks.
+    // comparison (compare.*) are read by scripts/lib/comparison-view.mjs, which test/comparison-view.test.mjs checks. The keys of
+    // the remediation section (remediation.*) are read by scripts/lib/remediation-view.mjs, which test/remediation-view.test.mjs
+    // checks over a remediation that holds every code.
     const unused = Object.keys(labelsEn).filter(
       (key) =>
-        !key.startsWith("intake.") && !key.startsWith("html.") && !key.startsWith("compare.") && !used.has(key),
+        !key.startsWith("intake.") &&
+        !key.startsWith("html.") &&
+        !key.startsWith("compare.") &&
+        !key.startsWith("remediation.") &&
+        !used.has(key),
     );
     assert.deepEqual(unused, [], "label keys that no scenario renders");
   });

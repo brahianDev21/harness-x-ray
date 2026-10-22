@@ -39,6 +39,9 @@ const IGNORED_MODES = new Set(["auto", "bypassPermissions"]);
 // dontAsk is left out: no note names what it approves. plan is left out too: that its outcome depends on the session
 // is a repo choice, not note content. The matrix does not simulate hooks.
 export const MATRIX_MODES = Object.freeze(["default", "acceptEdits", "auto", "bypassPermissions"]);
+// The modes whose outcomes are NOT VERIFIED against the documentation (see evaluateInSessionMode). The remediation marks each
+// result in them as not verified.
+export const UNVERIFIED_MODES = Object.freeze(["auto", "bypassPermissions"]);
 const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
 const KIND_OF_TOOL = new Map([
   ["Bash", "bash"],

@@ -13,12 +13,17 @@
 //
 // The two cmd commands of the data run as the PowerShell tool runs "cmd /c ...", the form that the docs show for them.
 // Their shell is "cmd" and their tool is "PowerShell".
+//
+// Each entry has coverRule: a Bash or PowerShell rule that covers the command and the same prefix followed by any arguments.
+// It does not cover a reordered or respelled form of the command. An entry may have coverNote, a short text that says what else
+// the rule covers (for example every curl, not only a pipe into a shell). Both are read by scripts/lib/remediation.mjs, which
+// turns them into a fragment, and neither is written to the measurements: commandResult leaves them out.
 
 import fs from "node:fs";
 import { loadClaudeConfig } from "./claude-config.mjs";
 import { UNDETERMINABLE, coveredTools, hookRunState } from "./hook-matcher.mjs";
 import { isPlainObject } from "./json-out.mjs";
-import { MATRIX_MODES, decisionRules, evaluate, evaluateInSessionMode } from "./permissions.mjs";
+import { MATRIX_MODES, decisionRules, evaluate, evaluateInSessionMode, matchBash, parseRule } from "./permissions.mjs";
 
 export { hookFilterState } from "./hook-matcher.mjs";
 
@@ -29,8 +34,21 @@ const DATA_URL = new URL("../../data/destructive-commands.json", import.meta.url
 const SHELL_TOOLS = ["Bash", "PowerShell"];
 const SHELLS = new Set(["bash", "powershell", "cmd"]);
 const KEBAB_CASE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const REQUIRED_FIELDS = ["id", "shell", "tool", "command", "category", "insideProject", "criticalPath", "builtInProtection"];
-const OPTIONAL_FIELDS = ["parts"];
+const REQUIRED_FIELDS = [
+  "id",
+  "shell",
+  "tool",
+  "command",
+  "coverRule",
+  "category",
+  "insideProject",
+  "criticalPath",
+  "builtInProtection",
+];
+// The fields that remediation.mjs reads and that the measurements never carry.
+const REMEDIATION_FIELDS = ["coverRule", "coverNote"];
+const OPTIONAL_FIELDS = ["parts", "coverNote"];
+const COVER_NOTE_MAX = 300;
 // The effect of a project defaultMode that the project file applies (see claude-config).
 const APPLIED_EFFECT = "applies";
 // Main-conversation modes that a subagent runs in, whatever its own permissionMode says (docs: sub-agents).
@@ -114,11 +132,31 @@ function validateEntry(entry, where) {
       throw new Error(`${where}: parts must be two or more non-blank commands`);
     }
   }
+  validateCoverRule(entry, where);
+  if (!isNonBlank(entry.coverRule)) throw new Error(`${where}: coverRule must be a non-blank string`);
+  if (Object.hasOwn(entry, "coverNote") && (!isNonBlank(entry.coverNote) || entry.coverNote.length > COVER_NOTE_MAX)) {
+    throw new Error(`${where}: coverNote must be a non-blank string of at most ${COVER_NOTE_MAX} characters`);
+  }
   if (!isKebab(entry.category)) throw new Error(`${where}: category must be kebab-case`);
   if (typeof entry.insideProject !== "boolean") throw new Error(`${where}: insideProject must be a boolean`);
   if (typeof entry.criticalPath !== "boolean") throw new Error(`${where}: criticalPath must be a boolean`);
   if (entry.builtInProtection !== null && !isKebab(entry.builtInProtection)) {
     throw new Error(`${where}: builtInProtection must be null or kebab-case`);
+  }
+}
+
+// The rule must parse as a Bash or PowerShell rule of the command's tool, with a specifier, and it must match the command: its
+// text, or one of its parts for a compound command. Only a rule that does not parse, or that names another tool, is refused.
+function validateCoverRule(entry, where) {
+  const rule = parseRule(entry.coverRule);
+  if (!rule.ok || rule.skipped === true || rule.specifier === null) {
+    throw new Error(`${where}: coverRule must be a Bash or PowerShell rule with a specifier`);
+  }
+  if (rule.tool !== entry.tool) throw new Error(`${where}: coverRule must name the tool "${entry.tool}"`);
+  const caseInsensitive = entry.tool === "PowerShell";
+  const subjects = Object.hasOwn(entry, "parts") ? entry.parts : [entry.command];
+  if (!subjects.some((text) => matchBash(rule.specifier, text, { caseInsensitive }))) {
+    throw new Error(`${where}: coverRule does not match the command`);
   }
 }
 
@@ -171,7 +209,7 @@ function commandResult(command, rules, mode, hooks, deep) {
   const call = callOf(command);
   const verdict = evaluate(rules, call, { mode, insideProject: command.insideProject, criticalPath: command.criticalPath });
   return {
-    ...command,
+    ...measuredFields(command),
     outcome: verdict.outcome,
     decidedBy: verdict.decidedBy,
     reason: verdict.reason,
@@ -197,6 +235,11 @@ function modeOutcomes(command, rules, location = command) {
 // permissions.mjs (MATRIX_MODES).
 function locationOutcomes(command, rules) {
   return Object.fromEntries(Object.entries(LOCATIONS).map(([name, flags]) => [name, modeOutcomes(command, rules, flags)]));
+}
+
+// The fields of a command that the measurements write: every field of the data entry but the remediation ones.
+function measuredFields(command) {
+  return Object.fromEntries(Object.entries(command).filter(([key]) => !REMEDIATION_FIELDS.includes(key)));
 }
 
 // The call that permissions.mjs simulates. parts is given only for a compound command.

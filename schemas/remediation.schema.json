@@ -1,0 +1,342 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Harness X-Ray remediation",
+  "description": "The output of scripts/remediate.mjs: remediation.json, written in a run folder next to measurements.json. It holds the fragments of settings that a person copies by hand after review, and the simulation of the harness with every simulated fragment applied (permissions.mjs). Nothing is applied to the target. The texts of an agent are redacted and capped. No secret value is ever written: a literal secret is listed by file and line only. Each list holds at most 200 items; the items left out are counted in omitted.",
+  "type": "object",
+  "required": ["schemaVersion", "scan", "mode", "fragments", "commands", "reads", "notSimulated", "omitted", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "scan": {
+      "type": "object",
+      "description": "The scan that this remediation was made from. render-report.mjs refuses a remediation whose scannedAt is not the scan's.",
+      "required": ["scannedAt", "target"],
+      "additionalProperties": false,
+      "properties": {
+        "scannedAt": {
+          "type": "string",
+          "description": "meta.scannedAt of measurements.json."
+        },
+        "target": {
+          "type": "string",
+          "description": "target.name of measurements.json: the folder name of the target, redacted."
+        }
+      }
+    },
+    "mode": {
+      "type": ["string", "null"],
+      "description": "The project defaultMode value that the simulation used (the value the scan recorded), or null when the project sets none."
+    },
+    "fragments": {
+      "type": "array",
+      "description": "The fragments the file keeps, in order: measured ones first, then the agent's. The simulation applies only the simulated ones among them.",
+      "maxItems": 200,
+      "items": {
+        "$ref": "#/$defs/fragment"
+      }
+    },
+    "commands": {
+      "type": "array",
+      "description": "One row per destructive command that the scan measured, in the order of the scan.",
+      "maxItems": 200,
+      "items": {
+        "$ref": "#/$defs/commandRow"
+      }
+    },
+    "reads": {
+      "type": "array",
+      "description": "One row per secret file that the scan lists, and one for the dotenv file at the root when the scan decides it and no listed file has its path. Sorted by path, with that root row last.",
+      "maxItems": 200,
+      "items": {
+        "$ref": "#/$defs/readRow"
+      }
+    },
+    "notSimulated": {
+      "type": "array",
+      "description": "Literal secrets found in the harness. They are listed by file and line only, never with their value.",
+      "maxItems": 200,
+      "items": {
+        "$ref": "#/$defs/literal"
+      }
+    },
+    "omitted": {
+      "type": "object",
+      "description": "How many items were left out of each list, because a list holds at most cap items. Zero when nothing was left out.",
+      "required": ["cap", "fragments", "commands", "reads", "notSimulated"],
+      "additionalProperties": false,
+      "properties": {
+        "cap": { "const": 200 },
+        "fragments": { "$ref": "#/$defs/count" },
+        "commands": { "$ref": "#/$defs/count" },
+        "reads": { "$ref": "#/$defs/count" },
+        "notSimulated": { "$ref": "#/$defs/count" }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "description": "Counts of the rows and fragments in this file, that is the items kept (omitted counts the items left out). They are derived from the lists above.",
+      "required": [
+        "fragments",
+        "measuredFragments",
+        "agentFragments",
+        "simulatedFragments",
+        "notSimulatedFragments",
+        "commandsPassingToday",
+        "commandsMoved",
+        "commandsStillPassing",
+        "commandsNotSimulated",
+        "readsMoved",
+        "readsNotSimulated",
+        "notSimulatedItems"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "fragments": { "$ref": "#/$defs/count" },
+        "measuredFragments": { "$ref": "#/$defs/count" },
+        "agentFragments": { "$ref": "#/$defs/count" },
+        "simulatedFragments": { "$ref": "#/$defs/count" },
+        "notSimulatedFragments": { "$ref": "#/$defs/count" },
+        "commandsPassingToday": { "$ref": "#/$defs/count" },
+        "commandsMoved": { "$ref": "#/$defs/count" },
+        "commandsStillPassing": { "$ref": "#/$defs/count" },
+        "commandsNotSimulated": { "$ref": "#/$defs/count" },
+        "readsMoved": { "$ref": "#/$defs/count" },
+        "readsNotSimulated": { "$ref": "#/$defs/count" },
+        "notSimulatedItems": { "$ref": "#/$defs/count" }
+      }
+    }
+  },
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "outcome": {
+      "enum": ["blocked", "asks", "passes", "classifier", "undeterminable"],
+      "description": "The outcome of a command: blocked by a deny rule, asks, passes, classifier (auto mode, decided by a model), or undeterminable."
+    },
+    "decision": {
+      "enum": ["deny", "ask", "allow", "default", "undeterminable"],
+      "description": "The decision of a Read of a path: deny blocks it; ask prompts; allow and default let it through."
+    },
+    "reason": {
+      "type": ["string", "null"],
+      "enum": [
+        "simulation-mismatch",
+        "unsupported-path",
+        "not-permission",
+        "not-modelled-rule",
+        "undecidable-rule",
+        "no-rule",
+        "no-matrix",
+        "not-in-data",
+        "literal-secret",
+        null
+      ],
+      "description": "A fixed code: why a row or a fragment is not simulated. Null when it is simulated. undecidable-rule: a rule that permissions.mjs cannot decide for every path or command. no-rule: a fragment with no deny or ask rule."
+    },
+    "ruleList": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300
+      }
+    },
+    "permissionSettings": {
+      "type": "object",
+      "description": "The settings to copy by hand: a permissions object with its two lists. Either list may be empty.",
+      "required": ["permissions"],
+      "additionalProperties": false,
+      "properties": {
+        "permissions": {
+          "type": "object",
+          "required": ["deny", "ask"],
+          "additionalProperties": false,
+          "properties": {
+            "deny": { "$ref": "#/$defs/ruleList" },
+            "ask": { "$ref": "#/$defs/ruleList" }
+          }
+        }
+      }
+    },
+    "fragment": {
+      "type": "object",
+      "required": ["id", "origin", "rule", "measuredFindingId", "kind", "settings", "title", "text", "coverNote", "targets", "simulated", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^fr-[1-9][0-9]*$"
+        },
+        "origin": {
+          "enum": ["measured", "agent"],
+          "description": "measured: built from the findings of the scan. agent: from agent-fragments.json, after its checks."
+        },
+        "rule": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}-[0-9]{2}$",
+          "description": "The rule that the fragment addresses: SEC-01, SEC-02 or SEC-03 for a measured fragment, and a judgment rule of the catalog for an agent's."
+        },
+        "measuredFindingId": {
+          "type": ["string", "null"],
+          "pattern": "^mf-[1-9][0-9]*$",
+          "description": "The id of the measured finding of the same rule in measurements.json, or null."
+        },
+        "kind": {
+          "enum": ["permissions", "other"],
+          "description": "permissions: settings is set. other: a hook or a text change, which has no settings and is not simulated."
+        },
+        "settings": {
+          "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/permissionSettings" }]
+        },
+        "title": {
+          "type": ["string", "null"],
+          "maxLength": 120,
+          "description": "The title of an agent's fragment, redacted. Null for a measured fragment, whose title is a label."
+        },
+        "text": {
+          "type": ["string", "null"],
+          "maxLength": 1000,
+          "description": "The text of an agent's fragment, redacted. Null for a measured fragment, whose text is a label."
+        },
+        "coverNote": {
+          "type": ["string", "null"],
+          "maxLength": 1000,
+          "description": "For a measured fragment whose rule covers more than its command, what else it covers, from data/destructive-commands.json (coverNote). Null otherwise."
+        },
+        "targets": {
+          "type": "array",
+          "maxItems": 200,
+          "description": "What a measured fragment was built for: destructive commands by id, or secret reads by path. Empty for an agent's fragment, whose effect shows in the rows.",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": ["kind", "id"],
+                "additionalProperties": false,
+                "properties": {
+                  "kind": { "const": "command" },
+                  "id": { "type": "string" }
+                }
+              },
+              {
+                "type": "object",
+                "required": ["kind", "path"],
+                "additionalProperties": false,
+                "properties": {
+                  "kind": { "const": "read" },
+                  "path": { "type": "string" }
+                }
+              }
+            ]
+          }
+        },
+        "simulated": {
+          "type": "boolean",
+          "description": "True when the rules of the fragment are in the simulation of the patch, which is every simulated fragment together."
+        },
+        "reason": { "$ref": "#/$defs/reason" }
+      }
+    },
+    "outcomeModes": {
+      "type": "object",
+      "required": ["default", "acceptEdits", "auto", "bypassPermissions"],
+      "additionalProperties": false,
+      "properties": {
+        "default": { "$ref": "#/$defs/outcome" },
+        "acceptEdits": { "$ref": "#/$defs/outcome" },
+        "auto": { "$ref": "#/$defs/outcome" },
+        "bypassPermissions": { "$ref": "#/$defs/outcome" }
+      }
+    },
+    "commandRow": {
+      "type": "object",
+      "required": ["id", "command", "measured", "after", "result", "notVerified", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "command": { "type": "string", "description": "The command of the data file, as the scan measured it." },
+        "measured": {
+          "type": "object",
+          "description": "The outcome that the scan recorded, and its matrix (null when the scan has none).",
+          "required": ["outcome", "modes"],
+          "additionalProperties": false,
+          "properties": {
+            "outcome": { "$ref": "#/$defs/outcome" },
+            "modes": {
+              "type": ["object", "null"],
+              "additionalProperties": false,
+              "properties": {
+                "default": { "$ref": "#/$defs/outcome" },
+                "acceptEdits": { "$ref": "#/$defs/outcome" },
+                "auto": { "$ref": "#/$defs/outcome" },
+                "bypassPermissions": { "$ref": "#/$defs/outcome" }
+              }
+            }
+          }
+        },
+        "after": {
+          "type": ["object", "null"],
+          "description": "The simulated outcome after the patch, or null when the row is not simulated.",
+          "required": ["outcome", "modes"],
+          "additionalProperties": false,
+          "properties": {
+            "outcome": { "$ref": "#/$defs/outcome" },
+            "modes": { "$ref": "#/$defs/outcomeModes" }
+          }
+        },
+        "result": {
+          "enum": ["moved", "classifier", "still-passes", "unchanged", "undeterminable", "not-simulated"],
+          "description": "moved: it passed before the patch and no mode passes it after. classifier: no mode passes it after, and auto mode would leave the decision to a model, so it is not a move. still-passes: a mode passes it after the patch too. undeterminable: the patch leaves it undeterminable. unchanged: it did not pass before the patch. not-simulated: the simulation could not match the measured value, or the command is not in the data file."
+        },
+        "notVerified": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 4,
+          "description": "The modes whose outcomes in this row are not verified against the documentation: auto and bypassPermissions when the scan has a matrix for the command, none otherwise.",
+          "items": { "enum": ["default", "acceptEdits", "auto", "bypassPermissions"] }
+        },
+        "reason": { "$ref": "#/$defs/reason" }
+      }
+    },
+    "readRow": {
+      "type": "object",
+      "required": ["path", "measured", "after", "result", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string" },
+        "measured": { "$ref": "#/$defs/decision" },
+        "after": {
+          "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/decision" }],
+          "description": "The decision of a Read of the path after the patch, or null when the row is not simulated."
+        },
+        "result": {
+          "enum": ["moved", "unchanged", "undeterminable", "still-readable", "not-simulated"]
+        },
+        "reason": { "$ref": "#/$defs/reason" }
+      }
+    },
+    "literal": {
+      "type": "object",
+      "required": ["rule", "kind", "file", "line", "location", "secretKind", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "rule": { "const": "SEC-03" },
+        "kind": { "const": "literal-secret" },
+        "file": { "type": "string" },
+        "line": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "1-based. Null when the value does not appear in the file as written."
+        },
+        "location": { "type": "string" },
+        "secretKind": { "type": "string", "description": "The id of the secret pattern that matched. Never the value." },
+        "reason": { "const": "literal-secret" }
+      }
+    }
+  }
+}

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
+import { promisify } from "node:util";
 import { writeStableJson } from "../scripts/lib/json-out.mjs";
 import { MARKERS, buildReportModel, fillTemplate, missingField, renderMarkdown, renderReport } from "../scripts/lib/report.mjs";
 import { readCatalog } from "../scripts/lib/report-catalog.mjs";
@@ -19,9 +21,11 @@ import {
   runRender,
 } from "./helpers/report-run.mjs";
 import { symlinkSupport } from "./helpers/make-fixture.mjs";
+import { REMEDIATION_MAX_BYTES } from "../scripts/lib/remediation.mjs";
 
 const REPORT = "report.md";
 const HTML = "report.html";
+const execFileAsync = promisify(execFile);
 const support = symlinkSupport();
 const symlinkSkip = support.supported ? false : support.reason;
 
@@ -815,7 +819,10 @@ describe("warnings and errors", () => {
 describe("the renderer function", () => {
   test("a template with an unknown, a missing or a repeated marker is an error", () => {
     const sections = Object.fromEntries(
-      ["header", "summary", "findings", "context", "function2", "limits", "sources", "appendix"].map((name) => [name, name]),
+      ["header", "summary", "findings", "context", "function2", "limits", "remediation", "sources", "appendix"].map((name) => [
+        name,
+        name,
+      ]),
     );
     const complete = Object.keys(sections).map((name) => `{{${name}}}`).join("\n");
     assert.equal(fillTemplate(complete, sections), `${Object.keys(sections).join("\n")}`);
@@ -825,13 +832,13 @@ describe("the renderer function", () => {
   });
 
   test("a section text is not read again as a marker", () => {
-    const names = ["header", "summary", "findings", "context", "function2", "limits", "sources", "appendix"];
+    const names = ["header", "summary", "findings", "context", "function2", "limits", "remediation", "sources", "appendix"];
     const sections = Object.fromEntries(names.map((name) => [name, ""]));
     sections.header = "{{summary}}";
     sections.summary = "x";
     const template = names.map((name) => `{{${name}}}`).join("\n");
-    // header and summary, then six empty sections, one per line break.
-    assert.equal(fillTemplate(template, sections), `{{summary}}\nx${"\n".repeat(6)}`);
+    // header and summary, then seven empty sections, one per line break.
+    assert.equal(fillTemplate(template, sections), `{{summary}}\nx${"\n".repeat(7)}`);
   });
 
   test("missingField names the first field the report needs", () => {
@@ -1242,5 +1249,144 @@ describe("report model", () => {
     });
     assert.deepEqual(result.model, goldenModel());
     assert.equal(result.markdown, renderMarkdown(result.model, template));
+  });
+});
+
+// The remediation section: remediate.mjs writes remediation.json into the run folder, and render-report.mjs puts its section in
+// both reports. Each run is a temp copy of the permissive fixture, scanned by makeRun, with a findings file of no finding.
+describe("the remediation section", () => {
+  const REMEDIATE = path.join(HARNESS_ROOT, "scripts", "remediate.mjs");
+  const LABELS_EN = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "templates", "labels.en.json"), "utf8"));
+  const LABELS_ES = JSON.parse(fs.readFileSync(path.join(HARNESS_ROOT, "templates", "labels.es.json"), "utf8"));
+
+  // A run folder with the findings file, and remediation.json written by the command (or by the caller's edit of it).
+  async function remediatedRun(language = "en") {
+    const made = await makeRun();
+    fs.writeFileSync(path.join(made.runDir, "findings.json"), `${JSON.stringify({ findings: [], language })}\n`);
+    await execFileAsync(process.execPath, [REMEDIATE, made.runDir], { encoding: "utf8", windowsHide: true, timeout: 120_000 });
+    return made;
+  }
+
+  test("with a remediation.json, both reports get the section after the limits and before the sources", async (t) => {
+    const made = await remediatedRun();
+    t.after(made.cleanup);
+    const result = await runRender([made.runDir]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /^remediation: included from /m);
+    const markdown = fs.readFileSync(path.join(made.runDir, REPORT), "utf8");
+    const heading = `## ${LABELS_EN["remediation.title"]}`;
+    const limits = markdown.indexOf(`## ${LABELS_EN["limits.title"]}`);
+    const section = markdown.indexOf(heading);
+    const sources = markdown.indexOf(`## ${LABELS_EN["sources.title"]}`);
+    assert.ok(limits !== -1 && limits < section && section < sources, "the section is between the limits and the sources");
+    assert.ok(markdown.includes("Nothing here is written to the target"));
+    const html = fs.readFileSync(path.join(made.runDir, HTML), "utf8");
+    assert.ok(html.includes(`<h2>${LABELS_EN["remediation.title"]}</h2>`));
+    assert.ok(html.includes("<pre><code>{"), "the settings are a code block");
+    assert.ok(html.indexOf(LABELS_EN["limits.title"]) < html.indexOf(LABELS_EN["remediation.title"]));
+  });
+
+  test("the section follows the language of findings.json, as the rest of the report does", async (t) => {
+    const made = await remediatedRun("es");
+    t.after(made.cleanup);
+    const result = await runRender([made.runDir]);
+    assert.equal(result.code, 0, result.stderr);
+    const markdown = fs.readFileSync(path.join(made.runDir, REPORT), "utf8");
+    assert.ok(markdown.includes(`## ${LABELS_ES["remediation.title"]}`));
+    assert.ok(!markdown.includes(`## ${LABELS_EN["remediation.title"]}`), "no English heading in the Spanish report");
+  });
+
+  test("a remediation.json of another scan is refused, and nothing is written", async (t) => {
+    const made = await remediatedRun();
+    t.after(made.cleanup);
+    const file = path.join(made.runDir, "remediation.json");
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    data.scan.scannedAt = "2001-01-01T00:00:00.000Z";
+    fs.writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`);
+    const result = await runRender([made.runDir]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /was made from another scan/);
+    assert.ok(!fs.existsSync(path.join(made.runDir, REPORT)), "no report is written");
+    assert.ok(!fs.existsSync(path.join(made.runDir, HTML)));
+  });
+
+  test("a remediation.json that does not match its schema is refused, and nothing is written", async (t) => {
+    const made = await remediatedRun();
+    t.after(made.cleanup);
+    fs.writeFileSync(path.join(made.runDir, "remediation.json"), `${JSON.stringify({ schemaVersion: 2 })}\n`);
+    const result = await runRender([made.runDir]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /remediation\.json does not match its schema/);
+    assert.ok(!fs.existsSync(path.join(made.runDir, REPORT)));
+  });
+
+  test("a remediation.json that is a hard link is refused, and nothing is written", async (t) => {
+    const made = await remediatedRun();
+    t.after(made.cleanup);
+    fs.linkSync(path.join(made.runDir, "remediation.json"), path.join(made.fixture.base, "second.json"));
+    const result = await runRender([made.runDir]);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /more than one hard link/);
+    assert.ok(!fs.existsSync(path.join(made.runDir, REPORT)));
+  });
+
+  test("without a remediation.json, the reports are the same bytes as the golden reports, which were written before the section existed", async () => {
+    const dir = makeCase({ findings: readGoldenFindings("findings.en.json") });
+    const result = await runRender([dir]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /remediation/);
+    assert.equal(reportOf(dir), readGolden("report.en.md"));
+    assert.equal(htmlOf(dir), readGolden("report.en.html"));
+    assert.ok(!reportOf(dir).includes(`## ${LABELS_EN["remediation.title"]}`));
+    assert.ok(!reportOf(dir).includes("\n---\n\n\n"), "no empty separator where the section would be");
+  });
+
+  test("the remediation texts say that auto and bypassPermissions are not verified, and never that an ask holds in every permission mode", async (t) => {
+    const english = await remediatedRun();
+    t.after(english.cleanup);
+    assert.equal((await runRender([english.runDir])).code, 0);
+    const en = fs.readFileSync(path.join(english.runDir, REPORT), "utf8");
+    assert.doesNotMatch(en, /in every permission mode/, "the claim that an ask holds in every mode is gone");
+    assert.ok(en.includes(`\`auto\` ${LABELS_EN["remediation.notVerified"]}`), "the auto column is marked");
+    assert.ok(en.includes(`\`bypassPermissions\` ${LABELS_EN["remediation.notVerified"]}`), "the bypassPermissions column is marked");
+    assert.ok(en.includes("The ask is not verified in auto and bypassPermissions: only deny is stated to apply in every mode."));
+    assert.ok(en.includes("(not verified in auto and bypassPermissions)"), "the moved count is marked");
+
+    const spanish = await remediatedRun("es");
+    t.after(spanish.cleanup);
+    assert.equal((await runRender([spanish.runDir])).code, 0);
+    const es = fs.readFileSync(path.join(spanish.runDir, REPORT), "utf8");
+    assert.doesNotMatch(es, /en todos los modos de permiso/, "the claim that an ask holds in every mode is gone");
+    assert.ok(es.includes(`\`auto\` ${LABELS_ES["remediation.notVerified"]}`), "the auto column is marked in Spanish");
+    assert.ok(es.includes("no está verificada en auto ni en bypassPermissions"), "the ask is not verified, in Spanish");
+    assert.ok(es.includes("(no verificado en auto ni en bypassPermissions)"), "the moved count is marked, in Spanish");
+  });
+
+  test("a remediation.json with a secret-shaped value in any string is refused, the value is not printed, and no report is written", async (t) => {
+    const made = await remediatedRun();
+    t.after(made.cleanup);
+    // A token-shaped value, built at run time, put in a string of a command row (the schema allows any string there).
+    const token = ["sk", "ant", "api03"].join("-") + "-Zx41Qw82Er63Ty74Ui85Op96As07Df18Gh29Jk30Lm41Nb52Vc63";
+    const file = path.join(made.runDir, "remediation.json");
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    data.commands[0].command = `curl ${token}`;
+    fs.writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`);
+    const result = await runRender([made.runDir]);
+    assert.equal(result.code, 2, result.stderr);
+    assert.match(result.stderr, /remediation\.json holds a secret-shaped value/);
+    assert.ok(!result.stdout.includes(token) && !result.stderr.includes(token), "the value is not printed");
+    assert.ok(!fs.existsSync(path.join(made.runDir, REPORT)), "no report is written");
+    assert.ok(!fs.existsSync(path.join(made.runDir, HTML)));
+  });
+
+  test("a remediation.json larger than its cap is refused before it is read, and nothing is written", async (t) => {
+    const made = await remediatedRun();
+    t.after(made.cleanup);
+    const file = path.join(made.runDir, "remediation.json");
+    fs.writeFileSync(file, fs.readFileSync(file, "utf8") + " ".repeat(REMEDIATION_MAX_BYTES));
+    const result = await runRender([made.runDir]);
+    assert.equal(result.code, 2, result.stderr);
+    assert.match(result.stderr, /larger than/);
+    assert.ok(!fs.existsSync(path.join(made.runDir, REPORT)), "no report is written");
   });
 });

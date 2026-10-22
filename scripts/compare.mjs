@@ -23,7 +23,6 @@
 //
 // main(argv) is exported for the tests. The command runs only when this file is the entry point, so importing it starts nothing.
 
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,6 +34,7 @@ import { loadRules } from "./lib/findings-validate.mjs";
 import { toStableJson } from "./lib/json-out.mjs";
 import { loadLabels } from "./lib/report-labels.mjs";
 import { checkRunDir, checkRunFile } from "./lib/run-dir.mjs";
+import { readRunJson, writeRunFiles } from "./lib/run-io.mjs";
 import { UsageError } from "./lib/target.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
@@ -79,7 +79,7 @@ export async function main(argv) {
       },
     ];
     for (const output of outputs) checkRunFile(path.join(b.dir, output.name), { harnessRoot: HARNESS_ROOT });
-    writeAll(b.dir, outputs);
+    writeRunFiles(b.dir, outputs);
 
     for (const output of outputs) console.log(`${output.label}: ${path.join(b.dir, output.name)}`);
     const { counts } = comparison;
@@ -130,91 +130,9 @@ function readRun(dir) {
   return {
     dir: real,
     name: path.basename(real),
-    measurements: readInput(path.join(real, "measurements.json")),
-    findings: readInput(path.join(real, "findings.json")),
+    measurements: readRunJson(path.join(real, "measurements.json")),
+    findings: readRunJson(path.join(real, "findings.json")),
   };
-}
-
-// Reads one input file. A link or a hard link is refused before it is opened, as checkRunFile reports it. The file is then
-// opened and checked again on its descriptor (see readOpenedFile). A parser message is not printed, since it may quote part
-// of the file.
-function readInput(file) {
-  checkRunFile(file);
-  const text = readOpenedFile(file);
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new UsageError(`input file is not valid JSON: ${file}`);
-  }
-}
-
-// Opens one input file without following a link (O_NOFOLLOW where the system has it) and reads it through its descriptor, so
-// a change between checkRunFile and the read cannot make it a link or a second name. A missing file, a file that became a
-// link, and a file that is not a regular file with one name are usage errors. A file that exists and cannot be read is a usage
-// error with its path only: the system message (EACCES and the like) is not printed.
-function readOpenedFile(file) {
-  let fd;
-  try {
-    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
-  } catch (error) {
-    if (error?.code === "ENOENT") throw new UsageError(`missing input file: ${file}`);
-    if (error?.code === "ELOOP") throw new UsageError(`refused: the file exists and is not a regular file: ${file}`);
-    throw new UsageError(`cannot read input file: ${file}`);
-  }
-  try {
-    const stats = fs.fstatSync(fd);
-    if (!stats.isFile()) throw new UsageError(`refused: the file exists and is not a regular file: ${file}`);
-    if (stats.nlink !== 1) throw new UsageError(`refused: the file does not have exactly one name: ${file}`);
-    return fs.readFileSync(fd, "utf8");
-  } catch (error) {
-    if (error instanceof UsageError) throw error;
-    throw new UsageError(`cannot read input file: ${file}`);
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-// Writes the three texts into dir, as the header describes: each to a temporary name, then the three renames.
-function writeAll(dir, outputs) {
-  const pending = [];
-  try {
-    for (const { name, text } of outputs) {
-      const temp = path.join(dir, `${name}.${crypto.randomBytes(8).toString("hex")}.tmp`);
-      // openSync with wx throws when the name exists. That file is not ours, so it is not listed for removal.
-      const fd = fs.openSync(temp, "wx");
-      pending.push({ temp, final: path.join(dir, name) });
-      try {
-        fs.writeFileSync(fd, text, "utf8");
-      } finally {
-        fs.closeSync(fd);
-      }
-    }
-  } catch (error) {
-    removeFiles(pending.map((item) => item.temp));
-    throw error;
-  }
-
-  const renamed = new Set();
-  try {
-    for (const item of pending) {
-      fs.renameSync(item.temp, item.final);
-      renamed.add(item.temp);
-    }
-  } catch (error) {
-    removeFiles(pending.map((item) => item.temp).filter((temp) => !renamed.has(temp)));
-    throw error;
-  }
-}
-
-// Removes temporary files that this run created. A file that cannot be removed does not hide the error that is reported.
-function removeFiles(files) {
-  for (const file of files) {
-    try {
-      fs.rmSync(file, { force: true });
-    } catch {
-      // The first error is the one reported.
-    }
-  }
 }
 
 function readText(...parts) {
