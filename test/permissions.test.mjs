@@ -560,11 +560,89 @@ test("matchPathGlob: a pattern this matcher cannot read is unsupported, and a su
   assert.equal(matchPathGlob(42, "a.md"), "unsupported", "a non-string pattern is unsupported");
 });
 
-test("matchPathGlob: more than three runs of * is unsupported, and three runs still match on a deep path", () => {
+test("matchPathGlob: many runs of * are matched, not refused, and a pattern that does not match stays false", () => {
   const deep = `${Array.from({ length: 60 }, () => "a").join("/")}/x`;
   const pairs = (count) => `${Array.from({ length: count }, () => "**/a").join("/")}/x`;
-  assert.equal(matchPathGlob(pairs(10), deep), "unsupported", "ten runs are over the limit");
-  assert.equal(matchPathGlob(pairs(4), deep), "unsupported", "four runs are over the limit");
+  assert.equal(matchPathGlob(pairs(10), deep), true, "ten runs of **/a match a deep path (the old cap called this unsupported)");
+  assert.equal(matchPathGlob(pairs(4), deep), true, "four runs match too");
   assert.equal(matchPathGlob(pairs(3), deep), true, "positive control: three runs still match");
-  assert.equal(matchPathGlob("*a*a*a*a*", "aaaa.md"), "unsupported", "in-segment stars count as runs too");
+  assert.equal(matchPathGlob("*a*a*a*a*", "aaaa.md"), true, "in-segment stars match without a limit");
+  assert.equal(matchPathGlob("*a*a*a*a*b", "aaaa.md"), false, "positive control: the same stars with a b that is missing do not match");
+});
+
+// Hostile patterns, as a settings file of a scanned repository can hold them. The regular expressions that this matcher
+// replaced took seconds on such inputs, so the limit is generous; the matcher takes well under a millisecond.
+const HOSTILE_LIMIT_MS = 2000;
+
+function timed(fn) {
+  const start = performance.now();
+  const result = fn();
+  return { result, ms: performance.now() - start };
+}
+
+test("hostile glob: five runs of * in a Read rule finish quickly through decide and matchPathGlob (positive control: a matching folder is denied)", () => {
+  const folders = Array.from({ length: 40 }, () => "x".repeat(30));
+  const hostile = "Read(**/*x*x*x*x*x*y/**)";
+  const miss = timed(() => decide(rules([hostile]), read(`${folders.join("/")}/notes.md`)));
+  assert.equal(miss.result.decision, "default", "no folder has a y");
+  assert.ok(miss.ms < HOSTILE_LIMIT_MS, `decide took ${miss.ms} ms`);
+  const hit = timed(() => decide(rules([hostile]), read(`${folders.join("/")}/xxxxxy/notes.md`)));
+  assert.equal(hit.result.decision, "deny", "positive control: a folder of five x and a y is denied");
+  assert.ok(hit.ms < HOSTILE_LIMIT_MS, `decide took ${hit.ms} ms`);
+  const glob = timed(() => matchPathGlob("**/*x*x*x*x*x*y/**", `${folders.join("/")}/notes.md`));
+  assert.equal(glob.result, false);
+  assert.ok(glob.ms < HOSTILE_LIMIT_MS, `matchPathGlob took ${glob.ms} ms`);
+  assert.equal(matchPathGlob("**/*x*x*x*x*x*y/**", `${folders.join("/")}/xxxxxy/notes.md`), true, "positive control: the same glob matches");
+});
+
+test("hostile glob: many runs of * in a Bash, tool-name or WebFetch rule finish quickly (positive control: a matching input is matched)", () => {
+  const stars = "*a".repeat(30);
+  const bash = timed(() => matchBash(`${stars}b`, "a".repeat(60)));
+  assert.equal(bash.result, false);
+  assert.ok(bash.ms < HOSTILE_LIMIT_MS, `matchBash took ${bash.ms} ms`);
+  assert.equal(matchBash(`${stars}b`, `${"a".repeat(30)}b`), true, "positive control: a matching command");
+  const tool = timed(() => decide(rules([`${stars}b`]), { tool: `mcp__${"a".repeat(55)}` }));
+  assert.equal(tool.result.decision, "default");
+  assert.ok(tool.ms < HOSTILE_LIMIT_MS, `the tool-name glob took ${tool.ms} ms`);
+  assert.equal(decide(rules([`${stars}b`]), { tool: `mcp__${"a".repeat(30)}b` }).decision, "deny", "positive control: a matching tool name");
+  const web = timed(() => decide(rules([`WebFetch(domain:${stars}b)`]), fetchDomain(`${"a".repeat(60)}.com`)));
+  assert.equal(web.result.decision, "default");
+  assert.ok(web.ms < HOSTILE_LIMIT_MS, `the WebFetch domain took ${web.ms} ms`);
+  assert.equal(decide(rules([`WebFetch(domain:${stars}b)`]), fetchDomain(`${"a".repeat(30)}b`)).decision, "deny", "positive control: a matching domain");
+});
+
+test("hostile slashes: 200,000 slashes before another character, or at the end, of a rule finish quickly (positive control: src/ covers src/a.md)", () => {
+  const slashes = "/".repeat(200000);
+  const inner = timed(() => decide(rules([`Read(a${slashes}x)`]), read("a.md")));
+  assert.equal(inner.result.decision, "undeterminable", "an empty folder makes the pattern unusable");
+  assert.equal(inner.result.reason, "unsupported-pattern");
+  assert.ok(inner.ms < HOSTILE_LIMIT_MS, `decide took ${inner.ms} ms`);
+  const innerGlob = timed(() => matchPathGlob(`a${slashes}x`, "a.md"));
+  assert.equal(innerGlob.result, "unsupported");
+  assert.ok(innerGlob.ms < HOSTILE_LIMIT_MS, `matchPathGlob took ${innerGlob.ms} ms`);
+  const end = timed(() => decide(rules([`Read(src${slashes})`]), read("src/a.md")));
+  assert.equal(end.result.decision, "deny", "the trailing slashes are dropped, so src covers its files");
+  assert.ok(end.ms < HOSTILE_LIMIT_MS, `decide took ${end.ms} ms`);
+  assert.equal(decide(rules(["Read(src/)"]), read("src/a.md")).decision, "deny", "positive control: src/ covers src/a.md");
+  assert.equal(decide(rules(["Read(src/)"]), read("lib/a.md")).decision, "default", "positive control: another folder is not covered");
+  assert.equal(matchPathGlob("src/", "src/a.md"), true, "positive control: a trailing slash is dropped");
+});
+
+test("a ** and an unanchored prefix cross a folder name that holds a line terminator (positive control: a folder without one matches as before)", () => {
+  assert.equal(decide(rules(["Read(**/.env)"]), read("a\nb/.env")).decision, "deny", "the folder name holds a newline");
+  assert.equal(decide(rules(["Read(**/.env)"]), read("a/b/.env")).decision, "deny", "positive control: no newline");
+  assert.equal(matchPathGlob("src/**", "src/a\r\nb/x.md"), true, "a trailing ** crosses a carriage return and a line feed");
+  assert.equal(matchPathGlob("src/**", "lib/a\nb/x.md"), false, "positive control: another folder does not match");
+});
+
+test("normal patterns keep their results: secrets/* stays in one folder, a /folder rule is anchored by its settings folder, and ? is one UTF-16 code unit", () => {
+  assert.equal(decide(rules(["Read(secrets/*)"]), read("secrets/key.pem")).decision, "deny");
+  assert.equal(decide(rules(["Read(secrets/*)"]), read("secrets/a/key.pem")).decision, "deny", "a matching folder covers its contents");
+  assert.equal(decide(rules(["Read(secrets/*.pem)"]), read("secrets/a/key.pem")).decision, "default", "* does not cross a folder");
+  assert.equal(decide(rules(["Read(secrets/*)"]), read("app/secrets/key.pem")).decision, "default", "a pattern with a slash is anchored");
+  const anchored = { deny: [{ rule: "Read(/secret/**)", source: "settings", anchor: "config" }], ask: [], allow: [] };
+  assert.equal(decide(anchored, read("config/secret/a.txt")).decision, "deny");
+  assert.equal(decide(anchored, read("secret/a.txt")).decision, "default", "positive control: the same folder at the root is not covered");
+  assert.equal(matchPathGlob("a?c", "a\u{1F600}c"), false, "an emoji is two UTF-16 code units, so one ? does not match it");
+  assert.equal(matchPathGlob("a??c", "a\u{1F600}c"), true);
 });

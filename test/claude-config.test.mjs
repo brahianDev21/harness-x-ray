@@ -385,7 +385,11 @@ test("claude-config: invalid claudeMdExcludes entries are warnings, the scan exi
     configWarnings(data).map((warning) => `${warning.reason}:${warning.detail}`).sort(),
     ["unexpected-shape:claudeMdExcludes", "unsupported-pattern:claudeMdExcludes"],
   );
-  assert.deepEqual(data.claudeConfig.claudeMdExcludes, [{ pattern: "**/vendor/**", source: ".claude/settings.json" }]);
+  // The entry with four runs of ** used to be unsupported (the cap of matchPathGlob); it is a valid pattern now.
+  assert.deepEqual(data.claudeConfig.claudeMdExcludes, [
+    { pattern: "**/a/**/b/**/c/**/d", source: ".claude/settings.json" },
+    { pattern: "**/vendor/**", source: ".claude/settings.json" },
+  ]);
   assert.equal(JSON.stringify(data.claudeConfig).includes("a[b].md"), false, "an unsupported pattern is never copied");
 });
 
