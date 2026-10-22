@@ -11,6 +11,7 @@ import {
   REQUIRED_LAYER_FIELDS,
   SIGNAL_TYPES,
   quoteText,
+  loadLayerPlan,
   readLayerPlan,
   validateLayerPlan,
   visibleText,
@@ -441,6 +442,50 @@ test("readLayerPlan reports a layers.json that is not a layers.json as an error 
 test("readLayerPlan needs an absolute folder", () => {
   assert.throws(() => readLayerPlan("relative/run"), TypeError);
   assert.throws(() => readLayerPlan(42), TypeError);
+});
+
+// loadLayerPlan -----------------------------------------------------------------------------------
+
+test("loadLayerPlan gives the same check as readLayerPlan, and the parsed files (positive control: a valid plan)", (t) => {
+  const run = makeFixture({ files: { "layers.json": JSON.stringify(LAYERS), "layer-plan.json": JSON.stringify(validPlan()) } });
+  t.after(run.cleanup);
+  assert.deepEqual(loadLayerPlan(run.root), { ok: true, errors: [], plan: validPlan(), layers: LAYERS });
+  assert.deepEqual(readLayerPlan(run.root), { ok: true, errors: [] }, "readLayerPlan keeps its result");
+});
+
+test("loadLayerPlan gives the errors of an invalid plan, with the parsed files, and null for a file it could not read", (t) => {
+  const plan = planWith((layers) => { layers[1].folders = ["apps/mobile"]; });
+  const run = makeFixture({ files: { "layers.json": JSON.stringify(LAYERS), "layer-plan.json": JSON.stringify(plan) } });
+  t.after(run.cleanup);
+  const result = loadLayerPlan(run.root);
+  assert.equal(result.ok, false);
+  errorAt(result, "/layers/1/folders/0", /is not a folder of layers\.json/);
+  assert.deepEqual(result.plan, plan, "the parsed plan is given, for the caller to refuse");
+  assert.deepEqual(result.layers, LAYERS);
+
+  const missing = makeFixture({ files: { "layers.json": JSON.stringify(LAYERS) } });
+  t.after(missing.cleanup);
+  const absent = loadLayerPlan(missing.root);
+  assert.equal(absent.ok, false);
+  assert.equal(absent.plan, null, "a plan that is missing is null");
+  assert.deepEqual(absent.layers, LAYERS);
+});
+
+test("loadLayerPlan refuses a layers.json that is not one, with its layers kept as parsed (positive control: a real one passes)", (t) => {
+  const wrong = makeFixture({ files: { "layers.json": JSON.stringify({ schemaVersion: 2 }), "layer-plan.json": JSON.stringify(validPlan()) } });
+  t.after(wrong.cleanup);
+  const refused = loadLayerPlan(wrong.root);
+  assert.equal(refused.ok, false);
+  errorAt(refused, "", /^layers\.json is not a layers\.json: an object with schemaVersion 1/);
+  assert.deepEqual(refused.layers, { schemaVersion: 2 });
+
+  const fine = makeFixture({ files: { "layers.json": JSON.stringify(LAYERS), "layer-plan.json": JSON.stringify(validPlan()) } });
+  t.after(fine.cleanup);
+  assert.equal(loadLayerPlan(fine.root).ok, true);
+});
+
+test("loadLayerPlan needs an absolute folder", () => {
+  assert.throws(() => loadLayerPlan("relative/run"), TypeError);
 });
 
 // The schema -------------------------------------------------------------------------------------

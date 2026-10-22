@@ -529,6 +529,94 @@
               }
             }
           }
+        },
+        "byLayer": {
+          "type": "array",
+          "description": "Present only with --layers (scripts/lib/layer-context.mjs): the context that Claude Code loads when it works in each layer of the layer plan, one entry per layer in plan order. Estimates use chars/4. The always-loaded total is the same for every layer and is in alwaysLoaded, so it is not repeated here. Nested AGENTS.md files are not counted, and nested skills are listed apart and are not verified.",
+          "items": {
+            "type": "object",
+            "required": ["name", "folders", "agent", "onDemand", "nestedSkills", "notCounted"],
+            "properties": {
+              "name": { "type": "string", "description": "The name of the layer, from the layer plan." },
+              "folders": {
+                "type": "array",
+                "description": "The folders of the layer, relative to the target, sorted.",
+                "items": { "type": "string" }
+              },
+              "agent": {
+                "enum": ["claude-code"],
+                "description": "The agent whose load model is applied. Only Claude Code has a verified load model in data/agent-harness.json."
+              },
+              "onDemand": {
+                "type": "object",
+                "description": "The files that Claude Code loads on demand when it works in the layer: the CLAUDE.md and CLAUDE.local.md files of the folders on the way to the layer and inside it, and the rules whose paths match a file of the layer.",
+                "required": ["estTokens", "items"],
+                "properties": {
+                  "estTokens": { "type": "integer", "minimum": 0, "description": "Sum of the estTokens of the items." },
+                  "items": {
+                    "type": "array",
+                    "description": "Sorted by path.",
+                    "items": {
+                      "type": "object",
+                      "required": ["path", "kind", "estTokens"],
+                      "properties": {
+                        "path": { "type": "string" },
+                        "kind": {
+                          "enum": ["memory", "rule"],
+                          "description": "memory: a CLAUDE.md or CLAUDE.local.md file; rule: a rule of .claude/rules with a paths field."
+                        },
+                        "estTokens": { "type": "integer", "minimum": 0 }
+                      }
+                    }
+                  }
+                }
+              },
+              "nestedSkills": {
+                "type": "object",
+                "description": "Not verified. The nested skills (a SKILL.md inside a .claude/skills folder of a subfolder) whose harness folder is on the way to the layer or inside it. Their load model is unknown, so they are not in onDemand and not in its total.",
+                "required": ["estTokens", "items"],
+                "properties": {
+                  "estTokens": { "type": "integer", "minimum": 0, "description": "Sum of the estTokens of the items: the estimate of each skill's description." },
+                  "items": {
+                    "type": "array",
+                    "description": "Sorted by path.",
+                    "items": {
+                      "type": "object",
+                      "required": ["path", "estTokens"],
+                      "properties": {
+                        "path": { "type": "string" },
+                        "estTokens": { "type": "integer", "minimum": 0 }
+                      }
+                    }
+                  }
+                }
+              },
+              "notCounted": {
+                "type": "array",
+                "description": "Files that would count in the layer but do not, sorted by path and then by reason.",
+                "items": {
+                  "type": "object",
+                  "required": ["path", "reason"],
+                  "properties": {
+                    "path": { "type": "string" },
+                    "reason": {
+                      "enum": [
+                        "claude-md-excludes",
+                        "unsupported-pattern",
+                        "outside-root",
+                        "not-found",
+                        "not-a-file",
+                        "too-large",
+                        "binary",
+                        "read-error"
+                      ],
+                      "description": "claude-md-excludes: a claudeMdExcludes pattern matches the file, which is not read. unsupported-pattern: no pattern of the rule matches a file of the layer, and a pattern cannot be read by the matcher. The others are the safe-fs reasons of a file that cannot be read."
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },

@@ -807,7 +807,7 @@ test("scan: --include-ancestors reads the memory file of the parent folder, and 
   assert.equal(Object.hasOwn(plainData.meta, "include"), false);
 });
 
-test("scan: an unknown flag still exits 2, and the usage line names the two opt-in flags and --scope", async (t) => {
+test("scan: an unknown flag still exits 2, and the usage line names the opt-in flags, --scope and --layers", async (t) => {
   const { target, base } = copyOfEmptyFixture(t);
   const out = path.join(base, "out");
 
@@ -816,7 +816,7 @@ test("scan: an unknown flag still exits 2, and the usage line names the two opt-
   assert.equal(result.code, 2);
   assert.equal(
     result.stderr.trimEnd().split("\n").at(-1),
-    "usage: node scripts/scan.mjs <target> [--out <dir>] [--include-user-layer] [--include-ancestors] [--scope <folder>]...",
+    "usage: node scripts/scan.mjs <target> [--out <dir>] [--include-user-layer] [--include-ancestors] [--scope <folder>]... [--layers <runDir>]",
   );
   assert.equal(fs.existsSync(out), false);
 });
@@ -998,4 +998,144 @@ test("scan: --scope with --include-ancestors reads the same parent folders as --
   assert.equal(parent.read, true);
   assert.equal(parent.lines, 3);
   assert.deepEqual(scopedData.meta.include, { userLayer: false, ancestors: true });
+});
+
+// ---------------------------------------------------------------------------------------------------
+// --layers on the command line
+
+// A monorepo with a harness in apps/web only, and the layer plan of a map run for it.
+const LAYERED_MONOREPO = {
+  "package.json": JSON.stringify({ name: "mono", private: true, workspaces: ["apps/*"] }),
+  "CLAUDE.md": "# Mono\n\nRun the tests.\n",
+  "apps/web/package.json": '{"name":"web"}\n',
+  "apps/web/src/App.tsx": "export const App = () => null;\n",
+  "apps/web/CLAUDE.md": "# Web\n\nUse the web conventions.\n",
+  "apps/api/package.json": '{"name":"api"}\n',
+  "apps/api/src/server.ts": "export const server = 1;\n",
+};
+const LAYER_FOLDERS = [".", "apps", "apps/api", "apps/web"];
+const LAYER_PLAN = {
+  schemaVersion: 1,
+  layers: [
+    { name: "web", folders: ["apps/web"], reason: "package.json in apps/web" },
+    { name: "api", folders: ["apps/api"], reason: "package.json in apps/api" },
+  ],
+};
+
+// A run folder inside the fixture, with a layers.json and a layer-plan.json. A plan of null writes no layer-plan.json. The
+// layers.json names the target by its real path, unless targetRoot says another folder.
+function layerRunOf(fixture, { plan = LAYER_PLAN, folders = LAYER_FOLDERS, targetRoot = fs.realpathSync.native(fixture.root) } = {}) {
+  const runDir = fs.mkdtempSync(path.join(fixture.base, "run-"));
+  const layers = {
+    schemaVersion: 1,
+    meta: { tool: "harness-x-ray", mappedAt: FIXED_NOW.toISOString(), targetRoot },
+    structure: "units",
+    units: [],
+    workspaces: [],
+    tree: { path: ".", files: 0, children: [], truncated: false },
+    folders,
+    suggestion: null,
+    warnings: [],
+  };
+  fs.writeFileSync(path.join(runDir, "layers.json"), `${JSON.stringify(layers, null, 2)}\n`);
+  if (plan !== null) fs.writeFileSync(path.join(runDir, "layer-plan.json"), `${JSON.stringify(plan, null, 2)}\n`);
+  return runDir;
+}
+
+test("scan: --layers with a valid run folder adds context.byLayer in plan order, and the schema accepts it", async (t) => {
+  const fixture = makeFixture({ files: LAYERED_MONOREPO });
+  t.after(fixture.cleanup);
+  const runDir = layerRunOf(fixture);
+  const out = path.join(fixture.base, "out");
+
+  const result = await runScan([fixture.root, "--out", out, "--layers", runDir]);
+
+  assert.equal(result.code, 0, result.stderr);
+  const data = measurementsIn(out);
+  assert.deepEqual(schemaProblems(JSON.parse(fs.readFileSync(SCHEMA_FILE, "utf8")), data), [], "the output matches the schema");
+  assert.deepEqual(data.context.byLayer.map((layer) => layer.name), ["web", "api"], "one entry per layer, in plan order");
+  const [web, api] = data.context.byLayer;
+  assert.deepEqual(web.onDemand.items.map((item) => item.path), ["apps/web/CLAUDE.md"]);
+  assert.deepEqual(api.onDemand.items, []);
+  // Positive control: the same scan without --layers has no byLayer, and its always-loaded budget is the same.
+  const plainOut = path.join(fixture.base, "out-plain");
+  const plain = await runScan([fixture.root, "--out", plainOut]);
+  assert.equal(plain.code, 0, plain.stderr);
+  const plainData = measurementsIn(plainOut);
+  assert.equal(Object.hasOwn(plainData.context, "byLayer"), false);
+  assert.deepEqual(data.context.alwaysLoaded, plainData.context.alwaysLoaded, "the budget is the same with or without the plan");
+});
+
+test("scan: --layers exits 2 and writes nothing for a missing, an invalid or a foreign plan, a folder that is gone, or a run folder outside runs/", async (t) => {
+  const fixture = makeFixture({ files: LAYERED_MONOREPO });
+  t.after(fixture.cleanup);
+  const cases = [
+    {
+      name: "a missing plan",
+      runDir: () => layerRunOf(fixture, { plan: null }),
+      message: /the run folder has no valid layer plan: layer-plan\.json: cannot be read: ENOENT/,
+    },
+    {
+      name: "an invalid plan",
+      runDir: () => layerRunOf(fixture, { plan: { schemaVersion: 1, layers: [{ name: "web", folders: ["apps/mobile"], reason: "x" }] } }),
+      message: /the run folder has no valid layer plan: \/layers\/0\/folders\/0: "apps\/mobile" is not a folder of layers\.json/,
+    },
+    {
+      name: "a layers.json written for another target",
+      runDir: () => layerRunOf(fixture, { targetRoot: fixture.base }),
+      message: /layers\.json was not written for this target/,
+    },
+    {
+      name: "a layer folder that no longer exists",
+      runDir: () =>
+        layerRunOf(fixture, {
+          plan: { schemaVersion: 1, layers: [{ name: "web", folders: ["apps/gone"], reason: "x" }] },
+          folders: [...LAYER_FOLDERS, "apps/gone"],
+        }),
+      message: /the layer plan does not match the target: layer "web": folder "apps\/gone" does not exist in the target/,
+    },
+    {
+      name: "a run folder outside runs/ and the temp folder",
+      runDir: () => SCRIPTS_DIR,
+      message: /must be inside runs\/ or the system temp folder/,
+    },
+  ];
+
+  for (const [index, item] of cases.entries()) {
+    const out = path.join(fixture.base, `out-${index}`);
+    const result = await runScan([fixture.root, "--out", out, "--layers", item.runDir()]);
+    assert.equal(result.code, 2, `${item.name}: ${result.stderr}`);
+    assert.match(result.stderr, item.message, item.name);
+    assert.equal(fs.existsSync(out), false, `${item.name}: nothing is written`);
+  }
+  // Positive control: the valid plan with the same flags exits 0 and writes the file.
+  const valid = path.join(fixture.base, "out-valid");
+  const result = await runScan([fixture.root, "--out", valid, "--layers", layerRunOf(fixture)]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(fs.existsSync(path.join(valid, "measurements.json")), true);
+});
+
+test("scan: --layers with an empty value exits 2", async (t) => {
+  const fixture = makeFixture({ files: LAYERED_MONOREPO });
+  t.after(fixture.cleanup);
+  const out = path.join(fixture.base, "out");
+
+  const result = await runScan([fixture.root, "--out", out, "--layers", ""]);
+
+  assert.equal(result.code, 2);
+  assert.match(result.stderr, /the --layers folder must not be empty/);
+  assert.equal(fs.existsSync(out), false);
+});
+
+test("the schema documents context.byLayer as optional, with the fields of each layer", () => {
+  const schema = JSON.parse(fs.readFileSync(SCHEMA_FILE, "utf8"));
+  assert.equal(schema.properties.context.required.includes("byLayer"), false);
+  assert.deepEqual(schema.properties.context.properties.byLayer.items.required, [
+    "name",
+    "folders",
+    "agent",
+    "onDemand",
+    "nestedSkills",
+    "notCounted",
+  ]);
 });
